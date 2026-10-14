@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "monster_conquest:block/recruitment_station_side",
+    "down": "monster_conquest:block/recruitment_station_side",
+    "up": "monster_conquest:block/recruitment_station_side",
+    "north": "monster_conquest:block/recruitment_station_front",
+    "south": "monster_conquest:block/recruitment_station_side",
+    "west": "monster_conquest:block/recruitment_station_side",
+    "east": "monster_conquest:block/recruitment_station_side"
+  }
+}

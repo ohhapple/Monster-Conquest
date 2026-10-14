@@ -1,0 +1,11 @@
+{
+  "parent": "monster_conquest:item/gun/sniper_ready",
+  "overrides": [
+    {
+      "predicate": {
+        "custom_model_data": 1
+      },
+      "model": "monster_conquest:item/gun/sniper_charging"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "parent": "monster_conquest:item/gun/rifle_ready",
+  "overrides": [
+    {
+      "predicate": {
+        "custom_model_data": 1
+      },
+      "model": "monster_conquest:item/gun/rifle_shot"
+    },
+    {
+      "predicate": {
+        "custom_model_data": 2
+      },
+      "model": "monster_conquest:item/gun/rifle_shot"
+    }
+  ]
+}

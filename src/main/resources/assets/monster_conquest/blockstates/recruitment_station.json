@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "facing=north": { "model": "monster_conquest:block/recruitment_station" },
+    "facing=east": { "model": "monster_conquest:block/recruitment_station", "y": 90 },
+    "facing=south": { "model": "monster_conquest:block/recruitment_station", "y": 180 },
+    "facing=west": { "model": "monster_conquest:block/recruitment_station", "y": 270 },
+    "facing=up": { "model": "monster_conquest:block/recruitment_station", "x": 270 },
+    "facing=down": { "model": "monster_conquest:block/recruitment_station", "x": 90 }
+  }
+}

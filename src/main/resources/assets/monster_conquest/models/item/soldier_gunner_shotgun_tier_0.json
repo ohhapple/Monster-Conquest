@@ -1,0 +1,6 @@
+{
+  "parent": "item/generated",
+  "textures": {
+    "layer0": "monster_conquest:item/egg/soldier/soldier_gunner_shotgun_tier_0"
+  }
+}

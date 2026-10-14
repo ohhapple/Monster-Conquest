@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "equipment",
+  "ingredients": [
+    { "item": "minecraft:stick" },
+    { "item": "minecraft:yellow_dye" }
+  ],
+  "result": { "id": "monster_conquest:control_tool", "count": 1 }
+}

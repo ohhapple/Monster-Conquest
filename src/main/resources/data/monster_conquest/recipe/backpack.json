@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "equipment",
+  "ingredients": [
+    { "item": "minecraft:leather" },
+    { "item": "minecraft:leather" },
+    { "item": "minecraft:leather" },
+    { "item": "minecraft:leather" },
+    { "item": "minecraft:leather" },
+    { "item": "minecraft:leather" },
+    { "item": "minecraft:chest" }
+  ],
+  "result": { "id": "monster_conquest:backpack", "count": 1 }
+}

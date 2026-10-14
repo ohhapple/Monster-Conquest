@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "equipment",
+  "ingredients": [
+    { "item": "minecraft:stick" },
+    { "item": "minecraft:blue_dye" }
+  ],
+  "result": { "id": "monster_conquest:retrieval_tool", "count": 1 }
+}

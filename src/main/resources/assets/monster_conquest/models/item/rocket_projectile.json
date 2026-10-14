@@ -1,0 +1,67 @@
+{
+  "texture_size": [16, 16],
+  "textures": {
+    "0": "monster_conquest:item/ammo/rocket_ammo",
+    "particle": "monster_conquest:item/ammo/rocket_ammo"
+  },
+  "elements": [
+    {
+      "from": [7, 4, 7],
+      "to": [9, 12, 9],
+      "faces": {
+        "north": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "east": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "south": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "west": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "up": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "down": { "uv": [6, 5, 10, 9], "texture": "#0" }
+      }
+    },
+    {
+      "from": [4, 7, 7],
+      "to": [12, 9, 9],
+      "faces": {
+        "north": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "east": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "south": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "west": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "up": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "down": { "uv": [6, 5, 10, 9], "texture": "#0" }
+      }
+    },
+    {
+      "from": [7, 7, 4],
+      "to": [9, 9, 12],
+      "faces": {
+        "north": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "east": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "south": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "west": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "up": { "uv": [6, 5, 10, 9], "texture": "#0" },
+        "down": { "uv": [6, 5, 10, 9], "texture": "#0" }
+      }
+    },
+    {
+      "from": [6, 6, 6],
+      "to": [10, 10, 10],
+      "faces": {
+        "north": { "uv": [6, 1, 10, 4], "texture": "#0" },
+        "east": { "uv": [6, 1, 10, 4], "texture": "#0" },
+        "south": { "uv": [6, 1, 10, 4], "texture": "#0" },
+        "west": { "uv": [6, 1, 10, 4], "texture": "#0" },
+        "up": { "uv": [6, 1, 10, 4], "texture": "#0" },
+        "down": { "uv": [6, 1, 10, 4], "texture": "#0" }
+      }
+    }
+  ],
+  "display": {
+    "ground": { "rotation": [0, 0, 0], "translation": [0, 0, 0], "scale": [0.75, 0.75, 0.75] },
+    "gui": { "rotation": [30, 225, 0], "translation": [0, 0, 0], "scale": [1, 1, 1] },
+    "fixed": { "rotation": [0, 0, 0], "translation": [0, 0, 0], "scale": [1, 1, 1] },
+    "thirdperson_righthand": { "rotation": [0, 0, 0], "translation": [0, 0, 0], "scale": [0.6, 0.6, 0.6] },
+    "thirdperson_lefthand": { "rotation": [0, 0, 0], "translation": [0, 0, 0], "scale": [0.6, 0.6, 0.6] },
+    "firstperson_righthand": { "rotation": [0, 0, 0], "translation": [0, 0, 0], "scale": [0.6, 0.6, 0.6] },
+    "firstperson_lefthand": { "rotation": [0, 0, 0], "translation": [0, 0, 0], "scale": [0.6, 0.6, 0.6] },
+    "head": { "rotation": [0, 0, 0], "translation": [0, 0, 0], "scale": [1, 1, 1] }
+  }
+}

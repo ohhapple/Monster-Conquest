@@ -1,0 +1,38 @@
+{
+  "gun.rifle_shoot": {
+    "subtitle": "subtitles.monster_conquest.gun.rifle_shoot",
+    "sounds": [
+      "monster_conquest:gun/rifle_shoot"
+    ]
+  },
+  "gun.shotgun_shoot": {
+    "subtitle": "subtitles.monster_conquest.gun.shotgun_shoot",
+    "sounds": [
+      "monster_conquest:gun/shotgun_shoot"
+    ]
+  },
+  "gun.rocket_launch": {
+    "subtitle": "subtitles.monster_conquest.gun.rocket_launch",
+    "sounds": [
+      "monster_conquest:gun/rocket_launch"
+    ]
+  },
+  "gun.sniper_shoot": {
+    "subtitle": "subtitles.monster_conquest.gun.sniper_shoot",
+    "sounds": [
+      "monster_conquest:gun/sniper_shoot"
+    ]
+  },
+  "gun.bullet_hit": {
+    "subtitle": "subtitles.monster_conquest.gun.bullet_hit",
+    "sounds": [
+      "monster_conquest:gun/bullet_hit"
+    ]
+  },
+  "gun.rocket_explode": {
+    "subtitle": "subtitles.monster_conquest.gun.rocket_explode",
+    "sounds": [
+      "monster_conquest:gun/rocket_explode"
+    ]
+  }
+}

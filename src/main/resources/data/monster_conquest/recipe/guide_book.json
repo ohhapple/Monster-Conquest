@@ -1,0 +1,8 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "equipment",
+  "ingredients": [
+    { "item": "minecraft:book" }
+  ],
+  "result": { "id": "monster_conquest:guide_book", "count": 1 }
+}

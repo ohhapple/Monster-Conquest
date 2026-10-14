@@ -1,0 +1,11 @@
+{
+  "_comment": [
+    "这个文件只是外壳：它告诉游戏这个物品用自定义渲染器来画。",
+    "形状 + 手持姿势都在 models/banner/faction_banner.json 里。"
+  ],
+  "parent": "builtin/entity",
+  "gui_light": "front",
+  "textures": {
+    "particle": "minecraft:block/stripped_oak_log"
+  }
+}
