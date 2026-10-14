@@ -1,4 +1,5 @@
 # Monster Conquest
+[![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/ohhapple/Monster-Conquest/total?color=161616&label=Github%20downloads)](https://github.com/ohhapple/Monster-Conquest/releases)
 
 Minecraft 1.21.1 / NeoForge 的阵营战争模组：招募士兵、组建军队，用指挥工具和 RTS 视角带兵打仗。
 
