@@ -1,35 +1,40 @@
 package com.ohhapple.monster_conquest.client.rts;
 
-import com.mojang.blaze3d.platform.InputConstants;
 import com.ohhapple.monster_conquest.client.input.ModKeyMappings;
-import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.network.serverbound.rts.RtsCommandPayload;
 import com.ohhapple.monster_conquest.network.serverbound.rts.RtsOrderPayload;
 import com.ohhapple.monster_conquest.network.serverbound.rts.RtsSelectPayload;
 import com.ohhapple.monster_conquest.network.serverbound.rts.RtsSelectSimilarPayload;
 import com.ohhapple.monster_conquest.network.serverbound.rts.RtsSquadClickPayload;
-import net.minecraft.client.Camera;
-import net.minecraft.client.Minecraft;
+
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+
 import net.neoforged.neoforge.network.PacketDistributor;
+
+import org.joml.Matrix4f;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+
+import com.mojang.blaze3d.platform.InputConstants;
 
 public class RtsScreen extends Screen {
 
@@ -181,6 +186,24 @@ public class RtsScreen extends Screen {
                 dest = screenRaycastGround(mx, my);
             }
             if (dest != null) {
+                if (GeneralConfig.debugMovementLog) {
+                    Vec3 origin = cameraOrigin();
+                    Monster_conquest.LOGGER.info(
+                            "[RTS-COMMAND] screen=({},{}) yaw={} pitch={} origin=({},{},{}) dest=({},{},{}) target={}",
+                            String.format(Locale.ROOT, "%.1f", mx),
+                            String.format(Locale.ROOT, "%.1f", my),
+                            String.format(Locale.ROOT, "%.1f",
+                                    RtsCameraController.getYaw()),
+                            String.format(Locale.ROOT, "%.1f",
+                                    RtsCameraController.getPitch()),
+                            String.format(Locale.ROOT, "%.2f", origin.x),
+                            String.format(Locale.ROOT, "%.2f", origin.y),
+                            String.format(Locale.ROOT, "%.2f", origin.z),
+                            String.format(Locale.ROOT, "%.2f", dest.x),
+                            String.format(Locale.ROOT, "%.2f", dest.y),
+                            String.format(Locale.ROOT, "%.2f", dest.z),
+                            targetUuid == null ? "-" : targetUuid);
+                }
                 PacketDistributor.sendToServer(new RtsCommandPayload(
                         dest.x, dest.y, dest.z, targetUuid));
             }
@@ -333,6 +356,17 @@ public class RtsScreen extends Screen {
         g.drawString(font,
                 Component.translatable("gui.monster_conquest.rts.keys.line5", exitKey),
                 x, y + lh * 6, 0xC0C0C0, true);
+
+        Component feedback = RtsClientState.getFeedback();
+        if (feedback != null) {
+            int feedbackY = this.height - 58;
+            int feedbackWidth = font.width(feedback);
+            g.fill(this.width / 2 - feedbackWidth / 2 - 6, feedbackY - 4,
+                    this.width / 2 + feedbackWidth / 2 + 6,
+                    feedbackY + font.lineHeight + 4, 0x90000000);
+            g.drawCenteredString(font, feedback, this.width / 2, feedbackY,
+                    0xFFFFD060);
+        }
     }
 
     @Override
@@ -379,19 +413,47 @@ public class RtsScreen extends Screen {
                 AbstractArmySoldier.class, searchBox)) {
             if (!s.isAlive()) continue;
             if (!mc.player.getUUID().equals(s.getCommanderUuid().orElse(null))) continue;
-            if (isWorldPosOnScreen(s.position(), minX, minY, maxX, maxY)) {
+            if (isEntityInScreenBox(s, minX, minY, maxX, maxY)) {
                 result.add(s.getUUID());
             }
         }
         return result;
     }
 
+    /**
+     * 框选使用实体完整包围盒，而不是脚点。
+     *   飞行单位模型在脚点上方；只投影 position() 会导致框住身体却选不中。
+     */
+    private boolean isEntityInScreenBox(Entity entity,
+                                        double minX, double minY,
+                                        double maxX, double maxY) {
+        AABB box = entity.getBoundingBox();
+        Vec3 center = box.getCenter();
+        if (isWorldPosOnScreen(center, minX, minY, maxX, maxY)) return true;
+
+        for (double x : new double[]{box.minX, center.x, box.maxX}) {
+            for (double y : new double[]{box.minY, center.y, box.maxY}) {
+                for (double z : new double[]{box.minZ, center.z, box.maxZ}) {
+                    if (isWorldPosOnScreen(new Vec3(x, y, z),
+                            minX, minY, maxX, maxY)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     // ===================== 相机几何工具 =====================
 
+    /**
+     * 输入阶段使用 RTS 相机控制器的当前朝向，而不是上一帧由 VirtualCamera
+     *   setup 出来的 Camera 朝向。否则刚转动视角 / 刚切回固定视角时右键，
+     *   射线会按旧朝向落点，表现为命令点向转动前的位置偏移。
+     */
     private static Vec3[] cameraBasis() {
-        Camera camera = Minecraft.getInstance().gameRenderer.getMainCamera();
-        float camYaw = camera.getYRot();
-        float camPitch = camera.getXRot();
+        float camYaw = RtsCameraController.getYaw();
+        float camPitch = RtsCameraController.getPitch();
         Vec3 forward = Vec3.directionFromRotation(camPitch, camYaw);
         Vec3 worldUp = new Vec3(0, 1, 0);
         Vec3 right = forward.cross(worldUp);
@@ -401,15 +463,31 @@ public class RtsScreen extends Screen {
         return new Vec3[]{forward, right, up};
     }
 
+    /** 优先用本帧渲染时的真实相机位置；首帧尚未记录时退回控制器坐标。 */
+    private static Vec3 cameraOrigin() {
+        Vec3 snapshot = RtsClientState.getLastCameraPos();
+        if (snapshot != null) return snapshot;
+        return new Vec3(
+                RtsCameraController.getCamX(),
+                RtsCameraController.getCamY(),
+                RtsCameraController.getCamZ());
+    }
+
     private static double halfTanFovH() {
         Minecraft mc = Minecraft.getInstance();
         double aspect = (double) mc.getWindow().getGuiScaledWidth()
                 / (double) mc.getWindow().getGuiScaledHeight();
-        double fov = mc.options.fov().get();
-        return Math.tan(Math.toRadians(fov / 2.0)) * aspect;
+        return halfTanFovV() * aspect;
     }
 
     private static double halfTanFovV() {
+        // 透视投影矩阵的 m11 = 1 / tan(fovY / 2)。用实际投影矩阵而不是
+        //   FOV 设置值，疾跑 / 速度效果 / 其它视角修饰下的边缘落点才一致。
+        Matrix4f projection = RtsClientState.getLastProjMatrix();
+        if (projection != null) {
+            float m11 = Math.abs(projection.m11());
+            if (m11 > 1.0E-6f) return 1.0 / m11;
+        }
         Minecraft mc = Minecraft.getInstance();
         double fov = mc.options.fov().get();
         return Math.tan(Math.toRadians(fov / 2.0));
@@ -419,8 +497,7 @@ public class RtsScreen extends Screen {
                                        double minX, double minY,
                                        double maxX, double maxY) {
         Minecraft mc = Minecraft.getInstance();
-        Camera camera = mc.gameRenderer.getMainCamera();
-        Vec3 camPos = camera.getPosition();
+        Vec3 camPos = cameraOrigin();
 
         Vec3[] basis = cameraBasis();
         Vec3 forward = basis[0], right = basis[1], up = basis[2];
@@ -471,7 +548,7 @@ public class RtsScreen extends Screen {
         Vec3 dir = computeRayDir(mx, my);
         if (dir == null) return null;
 
-        Vec3 origin = mc.gameRenderer.getMainCamera().getPosition();
+        Vec3 origin = cameraOrigin();
         Vec3 end = origin.add(dir.scale(512.0));
 
         BlockHitResult hit = mc.level.clip(new ClipContext(
@@ -494,23 +571,26 @@ public class RtsScreen extends Screen {
         Vec3 dir = computeRayDir(mx, my);
         if (dir == null) return null;
 
-        Vec3 origin = mc.gameRenderer.getMainCamera().getPosition();
+        Vec3 origin = cameraOrigin();
         Vec3 end = origin.add(dir.scale(256.0));
 
         AABB search = new AABB(origin, end).inflate(2.0);
+        BlockHitResult blockHit = mc.level.clip(new ClipContext(
+                origin, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mc.player));
+        double blockDist = blockHit.getType() == HitResult.Type.MISS
+                ? Double.MAX_VALUE : origin.distanceToSqr(blockHit.getLocation());
 
         Entity best = null;
         double bestDist = Double.MAX_VALUE;
-        // 第一个参数传 null：不能排除本地玩家自己，
-        //   否则"右键自己 = 跟随"永远选不中（玩家会被 getEntities 过滤掉）。
+        // 任何活着的生物都可以作为 RTS 命令目标；服务器再区分友方跟随与敌方攻击。
+        //   第一个参数传 null：不能排除本地玩家自己，否则"右键自己 = 跟随"永远选不中。
         for (Entity e : mc.level.getEntities((Entity) null, search,
-                e -> e instanceof AbstractArmySoldier || e instanceof AbstractArmyCommander
-                        || e instanceof Player
-                        || e instanceof WarHorseEntity)) {
+                e -> e instanceof LivingEntity && e.isAlive())) {
             AABB box = e.getBoundingBox().inflate(0.25);
             var hit = box.clip(origin, end);
             if (hit.isEmpty()) continue;
             double d = origin.distanceToSqr(hit.get());
+            if (d > blockDist) continue;
             if (d < bestDist) { bestDist = d; best = e; }
         }
         return best;

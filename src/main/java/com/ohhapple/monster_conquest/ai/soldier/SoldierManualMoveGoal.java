@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.ai.soldier;
 
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+import com.ohhapple.monster_conquest.entity.AbstractFlyingSoldier;
 import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
@@ -29,8 +30,20 @@ public class SoldierManualMoveGoal extends Goal {
      *   单位实际速度只由实体类里的 MOVEMENT_SPEED 属性决定（写多少就是多少）。
      */
     private static final double SPEED = 1.0D;
-    /** 到达判定（格²）：1 格以内才算到，避免"离目标还有两三格就停下"。 */
-    private static final double ARRIVE_SQR = 1.0;
+    /**
+     * 到达判定（格²）：0.6 格以内才算到。
+     *   手动指令 / 路径点都要求单位真的走到那个点上 —— 判定太松会停在旁边就不动了。
+     */
+    private static final double ARRIVE_SQR = 0.6 * 0.6;
+    /** 骑乘到达判定（格²）：坐骑身体宽、速度快，放宽到 1.5 格。 */
+    private static final double ARRIVE_SQR_MOUNTED = 1.5 * 1.5;
+    /**
+     * 垂直容差：只允许半砖 / 台阶级别的高差。
+     *   容差放开时，在平台上 / 楼梯上方的单位也会被判成"到达"，于是停在半空不走了。
+     */
+    private static final double ARRIVE_DY = 0.75;
+    /** 攀爬中（梯子 / 脚手架 / 藤蔓）的垂直容差：必须落到目标那一层才罢休，否则会挂在半空。 */
+    private static final double ARRIVE_DY_CLIMBING = 0.4;
     /** 原版路径最短重发间隔（tick）。 */
     private static final int REISSUE_INTERVAL = 10;
     /** 原版路径变"半路路径"时的检查间隔（tick）。 */
@@ -43,6 +56,8 @@ public class SoldierManualMoveGoal extends Goal {
     private Vec3 lastOrderTarget = null;
     private double bestDistSqr = Double.MAX_VALUE;
     private double lastDistSqr = Double.MAX_VALUE;
+    /** 三维距离的最好成绩：连续 7 秒没有拉近就算"到不了"（顶着东西 / 在梯子上抽搐）。 */
+    private double best3Sqr = Double.MAX_VALUE;
     private int nearTicks = 0;
     private int awayTicks = 0;
 
@@ -55,20 +70,25 @@ public class SoldierManualMoveGoal extends Goal {
     public void start() {
         // 手动指令优先：清掉可能残留的绕路路线（例如跟随首领轨迹时留下的 A* 路线）
         soldier.clearMarchRoute();
+        reissueTick = 0;
+        pathCheckTick = 0;
         lastOrderTarget = null;
         bestDistSqr = Double.MAX_VALUE;
         lastDistSqr = Double.MAX_VALUE;
+        best3Sqr = Double.MAX_VALUE;
         nearTicks = 0;
         awayTicks = 0;
+        soldier.tryMountForOpenTravel();
     }
 
     @Override
     public boolean canUse() {
         if (soldier.getManualMoveTarget() == null) return false;
-        // 只有"玩家点名的攻击目标"（强制目标 / 精确打击）才能打断手动移动；
-        //   普通自主索敌不再打断 —— 移动命令优先（见 AttackConfiguredEnemyGoal 里的同名判定）。
+        // 已经锁定活目标或刚被攻击时必须让战斗 Goal 接管；
+        //   否则 NPC 直接移动 / 路径点巡逻会在交战后继续抢移动旗标。
         LivingEntity target = soldier.getTarget();
-        if (target != null && target.isAlive() && soldier.isPlayerOrderedTarget(target)) {
+        if ((target != null && target.isAlive())
+                || soldier.isUnderRecentAttack()) {
             soldier.setManualMoveTarget(null);
             soldier.setManualFacingAnchor(null);
             return false;
@@ -79,9 +99,10 @@ public class SoldierManualMoveGoal extends Goal {
     @Override
     public boolean canContinueToUse() {
         if (soldier.getManualMoveTarget() == null) return false;
-        // 只有玩家点名的攻击目标才能打断手动移动（自主索敌不再打断，移动命令优先）
+        // 有活目标或被攻击时让位；战斗结束后再恢复手动移动 / 巡逻。
         LivingEntity target = soldier.getTarget();
-        if (target != null && target.isAlive() && soldier.isPlayerOrderedTarget(target)) {
+        if ((target != null && target.isAlive())
+                || soldier.isUnderRecentAttack()) {
             soldier.setManualMoveTarget(null);
             soldier.setManualFacingAnchor(null);
             return false;
@@ -98,26 +119,40 @@ public class SoldierManualMoveGoal extends Goal {
         // 用骑手坐标 / 1 格判定会出现"永远差一点 → 围着目标跑"。
         Mob mover = soldier.getVehicle() instanceof Mob m ? m : soldier;
         boolean mounted = mover != soldier;
+        if (soldier.isFollowingMarchRoute()) {
+            if (soldier.isFollowingMarchTowards(target)) return;
+            soldier.clearMarchRoute();
+        }
         double dx = mover.getX() - target.x;
         double dz = mover.getZ() - target.z;
         double distSqr = dx * dx + dz * dz;
-        double arriveSqr = mounted ? 2.0 * 2.0 : ARRIVE_SQR;
+        double arriveSqr = mounted ? ARRIVE_SQR_MOUNTED : ARRIVE_SQR;
 
         // 换目标 → 重置统计
         if (lastOrderTarget == null || lastOrderTarget.distanceToSqr(target) > 1.0) {
             lastOrderTarget = target;
             bestDistSqr = distSqr;
             lastDistSqr = distSqr;
+            best3Sqr = mover.position().distanceToSqr(target);
             nearTicks = 0;
             awayTicks = 0;
             // 中途改命令：不等 10 tick 的重发间隔，本 tick 就按新目标重新寻路
             //   （否则会先沿旧路径走一小段才转向新目的地）。
+            //   旧目标留下的 A* 失败退避最长 200 tick，新目标必须当场作废。
+            soldier.clearMarchRoute();
             reissueTick = 0;
+            pathCheckTick = 0;
         }
 
-        boolean arrived = distSqr < arriveSqr && Math.abs(mover.getY() - target.y) < 2.5;
+        double dy = Math.abs(mover.getY() - target.y);
+        // 悬在梯子 / 脚手架上时水平方向可能早就对齐了：只有脚真正落到目标那一层才算到达，
+        //   否则单位会在梯子半空停下、下不到底。
+        boolean arrived = distSqr < arriveSqr && dy < ARRIVE_DY
+                && (dy < ARRIVE_DY_CLIMBING || !AiNavUtil.isOnClimbable(mover));
         if (!arrived && distSqr < 36.0) {
-            // ① 一直在附近、却连续远离（来回跑）→ 视为到达
+            // ① 一直在附近、却连续远离（来回跑）→ 视为到达。
+            //   这条只服务"快速坐骑在目标附近来回冲"：坐骑身体大、速度快，围着目标转是常事。
+            //   步行单位不能这么判 —— 从梯子上滑下来、绕开路障都会暂时远离目标，不能算到达。
             if (distSqr < bestDistSqr - 0.25) {
                 bestDistSqr = distSqr;
                 awayTicks = 0;
@@ -126,10 +161,17 @@ public class SoldierManualMoveGoal extends Goal {
             } else {
                 awayTicks = 0;
             }
-            nearTicks++;
-            if (awayTicks > 8) arrived = true;
-            // ② 在目标 3 格内磨蹭超过 7 秒还没到（例如被门框 / 地形卡角度）
-            if (nearTicks > 140 && distSqr < 9.0) arrived = true;
+            if (awayTicks > 8 && mounted && distSqr < 4.0) arrived = true;
+            // ② 在目标 3 格内超过 7 秒没有把距离实质拉近（顶着门框 / 地形 / 在梯子上卡住）→ 视为到达，
+            //   给下一段路让路。用"三维距离有没有变近"计数：正常走过去、绕路、顺梯下滑
+            //   每一段都在变近，不会误触发；反过来"在梯子上原地抽搐"这种也会被这条兜住。
+            double dist3Sqr = mover.position().distanceToSqr(target);
+            if (dist3Sqr < best3Sqr - 0.01) {
+                best3Sqr = dist3Sqr;
+                nearTicks = 0;
+            } else if (++nearTicks > 140 && distSqr < 9.0) {
+                arrived = true;
+            }
         } else if (!arrived) {
             nearTicks = 0;
             awayTicks = 0;
@@ -146,24 +188,26 @@ public class SoldierManualMoveGoal extends Goal {
             AiNavUtil.stopMovementInput(mover);
             Vec3 dm = soldier.getDeltaMovement();
             soldier.setDeltaMovement(0, dm.y, 0);
+            if (mover != soldier) AiNavUtil.stopMovementInput(soldier);
             return;
         }
 
-        // 方块级 A* 绕路接管中 → 不抢移动；中途改了目的地则立刻放弃旧路线
-        // 正在下梯子（或刚悬在梯顶上方）：停掉寻路 / 绕路，交给实体自身的下滑逻辑。
-        //   否则原版会一路给"爬回平台"的半路路径：在梯子上擦着砖块、下滑途中又想往上爬、
-        //   落地后还被旧路线往回拉。
-        if (AiNavUtil.isDescendingOnLadder(soldier, target)) {
-            soldier.getNavigation().stop();
-            soldier.clearMarchRoute();
+        // 飞行单位不走地面 A* / 梯子 / 门框逻辑：
+        //   恼鬼直接穿行，悦灵由飞行寻路绕开方块；速度仍取自身 MOVEMENT_SPEED。
+        if (soldier instanceof AbstractFlyingSoldier flyingUnit) {
+            flyingUnit.moveTowardPoint(target);
             return;
         }
 
+        // 方块级 A* 绕路接管中 → 不抢移动；中途改了目的地则立刻放弃旧路线。
         // 最后 4 格：不再重发路径（原版 moveTo 的精度只有 1 格、还会在目标附近来回修正），
         //   直线没阻挡就直接驱动"真正在走的实体"走向目标点。
         // 按本体宽度判定：宽体坐骑擦着墙角时中心线是通的、身体会撞角 ——
         //   直线过不去就交给寻路绕过去，不能一直朝墙角推。
-        if (distSqr < 16.0 && AiNavUtil.hasClearLineForBody(soldier.level(),
+        // 上下梯子这一段例外：直线驱动会把单位从梯子列里拖出去（从平台边掉下去），
+        //   整段交给寻路路线 + 梯子感知移动控制器。
+        if (!AiNavUtil.isOnClimbRoute(mover)
+                && distSqr < 16.0 && AiNavUtil.hasClearLineForBody(soldier.level(),
                 mover.position().add(0, 0.5, 0), target.add(0, 0.5, 0),
                 mover.getBbWidth() * 0.5 + 0.05)) {
             mover.getNavigation().stop();
@@ -176,10 +220,11 @@ public class SoldierManualMoveGoal extends Goal {
         if (!soldier.isFollowingMarchRoute()
                 && AiNavUtil.pathStepsOverDoor(soldier, soldier.getNavigation().getPath())) {
             soldier.startMarchRouteAround(target);
+            if (soldier.isMarchRoutePlanning()) return;
         }
         // 正前方就是门：停掉寻路，直接让移动控制器以"脚高度"穿过门洞 ——
         //   原版 MoveControl 会把门当成一格台阶而跳起来。
-        BlockPos doorAhead = AiNavUtil.handDoorNear(soldier);
+        BlockPos doorAhead = AiNavUtil.handDoorNear(mover);
         if (doorAhead != null) {
             // 对准"没有门板碰撞"的那半边（开着的门板只有 3/16 厚，走正中心会蹭到）
             Vec3 pass = AiNavUtil.doorPassPoint(mover, doorAhead);
@@ -215,11 +260,6 @@ public class SoldierManualMoveGoal extends Goal {
                 return;
             }
         }
-        if (soldier.isFollowingMarchRoute()) {
-            if (soldier.isFollowingMarchTowards(target)) return;
-            soldier.clearMarchRoute();
-        }
-
         // 原版寻路：路径走完 / 每 10 tick 重发一次
         PathNavigation nav = soldier.getNavigation();
         if (soldier.tickCount >= reissueTick) {
@@ -230,16 +270,14 @@ public class SoldierManualMoveGoal extends Goal {
             if (idle) {
                 // 导航刚走完：清掉移动控制器残留的旧目标点（否则快速坐骑会掉头走向旧点）。
                 AiNavUtil.stopMovementInput(mover);
+                // 已走完的旧路径会因节点相同被原版当成"同一条路"而拒绝重发，
+                //   骑乘时导航属于坐骑，这里统一先清掉。
+                nav.stop();
             }
             // 目标在下方、身边能找到可下的梯子 → 先寻路到"登梯口"（梯子旁能站的一格），
             //   走到梯子旁再交给实体自身的攀爬逻辑下梯。
             //   否则原版只能给一条"走到平台边缘就停"的半路路径 → 单位站在边上不下去。
-            Vec3 access = AiNavUtil.descentAccessPoint(soldier, target);
-            if (access != null) {
-                nav.moveTo(access.x, access.y, access.z, SPEED);
-            } else {
-                nav.moveTo(target.x, target.y, target.z, SPEED);
-            }
+            nav.moveTo(target.x, target.y, target.z, SPEED);
         }
 
         // 原版只能给"半路路径"（长墙 / 迷宫）→ 立刻尝试方块级 A* 绕路
@@ -251,12 +289,15 @@ public class SoldierManualMoveGoal extends Goal {
                 // 原版把门 / 栅栏门当台阶时，路径节点会比脚高一格 → 走到门口会无故跳；
                 //   改用方块级 A* 精确路线（节点高度准确）。
                 soldier.startMarchRouteAround(target);
+                if (soldier.isMarchRoutePlanning()) return;
             }
         }
     }
 
     @Override
     public void stop() {
-        soldier.getNavigation().stop();
+        Mob mover = soldier.getVehicle() instanceof Mob vehicle ? vehicle : soldier;
+        AiNavUtil.haltMovement(mover);
+        AiNavUtil.stopMovementInput(soldier);
     }
 }

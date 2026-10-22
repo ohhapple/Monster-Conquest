@@ -1,29 +1,33 @@
 package com.ohhapple.monster_conquest.entity;
 
-import com.ohhapple.monster_conquest.config.CombatConfig;
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
+import com.ohhapple.monster_conquest.config.CombatConfig;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.goal.FloatGoal;
+import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
+import net.minecraft.world.entity.animal.horse.AbstractHorse;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MoverType;
-import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
-import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.entity.ai.goal.FloatGoal;
-import net.minecraft.world.entity.animal.horse.AbstractHorse;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
@@ -36,12 +40,20 @@ public class WarHorseEntity extends AbstractHorse {
     private static final double GRAVITY = 0.08;
 
     @Nullable private UUID ownerUuid;
+    private int ownerCheckTick = -100;
+    private boolean ownerCheckKnown = false;
+    private boolean ownerAlive = true;
+    @Nullable private UUID cachedOwnerCommander;
+    private int commanderCacheTick = -100;
+    private boolean commanderCacheKnown = false;
     /** 玩家用马哨召唤的战马：无敌、无伤害传导、下马立即销毁。 */
     private boolean playerMount = false;
     private int noRiderTicks = 0;
     private boolean charging = false;
     private int passThroughTicks = 0;
     private Vec3 passThroughDir = Vec3.ZERO;
+    /** 非骑枪骑兵的持续追逐方向；由骑手更新，travel 中按战马属性速度直进。 */
+    private Vec3 pursuitDir = Vec3.ZERO;
 
     @Nullable private Float lockedYaw = null;
 
@@ -56,7 +68,7 @@ public class WarHorseEntity extends AbstractHorse {
         super(type, level);
         this.setTamed(true);
         this.setPersistenceRequired();
-        if (getNavigation() instanceof net.minecraft.world.entity.ai.navigation.GroundPathNavigation gpn) {
+        if (getNavigation() instanceof GroundPathNavigation gpn) {
             gpn.setCanOpenDoors(true);
         }
     }
@@ -71,6 +83,10 @@ public class WarHorseEntity extends AbstractHorse {
 
     public void setOwner(LivingEntity owner) {
         this.ownerUuid = owner.getUUID();
+        this.ownerCheckTick = -100;
+        this.ownerCheckKnown = false;
+        this.commanderCacheTick = -100;
+        this.commanderCacheKnown = false;
         this.setTamed(true);
         this.setOwnerUUID(owner.getUUID());
     }
@@ -98,6 +114,15 @@ public class WarHorseEntity extends AbstractHorse {
 
     public void setPassThroughTicks(int ticks) { this.passThroughTicks = ticks; }
     public int getPassThroughTicks() { return passThroughTicks; }
+
+    public void setPursuitDirection(Vec3 direction) {
+        this.pursuitDir = direction.lengthSqr() < 1.0E-6
+                ? Vec3.ZERO : new Vec3(direction.x, 0.0, direction.z).normalize();
+    }
+
+    public void clearPursuitDirection() {
+        this.pursuitDir = Vec3.ZERO;
+    }
 
     /** 玩家骑乘时不限制转头角度；NPC 骑手限制 12°。 */
     private boolean isPlayerRidden() {
@@ -144,6 +169,7 @@ public class WarHorseEntity extends AbstractHorse {
         if (this.isInWater()) {
             if (charging) charging = false;
             if (passThroughTicks > 0) passThroughTicks = 0;
+            pursuitDir = Vec3.ZERO;
 
             super.travel(input);
 
@@ -201,6 +227,28 @@ public class WarHorseEntity extends AbstractHorse {
                     }
                 }
             }
+            return;
+        }
+
+        // 非骑枪骑乘追击：按战马自身速度逐 tick 直进，不依赖 MoveControl 的 WAIT 切换。
+        if (!charging && passThroughTicks == 0 && pursuitDir.lengthSqr() > 0.5) {
+            Vec3 dm = this.getDeltaMovement();
+            double speed = this.getAttributeValue(Attributes.MOVEMENT_SPEED);
+            double vy = dm.y - GRAVITY;
+            if (this.onGround() && vy < 0) vy = 0;
+
+            // 战斗追击接管转身后，阵型到位朝向不能继续覆盖马首。
+            lockedYaw = null;
+            float desiredYaw = (float) Math.toDegrees(Math.atan2(-pursuitDir.x, pursuitDir.z));
+            float yaw = this.getYRot()
+                    + Mth.clamp(Mth.wrapDegrees(desiredYaw - this.getYRot()), -12.0F, 12.0F);
+            float heading = yaw * Mth.DEG_TO_RAD;
+            this.setYRot(yaw);
+            this.yBodyRot = yaw;
+            this.setYHeadRot(yaw);
+            this.setDeltaMovement(-Mth.sin(heading) * speed, vy, Mth.cos(heading) * speed);
+            this.hasImpulse = true;
+            this.move(MoverType.SELF, this.getDeltaMovement());
             return;
         }
 
@@ -283,9 +331,17 @@ public class WarHorseEntity extends AbstractHorse {
         }
 
         if (ownerUuid != null) {
-            Entity owner = null;
-            if (level() instanceof ServerLevel sl) owner = sl.getEntities().get(ownerUuid);
-            if (owner == null || !owner.isAlive()) { this.discard(); return; }
+            if (!ownerCheckKnown || tickCount - ownerCheckTick >= 10) {
+                ownerCheckTick = tickCount;
+                ownerCheckKnown = true;
+                if (level() instanceof ServerLevel sl) {
+                    Entity owner = sl.getEntities().get(ownerUuid);
+                    ownerAlive = owner != null && owner.isAlive();
+                } else {
+                    ownerAlive = false;
+                }
+            }
+            if (!ownerAlive) { this.discard(); return; }
             if (this.getControllingPassenger() == null && this.getFirstPassenger() == null) {
                 // 玩家的战马：下马立即销毁
                 if (playerMount) { this.discard(); return; }
@@ -421,15 +477,19 @@ public class WarHorseEntity extends AbstractHorse {
             if (d >= minDist) continue;
 
             double leftDot = toEnemy.dot(left);
-            Vec3 lateral = (leftDot >= 0 ? left : right);
             double push = minDist - d + 0.25;
-            Vec3 pushVec = lateral.scale(push);
             Vec3 forwardPush = forward.scale(0.15);
+            Vec3 leftPush = left.scale(push).add(forwardPush);
+            Vec3 rightPush = right.scale(push).add(forwardPush);
+            Vec3 first = leftDot >= 0 ? leftPush : rightPush;
+            Vec3 second = leftDot >= 0 ? rightPush : leftPush;
 
-            e.setPos(e.getX() + pushVec.x + forwardPush.x,
-                    e.getY(),
-                    e.getZ() + pushVec.z + forwardPush.z);
-            e.hurtMarked = true;
+            // 穿越会忽略实体碰撞，但目标位移仍必须遵守方块碰撞。
+            //   先试更近的一侧，被墙挡住再试另一侧和前方；都不行就保持原位。
+            if (!pushEnemySafely(e, first) && !pushEnemySafely(e, second)
+                    && !pushEnemySafely(e, forward.scale(push * 0.5))) {
+                continue;
+            }
 
             Vec3 ev = e.getDeltaMovement();
             double fdot = ev.dot(forward);
@@ -437,6 +497,18 @@ public class WarHorseEntity extends AbstractHorse {
                 e.setDeltaMovement(ev.x - forward.x * fdot, ev.y, ev.z - forward.z * fdot);
             }
         }
+    }
+
+    /** 用一个无方块碰撞的位移把目标挪出战马身体，返回是否成功移动。 */
+    private boolean pushEnemySafely(LivingEntity enemy, Vec3 offset) {
+        if (offset.lengthSqr() < 1.0E-6) return false;
+        AABB movedBox = enemy.getBoundingBox().move(offset);
+        if (!level().noBlockCollision(enemy, movedBox)) return false;
+        enemy.setPos(enemy.getX() + offset.x,
+                enemy.getY() + offset.y,
+                enemy.getZ() + offset.z);
+        enemy.hurtMarked = true;
+        return true;
     }
 
     private boolean isFriendly(Entity other) {
@@ -453,14 +525,7 @@ public class WarHorseEntity extends AbstractHorse {
             return myCommander.equals(p.getUUID());
         }
         if (other instanceof WarHorseEntity otherHorse) {
-            UUID otherCommander = null;
-            if (level() instanceof ServerLevel sl && otherHorse.getOwnerUuid() != null) {
-                Entity owner = sl.getEntities().get(otherHorse.getOwnerUuid());
-                if (owner instanceof AbstractArmySoldier s) otherCommander = s.getCommanderUuid().orElse(null);
-                else if (owner instanceof AbstractArmyCommander c) otherCommander = c.getUUID();
-                else if (owner instanceof Player p) otherCommander = p.getUUID();
-            }
-            return myCommander.equals(otherCommander);
+            return myCommander.equals(otherHorse.getOwnerCommanderUuid());
         }
         return false;
     }
@@ -468,11 +533,22 @@ public class WarHorseEntity extends AbstractHorse {
     @Nullable
     private UUID resolveOwnerCommander() {
         if (!(level() instanceof ServerLevel sl) || ownerUuid == null) return null;
+        if (commanderCacheKnown && tickCount - commanderCacheTick < 20) {
+            return cachedOwnerCommander;
+        }
+        commanderCacheKnown = true;
+        commanderCacheTick = tickCount;
         Entity owner = sl.getEntities().get(ownerUuid);
-        if (owner instanceof AbstractArmySoldier s) return s.getCommanderUuid().orElse(null);
-        if (owner instanceof AbstractArmyCommander c) return c.getUUID();
-        if (owner instanceof Player p) return p.getUUID();
-        return null;
+        if (owner instanceof AbstractArmySoldier s) cachedOwnerCommander = s.getCommanderUuid().orElse(null);
+        else if (owner instanceof AbstractArmyCommander c) cachedOwnerCommander = c.getUUID();
+        else if (owner instanceof Player p) cachedOwnerCommander = p.getUUID();
+        else cachedOwnerCommander = null;
+        return cachedOwnerCommander;
+    }
+
+    @Nullable
+    public UUID getOwnerCommanderUuid() {
+        return resolveOwnerCommander();
     }
 
     /**
@@ -521,12 +597,6 @@ public class WarHorseEntity extends AbstractHorse {
             if (!level().isClientSide && rider.isAlive()) {
                 float transferred = amount * RIDER_DAMAGE_TRANSFER;
                 if (transferred > 0f) {
-                    // 只有"攻击类伤害"（有攻击者 / 弹射物）才清掉骑手无敌帧（齐射时每一发都要结算）；
-                    //   仙人掌 / 岩浆 / 火烧 / 挤压窒息等环境伤害没有攻击者，必须照常吃无敌帧 ——
-                    //   否则骑乘的士兵会被每 tick 连续扣血，被地形挤压或烧死。
-                    if (source.getEntity() != null || source.getDirectEntity() != null) {
-                        rider.invulnerableTime = 0;
-                    }
                     rider.hurt(source, transferred);
                 }
             }
@@ -594,6 +664,10 @@ public class WarHorseEntity extends AbstractHorse {
     public void readAdditionalSaveData(CompoundTag tag) {
         super.readAdditionalSaveData(tag);
         if (tag.hasUUID("Owner")) ownerUuid = tag.getUUID("Owner");
+        ownerCheckTick = -100;
+        ownerCheckKnown = false;
+        commanderCacheTick = -100;
+        commanderCacheKnown = false;
         playerMount = tag.getBoolean("PlayerMount");
         lastHurtTick = tag.getInt("LastHurtTick");
     }

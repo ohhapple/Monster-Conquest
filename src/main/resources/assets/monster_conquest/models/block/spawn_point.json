@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "monster_conquest:block/spawn_point_side",
+    "down": "monster_conquest:block/spawn_point_side",
+    "up": "monster_conquest:block/spawn_point_side",
+    "north": "monster_conquest:block/spawn_point_front",
+    "south": "monster_conquest:block/spawn_point_side",
+    "west": "monster_conquest:block/spawn_point_side",
+    "east": "monster_conquest:block/spawn_point_side"
+  }
+}

@@ -423,19 +423,19 @@ public class FactionConfig {
     // 和平难度、关闭 doPatrolSpawning / doMobSpawning、村庄附近、永不刷巡逻队的生物群系都不会刷。
 
     public static final ModConfigSpec.IntValue NATURAL_PATROL_CHECK_INTERVAL_DEF = BUILDER
-            .comment("野外巡逻队的生成检测间隔（tick），默认 1200 = 1 分钟。")
-            .defineInRange("naturalPatrol.checkIntervalTicks", 1200, 200, 72000);
+            .comment("野外巡逻队的生成检测间隔（tick），换算： 1200 = 1 分钟。")
+            .defineInRange("naturalPatrol.checkIntervalTicks", 6000, 200, 72000);
 
     public static final ModConfigSpec.DoubleValue NATURAL_PATROL_CHANCE_DEF = BUILDER
-            .comment("每次检测真正生成的概率（0~1），默认 0.25：平均约 4 分钟一支，频率不会太高。")
+            .comment("每次检测真正生成的概率（0~1），默认 0.25。")
             .defineInRange("naturalPatrol.spawnChance", 0.25, 0.0, 1.0);
 
     public static final ModConfigSpec.BooleanValue NATURAL_PATROL_UNDEAD_DEF = BUILDER
-            .comment("主世界是否自然生成亡灵阵营巡逻队（默认开）。")
+            .comment("主世界是否自然生成亡灵阵营巡逻队。")
             .define("naturalPatrol.undead.enabled", true);
 
     public static final ModConfigSpec.BooleanValue NATURAL_PATROL_ILLAGER_DEF = BUILDER
-            .comment("主世界是否自然生成灾厄阵营巡逻队（默认开）。")
+            .comment("主世界是否自然生成灾厄阵营巡逻队。")
             .define("naturalPatrol.illager.enabled", true);
 
     public static final ModConfigSpec.BooleanValue NATURAL_PATROL_NEUTRAL_DEF = BUILDER

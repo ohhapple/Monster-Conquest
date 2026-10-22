@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "facing=north": { "model": "monster_conquest:block/spawn_point" },
+    "facing=east": { "model": "monster_conquest:block/spawn_point", "y": 90 },
+    "facing=south": { "model": "monster_conquest:block/spawn_point", "y": 180 },
+    "facing=west": { "model": "monster_conquest:block/spawn_point", "y": 270 },
+    "facing=up": { "model": "monster_conquest:block/spawn_point", "x": 270 },
+    "facing=down": { "model": "monster_conquest:block/spawn_point", "x": 90 }
+  }
+}

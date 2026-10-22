@@ -1,5 +1,7 @@
 package com.ohhapple.monster_conquest.client.rts;
 
+import net.minecraft.Util;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
@@ -23,9 +25,12 @@ public final class RtsClientState {
     @Nullable private static volatile VirtualCamera camera = null;
 
     @Nullable private static volatile Vec3 moveMarker = null;
+    @Nullable private static volatile Component feedback = null;
+    private static volatile long feedbackUntilMs = 0L;
 
     @Nullable private static volatile Matrix4f lastProjMatrix = null;
     @Nullable private static volatile Matrix4f lastViewMatrix = null;
+    @Nullable private static volatile Vec3 lastCameraPos = null;
 
     private static final Set<Integer> pressedKeys = ConcurrentHashMap.newKeySet();
 
@@ -50,13 +55,32 @@ public final class RtsClientState {
     @Nullable public static Vec3 getMoveMarker() { return moveMarker; }
     public static void setMoveMarker(@Nullable Vec3 m) { moveMarker = m; }
 
-    public static void setMatrices(Matrix4f proj, Matrix4f view) {
-        lastProjMatrix = proj;
-        lastViewMatrix = view;
+    public static void setFeedback(@Nullable Component message) {
+        feedback = message;
+        feedbackUntilMs = message == null ? 0L : Util.getMillis() + 2500L;
+    }
+
+    @Nullable public static Component getFeedback() {
+        Component message = feedback;
+        if (message == null) return null;
+        if (Util.getMillis() >= feedbackUntilMs) {
+            feedback = null;
+            feedbackUntilMs = 0L;
+            return null;
+        }
+        return message;
+    }
+
+    public static void setMatrices(Matrix4f proj, Matrix4f view, Vec3 cameraPos) {
+        // 矩阵对象在渲染管线里会复用，必须复制；射线查询发生在下一帧输入阶段。
+        lastProjMatrix = proj == null ? null : new Matrix4f(proj);
+        lastViewMatrix = view == null ? null : new Matrix4f(view);
+        lastCameraPos = cameraPos;
     }
 
     @Nullable public static Matrix4f getLastProjMatrix() { return lastProjMatrix; }
     @Nullable public static Matrix4f getLastViewMatrix() { return lastViewMatrix; }
+    @Nullable public static Vec3 getLastCameraPos() { return lastCameraPos; }
 
     public static void setKeyPressed(int keyCode, boolean pressed) {
         if (pressed) pressedKeys.add(keyCode);
@@ -93,8 +117,11 @@ public final class RtsClientState {
         rtsMode = false;
         camera = null;
         moveMarker = null;
+        feedback = null;
+        feedbackUntilMs = 0L;
         lastProjMatrix = null;
         lastViewMatrix = null;
+        lastCameraPos = null;
         pressedKeys.clear();
         previewSelected = null;
     }

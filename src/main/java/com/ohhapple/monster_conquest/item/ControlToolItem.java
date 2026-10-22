@@ -1,15 +1,19 @@
 package com.ohhapple.monster_conquest.item;
 
+import com.ohhapple.monster_conquest.army.FactionIds;
+import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
+import com.ohhapple.monster_conquest.army.relation.FactionAlly;
+import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
 import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.config.PlayerConfig;
-import com.ohhapple.monster_conquest.army.FactionIds;
-import com.ohhapple.monster_conquest.army.relation.FactionAlly;
-import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import com.ohhapple.monster_conquest.player.PlayerCommandState;
 import com.ohhapple.monster_conquest.util.FactionDisplay;
+import com.ohhapple.monster_conquest.util.PeacefulUtil;
+
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
@@ -18,17 +22,19 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
-import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -122,6 +128,9 @@ public class ControlToolItem extends Item {
 
     public boolean trySelect(Player player, Entity target, ItemStack stack) {
         if (!(player.level() instanceof ServerLevel sl)) return false;
+        // 骑兵：选中的是战马时改选骑手。战马只是坐骑，下马后会被清除，
+        //   存马的 UUID 会让工具在之后找不到选中单位。
+        target = selectableTarget(target);
         if (!(target instanceof LivingEntity)) {
             player.displayClientMessage(
                     Component.translatable("msg.monster_conquest.control_tool.not_controllable"), true);
@@ -148,7 +157,7 @@ public class ControlToolItem extends Item {
 
         int selectedSquad = resolveSquadFromTarget(target);
 
-        var state = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var state = PlayerArmyManager
                 .get(player.getUUID());
         state.setControlToolSelectedArmy(armyUuid);
         state.setControlToolSelectedFaction(faction);
@@ -168,6 +177,15 @@ public class ControlToolItem extends Item {
         return true;
     }
 
+    /** 中键选中的真实对象：战马有骑手时返回骑手，其余原样返回。 */
+    private static Entity selectableTarget(Entity target) {
+        if (target instanceof WarHorseEntity horse) {
+            Entity rider = horse.getFirstPassenger();
+            if (rider instanceof LivingEntity) return rider;
+        }
+        return target;
+    }
+
     /**
      * 从目标解析控制工具的"命令目标"：
      *   · 无小队士兵 / 无小队骑手 → CONTROL_TOOL_LONE（-1，单兵选择，命令只作用于它）；
@@ -177,14 +195,14 @@ public class ControlToolItem extends Item {
     private static int resolveSquadFromTarget(Entity target) {
         if (target instanceof AbstractArmySoldier s) {
             return (s.getSquadId() <= 0)
-                    ? com.ohhapple.monster_conquest.player.PlayerCommandState.CONTROL_TOOL_LONE
+                    ? PlayerCommandState.CONTROL_TOOL_LONE
                     : s.getSquadId();
         }
         if (target instanceof WarHorseEntity horse) {
             Entity rider = horse.getFirstPassenger();
             if (rider instanceof AbstractArmySoldier rs) {
                 return (rs.getSquadId() <= 0)
-                        ? com.ohhapple.monster_conquest.player.PlayerCommandState.CONTROL_TOOL_LONE
+                        ? PlayerCommandState.CONTROL_TOOL_LONE
                         : rs.getSquadId();
             }
         }
@@ -222,7 +240,7 @@ public class ControlToolItem extends Item {
 
         // ==================== 玩家自己的士兵 ====================
         if (allOwn) {
-            var state = com.ohhapple.monster_conquest.player.PlayerArmyManager
+            var state = PlayerArmyManager
                     .get(player.getUUID());
 
             refreshOccupiedSquads(player, sl);
@@ -231,8 +249,7 @@ public class ControlToolItem extends Item {
             // ARMY 模式 + 单兵选择（-1）：命令只作用于中键选中的那一名士兵
             boolean loneSelected = mode == Mode.SINGLE
                     || (mode == Mode.ARMY
-                        && selSquad == com.ohhapple.monster_conquest.player
-                                .PlayerCommandState.CONTROL_TOOL_LONE);
+                        && selSquad == PlayerCommandState.CONTROL_TOOL_LONE);
 
             // 单个士兵的命令：不占用小队号 —— 脱离小队，用个人状态执行
             //   （与小队"前往"完全同一套入口 orderLoneMove / orderMove）
@@ -306,11 +323,10 @@ public class ControlToolItem extends Item {
         int count = 0;
         for (LivingEntity t : targets) {
             if (t instanceof AbstractArmyCommander c) {
-                c.setManualMarchTarget(dest);
+                c.issueDirectMarchOrder(dest);
                 count++;
             } else if (t instanceof AbstractArmySoldier s) {
-                s.setManualFacingAnchor(s.position());
-                s.setManualMoveTarget(dest);
+                s.issueDirectMoveOrder(dest);
                 count++;
             }
         }
@@ -338,7 +354,7 @@ public class ControlToolItem extends Item {
      */
     @Nullable
     private static Vec3 resolveCurrentAnchor(
-            com.ohhapple.monster_conquest.player.PlayerCommandState state,
+            PlayerCommandState state,
             int targetSquad) {
         if (targetSquad < 0) return null;   // 单兵选择：不涉及小队锚点
         if (targetSquad > 0) {
@@ -377,7 +393,7 @@ public class ControlToolItem extends Item {
         if (target == player.getVehicle()) return false;
 
         // 和平模式：不能下达攻击命令（不能有敌意 / 仇恨）
-        if (com.ohhapple.monster_conquest.util.PeacefulUtil.isPeaceful(player)) {
+        if (PeacefulUtil.isPeaceful(player)) {
             player.displayClientMessage(
                     Component.translatable("msg.monster_conquest.peaceful_no_attack"), true);
             return true;
@@ -413,7 +429,7 @@ public class ControlToolItem extends Item {
                         Component.translatable("msg.monster_conquest.control_tool.same_faction"), true);
                 return false;
             }
-            var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+            var st = PlayerArmyManager
                     .get(player.getUUID());
             long nowGT = player.level().getGameTime();
             st.orderLoneAttack(player, sl, lone, target, nowGT);
@@ -450,13 +466,18 @@ public class ControlToolItem extends Item {
                             .setHostile(myArmy, targetArmy);
                 }
                 s.cancelManualMoveOrder();   // 攻击命令覆盖旧的移动命令
-                s.setTarget(target);
+                // 把目标写进实体自己的点名目标：NPC 单兵没有玩家小队状态，
+                //   只写临时 target 会被普通索敌重估后自然游走接管。
+                s.commandAttackTarget(target, 36000);
                 if (player.getUUID().equals(s.getCommanderUuid().orElse(null))) {
+                    // 控制工具右键是玩家明确命令；必须同步"已接受玩家指令"，
+                    // 否则精确打击在索敌稳定性 / 强制目标判断里不会被视为优先目标。
+                    s.markPlayerCommanded();
                     if (s.getSquadId() == 0) {
                         // 无小队单兵（ARMY 模式顺带选中）：同样进入软驻守
                         PlayerCommandState
                                 .stateForCommand(s,
-                                        com.ohhapple.monster_conquest.player.PlayerArmyManager
+                                        PlayerArmyManager
                                                 .get(player.getUUID()))
                                 .applyAttackOrder(player.level().getGameTime());
                     } else {
@@ -476,11 +497,13 @@ public class ControlToolItem extends Item {
                     ArmyRelations
                             .setHostile(myArmy, targetArmy);
                 }
+                c.allowPatrolLeashBypass(200);
+                c.markAsHatred(target);
                 c.setTarget(target);
                 for (AbstractArmySoldier s : c.getSoldiers()) {
                     if (s.isAttackStopped()) continue;
                     s.cancelManualMoveOrder();   // 攻击命令覆盖旧的移动命令
-                    s.setTarget(target);
+                    s.commandAttackTarget(target, 36000);
                 }
                 count++;
             }
@@ -497,16 +520,12 @@ public class ControlToolItem extends Item {
             return false;
         }
 
-        var state = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var state = PlayerArmyManager
                 .getIfPresent(player.getUUID());
         long now = player.level().getGameTime();
 
         if (state != null) {
-            if (targetArmy != null) {
-                state.markSharedHatredArmy(targetArmy, now);
-            } else {
-                state.markSharedHatredEntity(target.getUUID(), now);
-            }
+            ThreatDispatcher.markPlayerSharedHatred(state, target, sl);
         }
 
         if (state != null && !affectedSquads.isEmpty()) {
@@ -550,7 +569,7 @@ public class ControlToolItem extends Item {
     public boolean commandFollowHere(Player player, ItemStack stack) {
         if (!(player.level() instanceof ServerLevel sl)) return false;
 
-        var state = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var state = PlayerArmyManager
                 .getIfPresent(player.getUUID());
         if (state == null) return false;
 
@@ -560,15 +579,13 @@ public class ControlToolItem extends Item {
         int targetSquad = state.getControlToolSelectedSquad();
 
         // 单兵选择（-1）：命令这名无小队士兵跟随（个人状态，同一套 MovementMode）
-        if (targetSquad == com.ohhapple.monster_conquest.player
-                .PlayerCommandState.CONTROL_TOOL_LONE) {
+        if (targetSquad == PlayerCommandState.CONTROL_TOOL_LONE) {
             AbstractArmySoldier lone = resolveSelectedSoldier(sl, stack);
             if (lone == null || !lone.isAlive()) return false;
 
-            com.ohhapple.monster_conquest.player.PlayerCommandState
+            PlayerCommandState
                     .stateForCommand(lone, state)
-                    .applyFollowOrder(com.ohhapple.monster_conquest.player
-                            .PlayerCommandState.MovementMode.FOLLOW);
+                    .applyFollowOrder(PlayerCommandState.MovementMode.FOLLOW);
 
             sl.playSound(null, player.getX(), player.getY(), player.getZ(),
                     SoundEvents.EVOKER_CAST_SPELL, SoundSource.PLAYERS, 0.8f, 1.4f);
@@ -584,7 +601,7 @@ public class ControlToolItem extends Item {
         state.setSelectedSquad(targetSquad);
         try {
             state.setMovement(
-                    com.ohhapple.monster_conquest.player.PlayerCommandState.MovementMode.FOLLOW);
+                    PlayerCommandState.MovementMode.FOLLOW);
         } finally {
             state.setSelectedSquad(oldSelected);
         }
@@ -602,8 +619,8 @@ public class ControlToolItem extends Item {
 
     /** 扫描附近属于该玩家的士兵，把"有士兵的小队"写回 state（带 5 tick 节流）。 */
     private static void refreshOccupiedSquads(Player player, ServerLevel sl) {
-        if (player instanceof net.minecraft.server.level.ServerPlayer sp) {
-            com.ohhapple.monster_conquest.player.PlayerArmyManager
+        if (player instanceof ServerPlayer sp) {
+            PlayerArmyManager
                     .refreshOccupiedSquads(sp);
         }
     }
@@ -646,7 +663,7 @@ public class ControlToolItem extends Item {
     private List<LivingEntity> collectTargets(Player player, ServerLevel sl,
                                               Mode mode, ItemStack stack) {
         List<LivingEntity> out = new ArrayList<>();
-        var state = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var state = PlayerArmyManager
                 .getIfPresent(player.getUUID());
         if (state == null) return out;
 

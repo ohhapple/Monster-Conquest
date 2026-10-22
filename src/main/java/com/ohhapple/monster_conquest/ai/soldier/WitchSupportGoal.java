@@ -1,17 +1,22 @@
 package com.ohhapple.monster_conquest.ai.soldier;
 
+import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.projectile.WitchPotionEntity;
 import com.ohhapple.monster_conquest.entity.soldiers.VillagerPriestSoldier;
 import com.ohhapple.monster_conquest.entity.soldiers.WitchSoldier;
+import com.ohhapple.monster_conquest.player.PlayerArmyManager;
+
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
@@ -53,6 +58,12 @@ public class WitchSupportGoal extends Goal {
         this.setFlags(EnumSet.of(Goal.Flag.MOVE, Goal.Flag.LOOK));
     }
 
+    @Override
+    public boolean requiresUpdateEveryTick() {
+        // 投掷 / 治疗冷却与目标移动跟随都按 tick 推进，隔 tick 会让站桩时间翻倍。
+        return true;
+    }
+
     /** 走位寻路的节流：有路径在走时 10 tick 重发一次，没路径时 5 tick 重试一次。 */
     private boolean shouldReissueMove(Mob mover) {
         if (moveCooldown < 0) {
@@ -69,6 +80,9 @@ public class WitchSupportGoal extends Goal {
     @Override
     public boolean canUse() {
         if (!witch.getSoldierType().isThrower()) return false;
+        // 前往命令优先：支援走位 / 追击都让给阵型移动，避免女巫、
+        //   牧师用治疗或远程走位抢走 MOVE 旗标。
+        if (witch.isMoveOrderPriorityActive()) return false;
 
         if (--scanTimer <= 0) {
             scanTimer = 10;
@@ -99,6 +113,10 @@ public class WitchSupportGoal extends Goal {
 
     @Override
     public void tick() {
+        if (witch.isMoveOrderPriorityActive()) {
+            stopMove();
+            return;
+        }
         if (cooldown > 0) cooldown--;
 
         boolean hardStation = witch.isHardStationed();
@@ -110,7 +128,6 @@ public class WitchSupportGoal extends Goal {
                 && cooldown <= 0) {
             applySelfHeal();
             cooldown = HEAL_CD;
-            stopMove();
             return;
         }
 
@@ -153,7 +170,6 @@ public class WitchSupportGoal extends Goal {
                 if (witch.getTarget() == null || !witch.getTarget().isAlive()) stopMove();
                 return;
             }
-            stopMove();
             witch.getLookControl().setLookAt(healTarget, 30f, 30f);
             return;
         }
@@ -229,8 +245,13 @@ public class WitchSupportGoal extends Goal {
         } else if (!witch.hasClearShot(enemy)) {
             // 目标被墙 / 掩体挡住：投出去的药水只会砸在墙上 → 重新规划绕路
             witch.replanRouteTo(enemy);
+        } else if (AiNavUtil.isMovingHorizontally(enemy)) {
+            Vec3 dest = movingHoldPoint(enemy);
+            if (shouldReissueMove(mover)) {
+                mover.getNavigation().moveTo(dest.x, dest.y, dest.z, 1.0D);
+            }
         } else {
-            mover.getNavigation().stop();
+            stopMove();
             witch.getLookControl().setLookAt(enemy, 30f, 30f);
         }
 
@@ -239,6 +260,24 @@ public class WitchSupportGoal extends Goal {
             throwPotion(enemy, kind);
             cooldown = THROW_CD;
         }
+    }
+
+    /** 目标移动时保持投掷距离；目标停下后才站定出手。 */
+    private Vec3 movingHoldPoint(LivingEntity target) {
+        Vec3 away = witch.position().subtract(target.position());
+        double horizontal = Math.sqrt(away.x * away.x + away.z * away.z);
+        if (horizontal < 1.0E-4) {
+            away = new Vec3(
+                    -Math.sin(target.getYRot() * ((float) Math.PI / 180f)),
+                    0.0,
+                    Math.cos(target.getYRot() * ((float) Math.PI / 180f)));
+            horizontal = 1.0;
+        }
+        double preferred = (MIN_DIST + MAX_DIST) * 0.5;
+        return new Vec3(
+                target.getX() + away.x / horizontal * preferred,
+                witch.getY(),
+                target.getZ() + away.z / horizontal * preferred);
     }
 
     private WitchPotionEntity.Kind pickDebuffKind() {
@@ -281,7 +320,7 @@ public class WitchSupportGoal extends Goal {
         } else if (witch.level() instanceof ServerLevel sl) {
             UUID myCmd = witch.getCommanderUuid().orElse(null);
             if (myCmd != null) {
-                var state = com.ohhapple.monster_conquest.player.PlayerArmyManager
+                var state = PlayerArmyManager
                         .getIfPresent(myCmd);
                 boolean preciseActive = state != null
                         && state.getPreciseStrikeTarget(witch.level().getGameTime()) != null;
@@ -304,8 +343,11 @@ public class WitchSupportGoal extends Goal {
     }
 
     private void stopMove() {
-        if (witch.getVehicle() instanceof Mob h) h.getNavigation().stop();
-        else witch.getNavigation().stop();
+        Mob mover = witch.getVehicle() instanceof Mob mount ? mount : witch;
+        AiNavUtil.haltMovement(mover);
+        if (mover != witch) {
+            AiNavUtil.stopMovementInput(witch);
+        }
     }
 
     private void throwPotion(LivingEntity target, WitchPotionEntity.Kind kind) {
@@ -316,6 +358,7 @@ public class WitchSupportGoal extends Goal {
                 witch instanceof VillagerPriestSoldier
                         ? WitchPotionEntity.Caster.PRIEST
                         : WitchPotionEntity.Caster.WITCH);
+        potion.setIntendedTarget(target.getUUID());
 
         double startX = witch.getX();
         double startY = witch.getEyeY() - 0.2;
@@ -344,7 +387,7 @@ public class WitchSupportGoal extends Goal {
 
         potion.shoot(dir[0], dir[1], dir[2], (float) POTION_SPEED, 0.0f);
         witch.level().addFreshEntity(potion);
-        witch.swing(net.minecraft.world.InteractionHand.MAIN_HAND, true);
+        witch.swing(InteractionHand.MAIN_HAND, true);
     }
 
     private static double[] solveThrow(double dx, double dz, double dy, double horiz, double speed) {

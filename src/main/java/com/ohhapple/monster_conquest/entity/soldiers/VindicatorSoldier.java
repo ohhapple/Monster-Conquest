@@ -1,6 +1,8 @@
 package com.ohhapple.monster_conquest.entity.soldiers;
 
 import com.ohhapple.monster_conquest.army.EquipmentTier;
+import com.ohhapple.monster_conquest.army.ShieldGuardController;
+import com.ohhapple.monster_conquest.army.ShieldGuardUser;
 import com.ohhapple.monster_conquest.army.SoldierType;
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
 import com.ohhapple.monster_conquest.damage.ModDamageTypes;
@@ -119,6 +121,7 @@ public class VindicatorSoldier extends AbstractArmySoldier {
     @Override
     public boolean doHurtTarget(Entity target) {
         if (isAttackStopped()) return false;
+        setShieldGuardAttackLockTicks(ShieldGuardController.ATTACK_LOCK_TICKS);
         if (!(target instanceof LivingEntity living)) return super.doHurtTarget(target);
 
         DamageSource source = meleeDamageSource();
@@ -130,6 +133,10 @@ public class VindicatorSoldier extends AbstractArmySoldier {
 
         boolean hit = living.hurt(source, damage);
         if (hit) {
+            if (living instanceof ShieldGuardUser guard && guard.hasShieldGuardStack()) {
+                ShieldGuardController.disableShield(
+                        guard, ShieldGuardController.BREAK_RECOVERY_TICKS);
+            }
             float knockback = this.getKnockback(target, source);
             if (knockback > 0.0f) {
                 living.knockback(knockback * 0.5,

@@ -74,7 +74,7 @@ public class WitchSoldier extends AbstractArmySoldier {
     private static int   healRegenDuration(int tier)       { return 60 + tier * 20; }
     private static int   healRegenAmplifier(int tier)      { return Math.min(tier - 1, 1); }
     private static int   healAbsorptionDuration(int tier)  { return 200; }
-    private static int   healAbsorptionAmplifier(int tier) { return tier - 2; }
+    private static int   healAbsorptionAmplifier(int tier) { return Math.max(0, tier - 3); }
 
     // —— 毒 ——
     private static int   poisonDuration(int tier)          { return 100 + tier * 40; }

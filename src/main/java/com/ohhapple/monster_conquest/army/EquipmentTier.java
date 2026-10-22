@@ -71,11 +71,11 @@ public enum EquipmentTier {
         };
     }
 
-    /** 近战骑兵骑枪：低阶用铁，中阶用钻石，高阶用下界合金。 */
+    /** 近战骑兵骑枪：T0~T2 用铁，T3 用钻石，T4 用下界合金。 */
     public Item getLanceWeapon() {
         return switch (this) {
-            case TIER_0, TIER_1 -> Monster_conquest.IRON_LANCE.get();
-            case TIER_2, TIER_3 -> Monster_conquest.DIAMOND_LANCE.get();
+            case TIER_0, TIER_1, TIER_2 -> Monster_conquest.IRON_LANCE.get();
+            case TIER_3 -> Monster_conquest.DIAMOND_LANCE.get();
             case TIER_4 -> Monster_conquest.NETHERITE_LANCE.get();
         };
     }

@@ -1,13 +1,16 @@
 package com.ohhapple.monster_conquest.item;
 
-import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
 import com.ohhapple.monster_conquest.army.relation.FactionHostility;
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import com.ohhapple.monster_conquest.util.FactionDisplay;
+import com.ohhapple.monster_conquest.util.PeacefulUtil;
+
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.particles.ParticleTypes;
@@ -18,19 +21,20 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.AreaEffectCloud;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ExperienceOrb;
-import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.AbstractArrow;
 import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
-import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.phys.AABB;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
@@ -135,7 +139,7 @@ public class HatredWandItem extends Item {
         if (!(player.level() instanceof ServerLevel sl)) return false;
 
         // 和平模式：不建立任何敌意 / 仇恨
-        if (com.ohhapple.monster_conquest.util.PeacefulUtil.isPeaceful(player)) {
+        if (PeacefulUtil.isPeaceful(player)) {
             player.displayClientMessage(
                     Component.translatable("msg.monster_conquest.hatred_wand.peaceful"), true);
             return true;
@@ -216,7 +220,10 @@ public class HatredWandItem extends Item {
                 && target instanceof LivingEntity le && cmdA.canAttack(le)) {
             cmdA.markAsHatred(le);
             for (AbstractArmySoldier s : cmdA.getSoldiers()) {
-                if (s.canAttack(le)) s.setTarget(le);
+                if (s.canAttack(le)) {
+                    s.setTarget(le);
+                    s.markPersonalHatred(le);
+                }
             }
         }
         if (b instanceof AbstractArmyCommander cmdB && cmdB.isAlive()
@@ -244,6 +251,7 @@ public class HatredWandItem extends Item {
             if (!s.isAlive()) continue;
             if (!faction.equals(s.getFactionId())) continue;
             s.setTarget(target);
+            s.markPersonalHatred(target);
             any = true;
         }
         return any;
@@ -260,13 +268,17 @@ public class HatredWandItem extends Item {
             any = true;
         }
         // 玩家军队：按当前小分队过滤
-        var cmdState = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var cmdState = PlayerArmyManager
                 .getIfPresent(army);
+        if (cmdState != null) {
+            ThreatDispatcher.markPlayerSharedHatred(cmdState, target, sl);
+        }
         for (AbstractArmySoldier s : sl.getEntitiesOfClass(AbstractArmySoldier.class, box)) {
             if (!s.isAlive()) continue;
             if (!army.equals(s.getCommanderUuid().orElse(null))) continue;
             if (cmdState != null && !cmdState.matchesSquad(s.getSquadId())) continue;
             s.setTarget(target);
+            s.markPersonalHatred(target);
             any = true;
         }
         return any;
@@ -285,7 +297,7 @@ public class HatredWandItem extends Item {
         FactionHostility.clearLearnedHostility();
 
         // 3. 清所有玩家的共享仇恨列表（含离线玩家的存档状态）
-        for (var st : com.ohhapple.monster_conquest.player.PlayerArmyManager.all().values()) {
+        for (var st : PlayerArmyManager.all().values()) {
             st.clearSharedHatred();
             st.clearSharedHatredEntities();
         }

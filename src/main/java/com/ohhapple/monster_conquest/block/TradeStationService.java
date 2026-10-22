@@ -1,6 +1,8 @@
 package com.ohhapple.monster_conquest.block;
 
+import com.ohhapple.monster_conquest.item.BackpackItem;
 import com.ohhapple.monster_conquest.Monster_conquest;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
@@ -8,8 +10,8 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.List;
@@ -33,6 +35,7 @@ public final class TradeStationService {
 
     /** 出售清单（顺序 = GUI 顺序）。 */
     public static final List<Offer> OFFERS = List.of(
+            // 弹药
             new Offer(Monster_conquest.RIFLE_AMMO.get(), 1,
                     List.of(p(Items.COPPER_INGOT, 1), p(Items.GUNPOWDER, 1))),
             new Offer(Monster_conquest.SHOTGUN_SHELL.get(), 1,
@@ -42,15 +45,19 @@ public final class TradeStationService {
             new Offer(Monster_conquest.ROCKET_AMMO.get(), 1,
                     List.of(p(Items.GUNPOWDER, 5), p(Items.COPPER_INGOT, 4))),
 
+            // 枪械
             new Offer(Monster_conquest.RIFLE.get(), 1, List.of(p(Items.NETHERITE_INGOT, 9))),
             new Offer(Monster_conquest.SHOTGUN.get(), 1, List.of(p(Items.NETHERITE_INGOT, 9))),
             new Offer(Monster_conquest.SNIPER_RIFLE.get(), 1, List.of(p(Items.NETHERITE_INGOT, 9))),
             new Offer(Monster_conquest.ROCKET_LAUNCHER.get(), 1, List.of(p(Items.NETHERITE_INGOT, 9))),
 
+            // 工具与战术装备
             new Offer(Monster_conquest.RETRIEVAL_TOOL.get(), 1,
                     List.of(p(Items.STICK, 1), p(Items.BLUE_DYE, 1))),
             new Offer(Monster_conquest.CONTROL_TOOL.get(), 1,
                     List.of(p(Items.STICK, 1), p(Items.YELLOW_DYE, 1))),
+            new Offer(Monster_conquest.PATH_TOOL.get(), 1,
+                    List.of(p(Items.STICK, 1), p(Items.LIME_DYE, 1))),
             new Offer(Monster_conquest.GUIDE_BOOK.get(), 1, List.of(p(Items.BOOK, 1))),
             new Offer(Monster_conquest.AMMO_BOX.get(), 1, List.of(p(Items.IRON_INGOT, 8))),
             new Offer(Monster_conquest.HORSE_WHISTLE.get(), 1, List.of(p(Items.SADDLE, 1))),
@@ -118,7 +125,7 @@ public final class TradeStationService {
             n += countIn(player.getInventory().getItem(i), item);
         }
         // 背包（物品）里的物品也算
-        n += com.ohhapple.monster_conquest.item.BackpackItem.countItem(player, item);
+        n += BackpackItem.countItem(player, item);
         return n;
     }
 
@@ -141,7 +148,7 @@ public final class TradeStationService {
         }
         player.getInventory().setChanged();
         if (left > 0) {
-            com.ohhapple.monster_conquest.item.BackpackItem.consumeItem(player, item, left);
+            BackpackItem.consumeItem(player, item, left);
         }
     }
 }

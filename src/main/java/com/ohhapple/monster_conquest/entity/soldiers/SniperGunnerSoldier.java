@@ -29,8 +29,8 @@ public class SniperGunnerSoldier extends AbstractGunnerSoldier {
             case TIER_0 -> 18.0;
             case TIER_1 -> 28.0;
             case TIER_2 -> 38.0;
-            case TIER_3 -> 50.0;
-            case TIER_4 -> 66.0;
+            case TIER_3 -> 48.0;
+            case TIER_4 -> 58.0;
         };
     }
 

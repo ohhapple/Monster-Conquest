@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.config;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.army.GuardAttributes;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.event.config.ModConfigEvent;
@@ -17,16 +18,24 @@ public class CombatConfig {
     // ===================== 盾牌格挡 =====================
 
     public static final ModConfigSpec.DoubleValue SHIELD_BLOCK_CHANCE_DEF = BUILDER
-            .comment("持盾士兵/首领被攻击时免疫伤害的概率（0.0~1.0）。触发时播放盾牌格挡音效")
-            .defineInRange("shieldBlockChance", 0.5, 0.0, 1.0);
+            .comment("持盾士兵/首领在举盾姿态下触发格挡判定的概率（0.0~1.0）。")
+            .defineInRange("shieldBlockChance",
+                    GuardAttributes.DEFAULT_GUARD_CHANCE, 0.0, 1.0);
 
     public static final ModConfigSpec.DoubleValue SHIELD_BLOCK_MAX_ABSORB_DEF = BUILDER
-            .comment("盾牌单次格挡能吸收的最大伤害（基础值，TIER_0）。超过部分正常结算")
-            .defineInRange("shieldBlockMaxAbsorb", 20.0, 0.0, 1000.0);
+            .comment("盾牌单次格挡能吸收的最大伤害（基础值，TIER_0）。超过部分正常结算。")
+            .defineInRange("shieldBlockMaxAbsorb",
+                    GuardAttributes.DEFAULT_GUARD_LIMIT, 0.0, 1000.0);
 
     public static final ModConfigSpec.DoubleValue SHIELD_BLOCK_MAX_ABSORB_PER_TIER_DEF = BUILDER
-            .comment("盾牌每提升一级装备等级额外增加的最大吸收伤害")
-            .defineInRange("shieldBlockMaxAbsorbPerTier", 10.0, 0.0, 1000.0);
+            .comment("盾牌每提升一级装备等级额外增加的最大吸收伤害。")
+            .defineInRange("shieldBlockMaxAbsorbPerTier",
+                    GuardAttributes.DEFAULT_GUARD_LIMIT_PER_TIER, 0.0, 1000.0);
+
+    public static final ModConfigSpec.DoubleValue SHIELD_BLOCK_DAMAGE_REDUCTION_DEF = BUILDER
+            .comment("格挡成功时对本次伤害应用的比例（0.0~1.0）。1.0 = 按吸收上限全部吸收。")
+            .defineInRange("shieldBlockDamageReduction",
+                    GuardAttributes.DEFAULT_GUARD_REDUCTION, 0.0, 1.0);
 
     // ===================== 脱战回血 =====================
 
@@ -118,10 +127,14 @@ public class CombatConfig {
 
     public static final ModConfigSpec SPEC = BUILDER.build();
 
-    // ===================== 缓存值 =====================
-    public static double shieldBlockChance;
-    public static double shieldBlockMaxAbsorb;
-    public static double shieldBlockMaxAbsorbPerTier;
+    // ===================== 运行期快照 =====================
+    // 由 onLoad 从上面的配置项同步；初始化值只用于配置加载前兜底。
+    public static double shieldBlockChance = GuardAttributes.DEFAULT_GUARD_CHANCE;
+    public static double shieldBlockMaxAbsorb = GuardAttributes.DEFAULT_GUARD_LIMIT;
+    public static double shieldBlockMaxAbsorbPerTier =
+            GuardAttributes.DEFAULT_GUARD_LIMIT_PER_TIER;
+    public static double shieldBlockDamageReduction =
+            GuardAttributes.DEFAULT_GUARD_REDUCTION;
 
     public static boolean enableOutOfCombatRegen;
     public static int outOfCombatRegenDelay;
@@ -151,6 +164,7 @@ public class CombatConfig {
         shieldBlockChance = SHIELD_BLOCK_CHANCE_DEF.get();
         shieldBlockMaxAbsorb = SHIELD_BLOCK_MAX_ABSORB_DEF.get();
         shieldBlockMaxAbsorbPerTier = SHIELD_BLOCK_MAX_ABSORB_PER_TIER_DEF.get();
+        shieldBlockDamageReduction = SHIELD_BLOCK_DAMAGE_REDUCTION_DEF.get();
 
         enableOutOfCombatRegen = ENABLE_OUT_OF_COMBAT_REGEN_DEF.get();
         outOfCombatRegenDelay = OUT_OF_COMBAT_REGEN_DELAY_DEF.get();

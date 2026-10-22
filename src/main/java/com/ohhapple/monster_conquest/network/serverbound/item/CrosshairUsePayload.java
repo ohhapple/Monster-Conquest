@@ -1,24 +1,28 @@
 package com.ohhapple.monster_conquest.network.serverbound.item;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
 import com.ohhapple.monster_conquest.item.ControlToolItem;
 import com.ohhapple.monster_conquest.item.HatredWandItem;
+import com.ohhapple.monster_conquest.item.PathToolItem;
 import com.ohhapple.monster_conquest.item.RetrievalToolItem;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.util.RaycastUtil;
+
 import net.minecraft.core.BlockPos;
-import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+
 import net.neoforged.neoforge.network.handling.IPayloadContext;
+
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -91,6 +95,9 @@ public record CrosshairUsePayload() implements CustomPacketPayload {
                             player.getEyePosition().add(player.getLookAngle().scale(16.0)),
                             stack);
                 }
+            } else if (stack.getItem() instanceof PathToolItem) {
+                // 路径点工具：右键加路径点（蹲下 = 清空），同样可以隔空指远
+                PathToolItem.handleRightClick(player, stack);
             }
         });
     }

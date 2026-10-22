@@ -15,7 +15,7 @@ public class MonsterPatrolCaptain extends AbstractPatrolCaptain {
     @Override public ResourceLocation getDefaultFactionId() { return FactionIds.MONSTER; }
 
     // ===================== 基础数值 =====================
-    @Override public double getCommanderMaxHealth()           { return 85.0; }
+    @Override public double getCommanderMaxHealth()           { return 65.0; }
     @Override public double getCommanderAttackDamage()        { return 11.0; }
     @Override public double getCommanderArmor()               { return 2.0; }
     @Override public double getCommanderKnockbackResistance() { return 0.4; }

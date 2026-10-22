@@ -6,12 +6,16 @@ import com.ohhapple.monster_conquest.army.PlayerFactionRegistry;
 import com.ohhapple.monster_conquest.army.RecruitableSoldiers;
 import com.ohhapple.monster_conquest.config.RecruitConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+import com.ohhapple.monster_conquest.item.BackpackItem;
 import com.ohhapple.monster_conquest.item.RetrievalToolItem;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import com.ohhapple.monster_conquest.player.PlayerCommandState;
-import net.minecraft.core.component.DataComponents;
+
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -21,9 +25,10 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.UUID;
@@ -43,16 +48,18 @@ public final class RecruitmentService {
     public static void recruit(ServerPlayer player, BlockPos pos, int soldierIndex, int tierIndex) {
         if (soldierIndex < 0 || soldierIndex >= RecruitableSoldiers.ALL.size()) return;
         if (tierIndex < 0 || tierIndex >= EquipmentTier.values().length) return;
+        RecruitableSoldiers.Entry entry = RecruitableSoldiers.ALL.get(soldierIndex);
+        if (entry.fixedTier() && tierIndex != 0) return;
+        int paidTier = entry.fixedTier() ? 0 : tierIndex;
         BlockState state = validStation(player, pos);
         if (state == null) return;
         ServerLevel level = player.serverLevel();
 
         // 军费：绿宝石 + 该等级的金属（每个兵种在配置里单独定价），从背包 + 副手扣。
-        RecruitableSoldiers.Entry entry = RecruitableSoldiers.ALL.get(soldierIndex);
         Item emerald = RecruitConfig.EMERALD_CURRENCY;
-        int emeraldCount = RecruitConfig.emeraldCost(entry.id(), tierIndex);
-        Item metal = RecruitConfig.metalItemFor(tierIndex);
-        int metalCount = RecruitConfig.metalCost(entry.id(), tierIndex);
+        int emeraldCount = RecruitConfig.emeraldCost(entry.id(), paidTier);
+        Item metal = RecruitConfig.metalItemFor(paidTier);
+        int metalCount = RecruitConfig.metalCost(entry.id(), paidTier);
         if (countItem(player, emerald) < emeraldCount
                 || countItem(player, metal) < metalCount) {
             Item missing = countItem(player, emerald) < emeraldCount ? emerald : metal;
@@ -67,7 +74,7 @@ public final class RecruitmentService {
         consumeItem(player, metal, metalCount);
 
         Direction facing = state.getValue(RecruitmentStationBlock.FACING);
-        EquipmentTier tier = EquipmentTier.values()[tierIndex];
+        EquipmentTier tier = EquipmentTier.values()[paidTier];
 
         AbstractArmySoldier soldier = spawnRecruit(level, pos, facing, entry, tier,
                 PlayerFactionRegistry.factionIdOf(player), player.getUUID());
@@ -77,7 +84,7 @@ public final class RecruitmentService {
         level.playSound(null, pos, SoundEvents.ARMOR_EQUIP_IRON.value(), SoundSource.BLOCKS, 1.0f, 1.0f);
         player.displayClientMessage(
                 Component.translatable("msg.monster_conquest.recruit.success",
-                        soldier.getDisplayName(), tierLabel(tier)),
+                        soldier.getDisplayName(), entryTierLabel(entry, tier)),
                 true);
     }
 
@@ -93,6 +100,7 @@ public final class RecruitmentService {
         ServerLevel level = player.serverLevel();
 
         RecruitableSoldiers.Entry entry = RecruitableSoldiers.ALL.get(soldierIndex);
+        if (entry.fixedTier()) return;
         Item egg = eggItemFor(entry.id(), tierIndex - 1);
         if (egg == null) return;
         Item emerald = RecruitConfig.EMERALD_CURRENCY;
@@ -162,9 +170,9 @@ public final class RecruitmentService {
     @Nullable
     private static Item eggItemFor(String speciesId, int tier) {
         ResourceLocation rl = ResourceLocation.fromNamespaceAndPath(
-                com.ohhapple.monster_conquest.Monster_conquest.MODID,
+                Monster_conquest.MODID,
                 speciesId + "_tier_" + tier);
-        Item item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(rl);
+        Item item = BuiltInRegistries.ITEM.get(rl);
         return (item == null || item == Items.AIR) ? null : item;
     }
 
@@ -230,6 +238,12 @@ public final class RecruitmentService {
         return Component.literal("T" + tier.ordinal());
     }
 
+    private static Component entryTierLabel(RecruitableSoldiers.Entry entry, EquipmentTier tier) {
+        return entry.fixedTier()
+                ? Component.translatable("tooltip.monster_conquest.single_level")
+                : tierLabel(tier);
+    }
+
     /** 统计玩家（背包 36 格 + 副手）里某种物品的数量。 */
     private static int countItem(ServerPlayer player, Item item) {
         int n = countIn(player.getInventory().getItem(40), item);   // 副手
@@ -237,7 +251,7 @@ public final class RecruitmentService {
             n += countIn(player.getInventory().getItem(i), item);
         }
         // 背包（物品）里的物品也算
-        n += com.ohhapple.monster_conquest.item.BackpackItem.countItem(player, item);
+        n += BackpackItem.countItem(player, item);
         return n;
     }
 
@@ -254,8 +268,8 @@ public final class RecruitmentService {
             ItemStack stack = player.getInventory().getItem(i);
             if (stack.is(item)) return stack;
         }
-        for (ItemStack backpack : com.ohhapple.monster_conquest.item.BackpackItem.carried(player)) {
-            for (ItemStack stack : com.ohhapple.monster_conquest.item.BackpackItem.contents(backpack)) {
+        for (ItemStack backpack : BackpackItem.carried(player)) {
+            for (ItemStack stack : BackpackItem.contents(backpack)) {
                 if (stack.is(item)) return stack;
             }
         }
@@ -293,7 +307,7 @@ public final class RecruitmentService {
         }
         player.getInventory().setChanged();
         if (left > 0) {
-            com.ohhapple.monster_conquest.item.BackpackItem.consumeItem(player, item, left);
+            BackpackItem.consumeItem(player, item, left);
         }
     }
 }

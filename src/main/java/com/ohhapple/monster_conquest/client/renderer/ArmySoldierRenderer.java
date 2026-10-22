@@ -10,6 +10,7 @@ import net.minecraft.client.model.HumanoidModel;
 import net.minecraft.client.model.PlayerModel;
 import net.minecraft.client.model.SkeletonModel;
 import net.minecraft.client.model.geom.ModelLayers;
+import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
 import net.minecraft.client.renderer.entity.HumanoidMobRenderer;
@@ -17,6 +18,8 @@ import net.minecraft.client.renderer.entity.layers.HumanoidArmorLayer;
 import net.minecraft.client.renderer.entity.layers.ItemInHandLayer;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.UseAnim;
 
 public class ArmySoldierRenderer
         extends HumanoidMobRenderer<AbstractArmySoldier, HumanoidModel<AbstractArmySoldier>> {
@@ -55,6 +58,9 @@ public class ArmySoldierRenderer
             ResourceLocation.fromNamespaceAndPath(Monster_conquest.MODID, "textures/entity/soldier/villager_archer_soldier.png");
     private static final ResourceLocation VILLAGER_PRIEST_SOLDIER =
             ResourceLocation.fromNamespaceAndPath(Monster_conquest.MODID, "textures/entity/soldier/villager_priest_soldier.png");
+    /** 猪灵盾兵：玩家模型 + 64x64 皮肤。 */
+    private static final ResourceLocation PIGLIN_SHIELD_SOLDIER =
+            ResourceLocation.fromNamespaceAndPath(Monster_conquest.MODID, "textures/entity/soldier/piglin_shield_soldier.png");
 
     private final HumanoidModel<AbstractArmySoldier> zombieModel;
     private final SkeletonModel<AbstractArmySoldier> skeletonModel;
@@ -62,10 +68,10 @@ public class ArmySoldierRenderer
     private final PlayerModel<AbstractArmySoldier> playerModel;
 
     public ArmySoldierRenderer(EntityRendererProvider.Context ctx) {
-        super(ctx, new HumanoidModel<>(ctx.bakeLayer(ModelLayers.ZOMBIE)), 0.5f);
+        super(ctx, new SoldierZombieModel(ctx.bakeLayer(ModelLayers.ZOMBIE)), 0.5f);
         this.zombieModel = this.model;
-        this.skeletonModel = new SkeletonModel<>(ctx.bakeLayer(ModelLayers.SKELETON));
-        this.playerModel = new PlayerModel<>(ctx.bakeLayer(ModelLayers.PLAYER), false);
+        this.skeletonModel = new SoldierSkeletonModel(ctx.bakeLayer(ModelLayers.SKELETON));
+        this.playerModel = new SoldierPlayerModel(ctx.bakeLayer(ModelLayers.PLAYER), false);
         this.addLayer(new HumanoidArmorLayer<>(this,
                 new HumanoidModel<>(ctx.bakeLayer(ModelLayers.ZOMBIE_INNER_ARMOR)),
                 new HumanoidModel<>(ctx.bakeLayer(ModelLayers.ZOMBIE_OUTER_ARMOR)),
@@ -83,12 +89,6 @@ public class ArmySoldierRenderer
         else if (idx == 0 || idx == 2 || idx == 3 || idx == 6) this.model = this.zombieModel;
         else this.model = this.playerModel;
         this.model.riding = entity.isPassenger();
-        // 手持枪械 → 举弩姿势（双手抬起持枪）
-        boolean gunner = entity.getMainHandItem().getItem() instanceof GunItem;
-        this.model.rightArmPose = gunner
-                ? HumanoidModel.ArmPose.CROSSBOW_HOLD
-                : HumanoidModel.ArmPose.EMPTY;
-        this.model.leftArmPose = HumanoidModel.ArmPose.EMPTY;
         super.render(entity, entityYaw, partialTicks, poseStack, buffer, packedLight);
     }
 
@@ -109,8 +109,22 @@ public class ArmySoldierRenderer
             case 15 -> MACE_SOLDIER;
             case 16 -> VILLAGER_ARCHER_SOLDIER;
             case 17 -> VILLAGER_PRIEST_SOLDIER;
+            case 18 -> PIGLIN_SHIELD_SOLDIER;
             default -> ZOMBIE;
         };
+    }
+
+    /** 优先使用服务端同步的挥砍时刻，保证原版挥动状态丢失时仍能完整播放动作。 */
+    @Override
+    protected float getAttackAnim(AbstractArmySoldier entity, float partialTicks) {
+        if (entity.getRole().isGunner()) return 0.0f;
+        if (entity.isUsingItem()
+                && entity.getUsedItemHand() == InteractionHand.MAIN_HAND
+                && entity.getUseItem().getUseAnimation() == UseAnim.BOW) {
+            return 0.0f;
+        }
+        float anim = super.getAttackAnim(entity, partialTicks);
+        return Math.max(anim, entity.getMeleeAttackAnimationProgress(partialTicks));
     }
 
     /**
@@ -126,6 +140,64 @@ public class ArmySoldierRenderer
             float tilt = Mth.lerp(swim, 0.0F, -10.0F - entity.getXRot());
             poseStack.rotateAround(Axis.XP.rotationDegrees(tilt),
                     0.0F, entity.getBbHeight() / 2.0F / scale, 0.0F);
+        }
+    }
+
+    private static void applyArmPoses(HumanoidModel<AbstractArmySoldier> model,
+                                      AbstractArmySoldier entity) {
+        boolean drawingBow = entity.isUsingItem()
+                && entity.getUsedItemHand() == InteractionHand.MAIN_HAND
+                && entity.getUseItem().getUseAnimation() == UseAnim.BOW;
+        if (drawingBow) {
+            model.rightArmPose = HumanoidModel.ArmPose.BOW_AND_ARROW;
+            model.leftArmPose = HumanoidModel.ArmPose.BOW_AND_ARROW;
+        } else {
+            model.rightArmPose = entity.getMainHandItem().getItem() instanceof GunItem
+                    ? HumanoidModel.ArmPose.CROSSBOW_HOLD
+                    : HumanoidModel.ArmPose.EMPTY;
+            model.leftArmPose = HumanoidModel.ArmPose.EMPTY;
+        }
+        ShieldGuardPose.apply(model, entity);
+    }
+
+    private static final class SoldierZombieModel extends HumanoidModel<AbstractArmySoldier> {
+        private SoldierZombieModel(ModelPart part) {
+            super(part);
+        }
+
+        @Override
+        public void setupAnim(AbstractArmySoldier entity, float limbSwing, float limbSwingAmount,
+                              float ageInTicks, float netHeadYaw, float headPitch) {
+            applyArmPoses(this, entity);
+            super.setupAnim(entity, limbSwing, limbSwingAmount, ageInTicks, netHeadYaw, headPitch);
+        }
+    }
+
+    private static final class SoldierSkeletonModel
+            extends SkeletonModel<AbstractArmySoldier> {
+        private SoldierSkeletonModel(ModelPart part) {
+            super(part);
+        }
+
+        @Override
+        public void setupAnim(AbstractArmySoldier entity, float limbSwing, float limbSwingAmount,
+                              float ageInTicks, float netHeadYaw, float headPitch) {
+            applyArmPoses(this, entity);
+            super.setupAnim(entity, limbSwing, limbSwingAmount, ageInTicks, netHeadYaw, headPitch);
+        }
+    }
+
+    private static final class SoldierPlayerModel
+            extends PlayerModel<AbstractArmySoldier> {
+        private SoldierPlayerModel(ModelPart part, boolean slim) {
+            super(part, slim);
+        }
+
+        @Override
+        public void setupAnim(AbstractArmySoldier entity, float limbSwing, float limbSwingAmount,
+                              float ageInTicks, float netHeadYaw, float headPitch) {
+            applyArmPoses(this, entity);
+            super.setupAnim(entity, limbSwing, limbSwingAmount, ageInTicks, netHeadYaw, headPitch);
         }
     }
 }

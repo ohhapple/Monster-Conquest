@@ -2,6 +2,7 @@ package com.ohhapple.monster_conquest.entity.commanders;
 
 import com.ohhapple.monster_conquest.army.EquipmentTier;
 import com.ohhapple.monster_conquest.army.FactionIds;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.EntityType;
@@ -21,7 +22,9 @@ public class NetherCommander extends AbstractArmyCommander {
     @Override public double getCommanderArmor()               { return 3.0; }
     @Override public double getCommanderKnockbackResistance() { return 0.5; }
     @Override public float  getCommanderRangedDamage()        { return 4.0f; }
-    @Override public double getCommanderFollowRange()         { return 128.0; }
+    @Override public double getCommanderFollowRange() {
+        return Math.min(128.0, GeneralConfig.armyFollowRange);
+    }
     @Override public int    getCommanderXpReward()            { return 60; }
     @Override public EquipmentTier getCommanderTier()         { return EquipmentTier.TIER_4; }
 

@@ -20,7 +20,7 @@ import java.util.Optional;
 public class GuideBookScreen extends Screen {
 
     private static final int PADDING = 10;
-    private static final int SIDEBAR_WIDTH = 116;
+    private static final int DEFAULT_SIDEBAR_WIDTH = 116;
     private static final int ROW_HEIGHT = 20;
     private static final int LINE_HEIGHT = 11;
     /** 正文左留白 / 右留白：右侧留白较小，让文字尽量靠近书页边框。 */
@@ -77,7 +77,10 @@ public class GuideBookScreen extends Screen {
     private int viewHeight() { return Math.max(1, listHeight() - 8); }
 
     private int listX() { return PADDING; }
-    private int contentX() { return listX() + SIDEBAR_WIDTH + PADDING; }
+    private int sidebarWidth() {
+        return Math.max(58, Math.min(DEFAULT_SIDEBAR_WIDTH, this.width / 3));
+    }
+    private int contentX() { return listX() + sidebarWidth() + PADDING; }
     private int contentW() { return this.width - contentX() - PADDING; }
 
     /** 正文可写宽度：面板宽度减去左右留白。 */
@@ -202,19 +205,19 @@ public class GuideBookScreen extends Screen {
 
         // ===================== 左侧目录（与书页同款纸张风格） =====================
         int listX = listX();
-        g.fill(listX, top, listX + SIDEBAR_WIDTH, bottom, COLOR_PANEL);
-        drawBorder(g, listX, top, listX + SIDEBAR_WIDTH, bottom);
+        g.fill(listX, top, listX + sidebarWidth(), bottom, COLOR_PANEL);
+        drawBorder(g, listX, top, listX + sidebarWidth(), bottom);
 
         for (int i = 0; i < chapters.size(); i++) {
             int rowY = top + i * ROW_HEIGHT;
             if (rowY + ROW_HEIGHT > bottom) break;
             boolean sel = i == selected;
-            boolean hovered = mouseX >= listX && mouseX < listX + SIDEBAR_WIDTH
+            boolean hovered = mouseX >= listX && mouseX < listX + sidebarWidth()
                     && mouseY >= rowY && mouseY < rowY + ROW_HEIGHT;
             if (sel) {
-                g.fill(listX + 2, rowY + 1, listX + SIDEBAR_WIDTH - 2, rowY + ROW_HEIGHT - 1, COLOR_ROW_SELECTED);
+                g.fill(listX + 2, rowY + 1, listX + sidebarWidth() - 2, rowY + ROW_HEIGHT - 1, COLOR_ROW_SELECTED);
             } else if (hovered) {
-                g.fill(listX + 2, rowY + 1, listX + SIDEBAR_WIDTH - 2, rowY + ROW_HEIGHT - 1, COLOR_ROW_HOVER);
+                g.fill(listX + 2, rowY + 1, listX + sidebarWidth() - 2, rowY + ROW_HEIGHT - 1, COLOR_ROW_HOVER);
             }
             g.drawString(font, chapters.get(i).title(), listX + 8, rowY + 6,
                     sel ? 0xFF4A2A10 : COLOR_SIDEBAR_TEXT, false);
@@ -296,7 +299,7 @@ public class GuideBookScreen extends Screen {
         int top = top();
         int bottom = bottom();
         int listX = listX();
-        if (mouseX >= listX && mouseX < listX + SIDEBAR_WIDTH) {
+        if (mouseX >= listX && mouseX < listX + sidebarWidth()) {
             int idx = (int) ((mouseY - top) / ROW_HEIGHT);
             if (mouseY >= top && mouseY < bottom && idx >= 0 && idx < chapters.size()
                     && top + idx * ROW_HEIGHT + ROW_HEIGHT <= bottom) {

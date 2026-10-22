@@ -2,6 +2,7 @@ package com.ohhapple.monster_conquest.entity.commanders;
 
 import com.ohhapple.monster_conquest.army.EquipmentTier;
 import com.ohhapple.monster_conquest.army.FactionIds;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.EntityType;
@@ -16,12 +17,14 @@ public class VillagerCommander extends AbstractArmyCommander {
     @Override public ResourceLocation getDefaultFactionId() { return FactionIds.VILLAGER; }
 
     // ===================== 基础数值 =====================
-    @Override public double getCommanderMaxHealth()           { return 150.0; }
+    @Override public double getCommanderMaxHealth()           { return 110.0; }
     @Override public double getCommanderAttackDamage()        { return 7.0; }
     @Override public double getCommanderArmor()               { return 5.0; }
     @Override public double getCommanderKnockbackResistance() { return 0.6; }
     @Override public float  getCommanderRangedDamage()        { return 3.0f; }
-    @Override public double getCommanderFollowRange()         { return 128.0; }
+    @Override public double getCommanderFollowRange() {
+        return Math.min(128.0, GeneralConfig.armyFollowRange);
+    }
     @Override public int    getCommanderXpReward()            { return 50; }
     @Override public EquipmentTier getCommanderTier()         { return EquipmentTier.TIER_4; }
 

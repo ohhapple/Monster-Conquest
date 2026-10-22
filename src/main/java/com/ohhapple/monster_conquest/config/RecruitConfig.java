@@ -66,10 +66,13 @@ public final class RecruitConfig {
             Map.entry("soldier_witch", "26/8, 39/16, 52/24, 65/8, 82/4"),
             Map.entry("soldier_villager_priest", "26/8, 39/16, 52/24, 65/8, 82/4"),
             Map.entry("soldier_evoker", "30/10, 45/20, 60/30, 75/10, 94/5"),
+            Map.entry("soldier_piglin_shield", "16/5, 24/10, 32/16, 40/5, 52/3"),
             Map.entry("soldier_gunner_rifle", "34/11, 51/22, 68/33, 85/11, 106/5"),
             Map.entry("soldier_gunner_shotgun", "38/12, 57/24, 76/36, 95/12, 118/6"),
             Map.entry("soldier_gunner_rocket", "38/12, 57/24, 76/36, 95/12, 118/6"),
-            Map.entry("soldier_gunner_sniper", "42/13, 63/26, 84/39, 105/13, 130/6")
+            Map.entry("soldier_gunner_sniper", "42/13, 63/26, 84/39, 105/13, 130/6"),
+            Map.entry("soldier_vex", "30/10, 30/10, 30/10, 30/10, 30/10"),
+            Map.entry("soldier_allay", "30/10, 30/10, 30/10, 30/10, 30/10")
     );
 
     /** 每名士兵一个配置项（按兵种表顺序）。 */

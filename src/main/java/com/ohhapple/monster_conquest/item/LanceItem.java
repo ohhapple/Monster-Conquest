@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.item;
 
 import net.minecraft.ChatFormatting;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -8,6 +9,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Tier;
 import net.minecraft.world.item.TooltipFlag;
+import net.minecraft.world.item.component.CustomModelData;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
@@ -22,6 +24,9 @@ import java.util.List;
  */
 public class LanceItem extends Item {
 
+    /** custom_model_data：骑枪冲锋 / 穿越时使用的平放模型。 */
+    public static final int CHARGING_MODEL_DATA = 1;
+
     private final Tier tier;
     private final float baseDamage;
 
@@ -33,6 +38,24 @@ public class LanceItem extends Item {
 
     public Tier getTier() { return tier; }
     public float getBaseDamage() { return baseDamage; }
+
+    public static boolean hasChargingModel(ItemStack stack) {
+        CustomModelData data = stack.get(DataComponents.CUSTOM_MODEL_DATA);
+        return data != null && data.value() == CHARGING_MODEL_DATA;
+    }
+
+    /**
+     * 写入 / 清除冲锋模型状态。
+     *   调用方必须传入可安全修改的副本，并通过 setItemSlot 同步给客户端。
+     */
+    public static void setChargingModel(ItemStack stack, boolean charging) {
+        if (charging) {
+            stack.set(DataComponents.CUSTOM_MODEL_DATA,
+                    new CustomModelData(CHARGING_MODEL_DATA));
+        } else {
+            stack.remove(DataComponents.CUSTOM_MODEL_DATA);
+        }
+    }
 
     public float getChargeDamage(LivingEntity attacker) {
         if (!attacker.isPassenger()) return baseDamage;

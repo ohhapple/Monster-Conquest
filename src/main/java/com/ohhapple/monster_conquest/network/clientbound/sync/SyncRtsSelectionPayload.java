@@ -3,6 +3,8 @@ package com.ohhapple.monster_conquest.network.clientbound.sync;
 import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.network.ClientboundPayloadRouter;
 import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.ComponentSerialization;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
@@ -19,9 +21,11 @@ import java.util.UUID;
  * 服务端 → 客户端：
  *   · soldierUuids：当前选中所有小队里的士兵 UUID（渲染脚下绿框）
  *   · moveMarker：右键移动的目标位置（渲染方块黄框），null = 无
+ *   · feedback：RTS 界面底部的一次性命令提示，null = 无
  */
 public record SyncRtsSelectionPayload(Set<UUID> soldierUuids,
-                                      @Nullable Vec3 moveMarker)
+                                      @Nullable Vec3 moveMarker,
+                                      @Nullable Component feedback)
         implements CustomPacketPayload {
 
     public static final Type<SyncRtsSelectionPayload> TYPE =
@@ -39,7 +43,10 @@ public record SyncRtsSelectionPayload(Set<UUID> soldierUuids,
                     Vec3 marker = hasMarker
                             ? new Vec3(buf.readDouble(), buf.readDouble(), buf.readDouble())
                             : null;
-                    return new SyncRtsSelectionPayload(set, marker);
+                    Component feedback = buf.readBoolean()
+                            ? ComponentSerialization.STREAM_CODEC.decode(buf)
+                            : null;
+                    return new SyncRtsSelectionPayload(set, marker, feedback);
                 }
                 @Override
                 public void encode(RegistryFriendlyByteBuf buf, SyncRtsSelectionPayload p) {
@@ -54,8 +61,17 @@ public record SyncRtsSelectionPayload(Set<UUID> soldierUuids,
                         buf.writeDouble(m.y);
                         buf.writeDouble(m.z);
                     }
+                    Component feedback = p.feedback();
+                    buf.writeBoolean(feedback != null);
+                    if (feedback != null) {
+                        ComponentSerialization.STREAM_CODEC.encode(buf, feedback);
+                    }
                 }
             };
+
+    public SyncRtsSelectionPayload(Set<UUID> soldierUuids, @Nullable Vec3 moveMarker) {
+        this(soldierUuids, moveMarker, null);
+    }
 
     @Override public @NotNull Type<? extends CustomPacketPayload> type() { return TYPE; }
 

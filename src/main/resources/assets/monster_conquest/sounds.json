@@ -23,6 +23,12 @@
       "monster_conquest:gun/sniper_shoot"
     ]
   },
+  "gun.bullet_flyby": {
+    "subtitle": "subtitles.monster_conquest.gun.bullet_flyby",
+    "sounds": [
+      "monster_conquest:gun/bullet_flyby"
+    ]
+  },
   "gun.bullet_hit": {
     "subtitle": "subtitles.monster_conquest.gun.bullet_hit",
     "sounds": [

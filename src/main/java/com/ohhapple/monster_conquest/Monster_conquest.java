@@ -1,12 +1,14 @@
 package com.ohhapple.monster_conquest;
 
-import com.mojang.logging.LogUtils;
 import com.ohhapple.monster_conquest.army.EquipmentTier;
 import com.ohhapple.monster_conquest.army.FactionIds;
 import com.ohhapple.monster_conquest.army.FactionRegistry;
-import com.ohhapple.monster_conquest.army.SoldierType;
 import com.ohhapple.monster_conquest.army.factions.*;
+import com.ohhapple.monster_conquest.army.GuardAttributes;
+import com.ohhapple.monster_conquest.army.SoldierType;
 import com.ohhapple.monster_conquest.block.RecruitmentStationBlock;
+import com.ohhapple.monster_conquest.block.SpawnPointBlock;
+import com.ohhapple.monster_conquest.block.SpawnPointBlockEntity;
 import com.ohhapple.monster_conquest.block.TradeStationBlock;
 import com.ohhapple.monster_conquest.config.CombatConfig;
 import com.ohhapple.monster_conquest.config.FactionConfig;
@@ -15,54 +17,75 @@ import com.ohhapple.monster_conquest.config.PlayerConfig;
 import com.ohhapple.monster_conquest.config.RecruitConfig;
 import com.ohhapple.monster_conquest.effect.ModEffects;
 import com.ohhapple.monster_conquest.entity.ModEntities;
+import com.ohhapple.monster_conquest.equipment.ModAttachments;
 import com.ohhapple.monster_conquest.gun.*;
 import com.ohhapple.monster_conquest.item.*;
+import com.ohhapple.monster_conquest.menu.ModMenus;
 import com.ohhapple.monster_conquest.network.*;
 import com.ohhapple.monster_conquest.network.clientbound.faction.FactionAllySnapshotPayload;
 import com.ohhapple.monster_conquest.network.clientbound.faction.FactionHostilitySnapshotPayload;
 import com.ohhapple.monster_conquest.network.clientbound.faction.OpenFactionGuiPayload;
 import com.ohhapple.monster_conquest.network.clientbound.gun.GunStatusPayload;
 import com.ohhapple.monster_conquest.network.clientbound.gun.SyncEquipmentPayload;
+import com.ohhapple.monster_conquest.network.clientbound.path.SyncPathRoutePayload;
 import com.ohhapple.monster_conquest.network.clientbound.recruit.OpenRecruitGuiPayload;
-import com.ohhapple.monster_conquest.network.clientbound.trade.OpenTradeGuiPayload;
-import com.ohhapple.monster_conquest.network.serverbound.gun.GunFirePayload;
-import com.ohhapple.monster_conquest.network.serverbound.gun.OpenTacticalEquipmentSlotsPayload;
-import com.ohhapple.monster_conquest.network.serverbound.gun.OpenAmmoBoxFromSlotPayload;
-import com.ohhapple.monster_conquest.network.serverbound.recruit.RecruitSoldierPayload;
-import com.ohhapple.monster_conquest.network.serverbound.recruit.UpgradeSoldierPayload;
-import com.ohhapple.monster_conquest.network.serverbound.trade.BuyTradeOfferPayload;
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncRtsSelectionPayload;
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncSquadPayload;
+import com.ohhapple.monster_conquest.network.clientbound.trade.OpenTradeGuiPayload;
 import com.ohhapple.monster_conquest.network.serverbound.command.PlayerCommandPayload;
 import com.ohhapple.monster_conquest.network.serverbound.command.SelectSquadPayload;
+import com.ohhapple.monster_conquest.network.serverbound.backpack.OpenBackpackFromSlotPayload;
+import com.ohhapple.monster_conquest.network.serverbound.backpack.OpenEquippedBackpackPayload;
 import com.ohhapple.monster_conquest.network.serverbound.egg.CycleEggFactionPayload;
 import com.ohhapple.monster_conquest.network.serverbound.egg.ToggleEggCavalryPayload;
 import com.ohhapple.monster_conquest.network.serverbound.faction.DeleteFactionPayload;
 import com.ohhapple.monster_conquest.network.serverbound.faction.RequestOpenFactionGuiPayload;
 import com.ohhapple.monster_conquest.network.serverbound.faction.ToggleFactionAllyPayload;
 import com.ohhapple.monster_conquest.network.serverbound.faction.ToggleFactionHostilityPayload;
+import com.ohhapple.monster_conquest.network.serverbound.gun.GunFirePayload;
+import com.ohhapple.monster_conquest.network.serverbound.gun.OpenAmmoBoxFromSlotPayload;
+import com.ohhapple.monster_conquest.network.serverbound.gun.OpenTacticalEquipmentSlotsPayload;
 import com.ohhapple.monster_conquest.network.serverbound.item.*;
+import com.ohhapple.monster_conquest.network.serverbound.path.PathToolModePayload;
+import com.ohhapple.monster_conquest.network.serverbound.path.PathToolSelectPayload;
+import com.ohhapple.monster_conquest.network.serverbound.recruit.RecruitSoldierPayload;
+import com.ohhapple.monster_conquest.network.serverbound.recruit.UpgradeSoldierPayload;
 import com.ohhapple.monster_conquest.network.serverbound.rts.*;
+import com.ohhapple.monster_conquest.network.serverbound.spawn.OpenSpawnPointEditorPayload;
+import com.ohhapple.monster_conquest.network.serverbound.spawn.SpawnPointConfigPayload;
+import com.ohhapple.monster_conquest.network.serverbound.trade.BuyTradeOfferPayload;
+import com.ohhapple.monster_conquest.network.serverbound.unit.UnitControlPayload;
+import com.ohhapple.monster_conquest.network.serverbound.unit.UnitRetrievePayload;
+
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlotGroup;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.ai.attributes.AttributeModifier;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.*;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
+import net.minecraft.world.level.block.entity.BlockEntityType;
+import net.minecraft.world.level.block.SoundType;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.material.MapColor;
+
 import net.neoforged.bus.api.IEventBus;
-import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.neoforged.fml.ModContainer;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
+import net.neoforged.neoforge.registries.DeferredBlock;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
+
 import org.slf4j.Logger;
+
+import com.mojang.logging.LogUtils;
 
 @Mod(Monster_conquest.MODID)
 public class Monster_conquest {
@@ -72,6 +95,8 @@ public class Monster_conquest {
 
     public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(MODID);
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MODID);
+    public static final DeferredRegister<BlockEntityType<?>> BLOCK_ENTITIES =
+            DeferredRegister.create(Registries.BLOCK_ENTITY_TYPE, MODID);
     public static final DeferredRegister<CreativeModeTab> CREATIVE_MODE_TABS =
             DeferredRegister.create(Registries.CREATIVE_MODE_TAB, MODID);
 
@@ -186,6 +211,19 @@ public class Monster_conquest {
             DeferredHolder<EntityType<?>, ? extends EntityType<? extends Mob>> type,
             SoldierType def) {
         return ITEMS.register(id, () -> new SoldierSpawnEggItem(type, def, tier, new Item.Properties()));
+    }
+
+    /** 飞行单位仍可拥有普通 T0~T4；该工厂只用于恼鬼、悦灵这类固定等级特例。 */
+    private static DeferredItem<SoldierSpawnEggItem> fixedTierFlyingEgg(
+            String id,
+            DeferredHolder<EntityType<?>, ? extends EntityType<? extends Mob>> type) {
+        return ITEMS.register(id, () -> new SoldierSpawnEggItem(
+                type,
+                SoldierType.FLYING,
+                EquipmentTier.TIER_0,
+                true,
+                false,
+                new Item.Properties().rarity(Rarity.UNCOMMON)));
     }
 
     // ===================== 僵尸 =====================
@@ -383,6 +421,13 @@ public class Monster_conquest {
     public static final DeferredItem<SoldierSpawnEggItem> EGG_EVOKER_T4 =
             soldierEgg("soldier_evoker_tier_4", EquipmentTier.TIER_4, ModEntities.EVOKER_SOLDIER, SoldierType.MAGE_INFANTRY);
 
+    // ===================== 固定等级飞行单位（当前恼鬼 / 悦灵） =====================
+
+    public static final DeferredItem<SoldierSpawnEggItem> EGG_VEX_FLYING =
+            fixedTierFlyingEgg("soldier_vex", ModEntities.VEX_FLYING);
+    public static final DeferredItem<SoldierSpawnEggItem> EGG_ALLAY_FLYING =
+            fixedTierFlyingEgg("soldier_allay", ModEntities.ALLAY_FLYING);
+
     // ===================== 村民重锤兵（近战 · 破甲重锤） =====================
 
     public static final DeferredItem<SoldierSpawnEggItem> EGG_MACE_T0 =
@@ -421,6 +466,19 @@ public class Monster_conquest {
             soldierEgg("soldier_villager_priest_tier_3", EquipmentTier.TIER_3, ModEntities.VILLAGER_PRIEST_SOLDIER, SoldierType.THROWER_INFANTRY);
     public static final DeferredItem<SoldierSpawnEggItem> EGG_VILLAGER_PRIEST_T4 =
             soldierEgg("soldier_villager_priest_tier_4", EquipmentTier.TIER_4, ModEntities.VILLAGER_PRIEST_SOLDIER, SoldierType.THROWER_INFANTRY);
+
+    // ===================== 猪灵盾兵（剑盾 · 低攻击频率） =====================
+
+    public static final DeferredItem<SoldierSpawnEggItem> EGG_PIGLIN_SHIELD_T0 =
+            soldierEgg("soldier_piglin_shield_tier_0", EquipmentTier.TIER_0, ModEntities.PIGLIN_SHIELD_SOLDIER, SoldierType.MELEE_INFANTRY);
+    public static final DeferredItem<SoldierSpawnEggItem> EGG_PIGLIN_SHIELD_T1 =
+            soldierEgg("soldier_piglin_shield_tier_1", EquipmentTier.TIER_1, ModEntities.PIGLIN_SHIELD_SOLDIER, SoldierType.MELEE_INFANTRY);
+    public static final DeferredItem<SoldierSpawnEggItem> EGG_PIGLIN_SHIELD_T2 =
+            soldierEgg("soldier_piglin_shield_tier_2", EquipmentTier.TIER_2, ModEntities.PIGLIN_SHIELD_SOLDIER, SoldierType.MELEE_INFANTRY);
+    public static final DeferredItem<SoldierSpawnEggItem> EGG_PIGLIN_SHIELD_T3 =
+            soldierEgg("soldier_piglin_shield_tier_3", EquipmentTier.TIER_3, ModEntities.PIGLIN_SHIELD_SOLDIER, SoldierType.MELEE_INFANTRY);
+    public static final DeferredItem<SoldierSpawnEggItem> EGG_PIGLIN_SHIELD_T4 =
+            soldierEgg("soldier_piglin_shield_tier_4", EquipmentTier.TIER_4, ModEntities.PIGLIN_SHIELD_SOLDIER, SoldierType.MELEE_INFANTRY);
 
     // ===================== 枪械与弹药 =====================
 
@@ -482,8 +540,8 @@ public class Monster_conquest {
                             .rarity(Rarity.UNCOMMON)));
 
     /** 背包：72 格容器（8 排 × 9 格）；右键 / 战术装备栏里按 B 键打开；枪械与设施会直接读取里面的物品。 */
-    public static final DeferredItem<com.ohhapple.monster_conquest.item.BackpackItem> BACKPACK =
-            ITEMS.register("backpack", () -> new com.ohhapple.monster_conquest.item.BackpackItem(
+    public static final DeferredItem<BackpackItem> BACKPACK =
+            ITEMS.register("backpack", () -> new BackpackItem(
                     new Item.Properties().stacksTo(1).rarity(Rarity.UNCOMMON)));
 
     // ===================== 骑枪 =====================
@@ -547,9 +605,9 @@ public class Monster_conquest {
                             new Item.Properties().stacksTo(1).rarity(Rarity.RARE)));
 
     /** 说明书：右键打开模组玩法 / RTS / 阵营 / 士兵等详细说明。 */
-    public static final DeferredItem<com.ohhapple.monster_conquest.item.GuideBookItem> GUIDE_BOOK =
+    public static final DeferredItem<GuideBookItem> GUIDE_BOOK =
             ITEMS.register("guide_book",
-                    () -> new com.ohhapple.monster_conquest.item.GuideBookItem(
+                    () -> new GuideBookItem(
                             new Item.Properties().stacksTo(1).rarity(Rarity.RARE)));
 
     // 控制工具
@@ -562,14 +620,22 @@ public class Monster_conquest {
             ITEMS.register("tab_icon",
                     () -> new Item(new Item.Properties()));
 
+    // ===================== 路径点工具 =====================
+
+    public static final DeferredItem<PathToolItem> PATH_TOOL =
+            ITEMS.register("path_tool",
+                    () -> new PathToolItem(
+                            new Item.Properties().stacksTo(1).rarity(Rarity.RARE)));
+
     // ===================== 募兵站（方块 + 物品） =====================
 
-    public static final net.neoforged.neoforge.registries.DeferredBlock<RecruitmentStationBlock> RECRUITMENT_STATION =
+    public static final DeferredBlock<RecruitmentStationBlock> RECRUITMENT_STATION =
             BLOCKS.register("recruitment_station", () -> new RecruitmentStationBlock(
-                    net.minecraft.world.level.block.state.BlockBehaviour.Properties.of()
-                            .mapColor(net.minecraft.world.level.material.MapColor.STONE)
+                    BlockBehaviour.Properties.of()
+                            .mapColor(MapColor.STONE)
                             .strength(3.5f)
-                            .sound(net.minecraft.world.level.block.SoundType.STONE)));
+                            .requiresCorrectToolForDrops()
+                            .sound(SoundType.STONE)));
 
     public static final DeferredItem<BlockItem> RECRUITMENT_STATION_ITEM =
             ITEMS.register("recruitment_station", () -> new BlockItem(
@@ -577,16 +643,36 @@ public class Monster_conquest {
 
     // ===================== 交易站（方块 + 物品） =====================
 
-    public static final net.neoforged.neoforge.registries.DeferredBlock<TradeStationBlock> TRADE_STATION =
+    public static final DeferredBlock<TradeStationBlock> TRADE_STATION =
             BLOCKS.register("trade_station", () -> new TradeStationBlock(
-                    net.minecraft.world.level.block.state.BlockBehaviour.Properties.of()
-                            .mapColor(net.minecraft.world.level.material.MapColor.WOOD)
+                    BlockBehaviour.Properties.of()
+                            .mapColor(MapColor.WOOD)
                             .strength(3.5f)
-                            .sound(net.minecraft.world.level.block.SoundType.WOOD)));
+                            .requiresCorrectToolForDrops()
+                            .sound(SoundType.WOOD)));
 
     public static final DeferredItem<BlockItem> TRADE_STATION_ITEM =
             ITEMS.register("trade_station", () -> new BlockItem(
                     TRADE_STATION.get(), new Item.Properties()));
+
+    // ===================== 刷怪点（方块 + 物品 + 方块实体） =====================
+
+    public static final DeferredBlock<SpawnPointBlock> SPAWN_POINT =
+            BLOCKS.register("spawn_point", () -> new SpawnPointBlock(
+                    BlockBehaviour.Properties.of()
+                            .mapColor(MapColor.DEEPSLATE)
+                            .strength(3.5f)
+                            .requiresCorrectToolForDrops()
+                            .sound(SoundType.DEEPSLATE)));
+
+    public static final DeferredItem<BlockItem> SPAWN_POINT_ITEM =
+            ITEMS.register("spawn_point", () -> new SpawnPointBlockItem(
+                    SPAWN_POINT.get(), new Item.Properties()));
+
+    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<SpawnPointBlockEntity>> SPAWN_POINT_BE =
+            BLOCK_ENTITIES.register("spawn_point", () -> BlockEntityType.Builder
+                    .of(SpawnPointBlockEntity::new, SPAWN_POINT.get())
+                    .build(null));
 
     // ===================== 创造模式标签页 =====================
 
@@ -595,6 +681,7 @@ public class Monster_conquest {
                     .title(Component.translatable("itemGroup.monster_conquest"))
                     .withTabsBefore(CreativeModeTabs.COMBAT)
                     .icon(() -> TAB_ICON.get().getDefaultInstance())
+                    .withTabFactory(MonsterConquestCreativeTab::new)
                     .displayItems((params, output) -> {
                         // 7 个阵营首领
                         output.accept(UNDEAD_COMMANDER_EGG.get());
@@ -719,6 +806,10 @@ public class Monster_conquest {
                         output.accept(EGG_EVOKER_T3.get());
                         output.accept(EGG_EVOKER_T4.get());
 
+                        // 召唤物士兵
+                        output.accept(EGG_VEX_FLYING.get());
+                        output.accept(EGG_ALLAY_FLYING.get());
+
                         // 村民重锤兵
                         output.accept(EGG_MACE_T0.get());
                         output.accept(EGG_MACE_T1.get());
@@ -739,6 +830,13 @@ public class Monster_conquest {
                         output.accept(EGG_VILLAGER_PRIEST_T2.get());
                         output.accept(EGG_VILLAGER_PRIEST_T3.get());
                         output.accept(EGG_VILLAGER_PRIEST_T4.get());
+
+                        // 猪灵盾兵
+                        output.accept(EGG_PIGLIN_SHIELD_T0.get());
+                        output.accept(EGG_PIGLIN_SHIELD_T1.get());
+                        output.accept(EGG_PIGLIN_SHIELD_T2.get());
+                        output.accept(EGG_PIGLIN_SHIELD_T3.get());
+                        output.accept(EGG_PIGLIN_SHIELD_T4.get());
 
                         // 枪械
                         output.accept(RIFLE.get());
@@ -766,13 +864,33 @@ public class Monster_conquest {
                         output.accept(HATRED_WAND.get());
                         output.accept(RETRIEVAL_TOOL.get());
                         output.accept(CONTROL_TOOL.get());
-                        // 设施方块：募兵站 / 交易站
+                        output.accept(PATH_TOOL.get());
+                        // 设施方块：募兵站 / 交易站 / 刷怪点
                         output.accept(RECRUITMENT_STATION_ITEM.get());
                         output.accept(TRADE_STATION_ITEM.get());
+                        output.accept(SPAWN_POINT_ITEM.get());
                         // 指南
                         output.accept(GUIDE_BOOK.get());
                     })
                     .build());
+
+    /**
+     * 阵营 / 骑乘开关会写入刷怪蛋组件。原版创造页按完整组件匹配物品，
+     * 写入后会把变体误判为不属于本模组页，使得物品栏提示里的“怪物征伐”消失。
+     * 本模组创造页中的所有同类物品都代表同一个目录条目，因此这里按物品身份判断归属。
+     */
+    private static final class MonsterConquestCreativeTab extends CreativeModeTab {
+        private MonsterConquestCreativeTab(CreativeModeTab.Builder builder) {
+            super(builder);
+        }
+
+        @Override
+        public boolean contains(ItemStack stack) {
+            if (super.contains(stack)) return true;
+            return this.getSearchTabDisplayItems().stream()
+                    .anyMatch(candidate -> ItemStack.isSameItem(candidate, stack));
+        }
+    }
 
     // ===================== 构造 =====================
 
@@ -783,11 +901,13 @@ public class Monster_conquest {
         ModEntities.ENTITY_TYPES.register(modEventBus);
         BLOCKS.register(modEventBus);
         ITEMS.register(modEventBus);
+        BLOCK_ENTITIES.register(modEventBus);
         CREATIVE_MODE_TABS.register(modEventBus);
         ModEffects.EFFECTS.register(modEventBus);
         ModSounds.SOUND_EVENTS.register(modEventBus);
-        com.ohhapple.monster_conquest.menu.ModMenus.MENUS.register(modEventBus);
-        com.ohhapple.monster_conquest.equipment.ModAttachments.ATTACHMENTS.register(modEventBus);
+        GuardAttributes.ATTRIBUTES.register(modEventBus);
+        ModMenus.MENUS.register(modEventBus);
+        ModAttachments.ATTACHMENTS.register(modEventBus);
 
         // 配置文件按分类拆分，统一放在 config/monster_conquest/ 目录下
         modContainer.registerConfig(ModConfig.Type.COMMON, GeneralConfig.SPEC,
@@ -831,36 +951,32 @@ public class Monster_conquest {
                 RecruitSoldierPayload::handle);
         reg.playToServer(UpgradeSoldierPayload.TYPE, UpgradeSoldierPayload.STREAM_CODEC,
                 UpgradeSoldierPayload::handle);
+        reg.playToServer(SpawnPointConfigPayload.TYPE, SpawnPointConfigPayload.STREAM_CODEC,
+                SpawnPointConfigPayload::handle);
+        reg.playToServer(OpenSpawnPointEditorPayload.TYPE, OpenSpawnPointEditorPayload.STREAM_CODEC,
+                OpenSpawnPointEditorPayload::handle);
+        reg.playToServer(PathToolModePayload.TYPE, PathToolModePayload.STREAM_CODEC,
+                PathToolModePayload::handle);
+        reg.playToServer(PathToolSelectPayload.TYPE, PathToolSelectPayload.STREAM_CODEC,
+                PathToolSelectPayload::handle);
         reg.playToServer(BuyTradeOfferPayload.TYPE, BuyTradeOfferPayload.STREAM_CODEC,
                 BuyTradeOfferPayload::handle);
-        reg.playToServer(com.ohhapple.monster_conquest.network.serverbound.backpack
-                        .OpenBackpackFromSlotPayload.TYPE,
-                com.ohhapple.monster_conquest.network.serverbound.backpack
-                        .OpenBackpackFromSlotPayload.STREAM_CODEC,
-                com.ohhapple.monster_conquest.network.serverbound.backpack
-                        .OpenBackpackFromSlotPayload::handle);
-        reg.playToServer(com.ohhapple.monster_conquest.network.serverbound.backpack
-                        .OpenEquippedBackpackPayload.TYPE,
-                com.ohhapple.monster_conquest.network.serverbound.backpack
-                        .OpenEquippedBackpackPayload.STREAM_CODEC,
-                com.ohhapple.monster_conquest.network.serverbound.backpack
-                        .OpenEquippedBackpackPayload::handle);
+        reg.playToServer(OpenBackpackFromSlotPayload.TYPE,
+                OpenBackpackFromSlotPayload.STREAM_CODEC,
+                OpenBackpackFromSlotPayload::handle);
+        reg.playToServer(OpenEquippedBackpackPayload.TYPE,
+                OpenEquippedBackpackPayload.STREAM_CODEC,
+                OpenEquippedBackpackPayload::handle);
         reg.playToServer(ControlToolModePayload.TYPE, ControlToolModePayload.STREAM_CODEC,
                 ControlToolModePayload::handle);
         reg.playToServer(RetrievalToolModePayload.TYPE, RetrievalToolModePayload.STREAM_CODEC,
                 RetrievalToolModePayload::handle);
-        reg.playToServer(com.ohhapple.monster_conquest.network.serverbound.unit
-                        .UnitControlPayload.TYPE,
-                com.ohhapple.monster_conquest.network.serverbound.unit
-                        .UnitControlPayload.STREAM_CODEC,
-                com.ohhapple.monster_conquest.network.serverbound.unit
-                        .UnitControlPayload::handle);
-        reg.playToServer(com.ohhapple.monster_conquest.network.serverbound.unit
-                        .UnitRetrievePayload.TYPE,
-                com.ohhapple.monster_conquest.network.serverbound.unit
-                        .UnitRetrievePayload.STREAM_CODEC,
-                com.ohhapple.monster_conquest.network.serverbound.unit
-                        .UnitRetrievePayload::handle);
+        reg.playToServer(UnitControlPayload.TYPE,
+                UnitControlPayload.STREAM_CODEC,
+                UnitControlPayload::handle);
+        reg.playToServer(UnitRetrievePayload.TYPE,
+                UnitRetrievePayload.STREAM_CODEC,
+                UnitRetrievePayload::handle);
 
         reg.playToServer(ToggleFactionHostilityPayload.TYPE,
                 ToggleFactionHostilityPayload.STREAM_CODEC,
@@ -926,6 +1042,8 @@ public class Monster_conquest {
         reg.playToClient(OpenRecruitGuiPayload.TYPE, OpenRecruitGuiPayload.STREAM_CODEC,
                 ClientboundPayloadRouter::dispatch);
         reg.playToClient(OpenTradeGuiPayload.TYPE, OpenTradeGuiPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(SyncPathRoutePayload.TYPE, SyncPathRoutePayload.STREAM_CODEC,
                 ClientboundPayloadRouter::dispatch);
     }
 

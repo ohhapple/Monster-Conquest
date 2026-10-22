@@ -25,6 +25,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
@@ -53,6 +54,7 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
     private Caster caster = Caster.WITCH;
     private int tier = 0;
     @Nullable private UUID commanderUuid;
+    @Nullable private UUID intendedTargetUuid;
     @Nullable private ResourceLocation factionId;
 
     public WitchPotionEntity(EntityType<? extends WitchPotionEntity> type, Level level) {
@@ -81,6 +83,11 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
 
     public Caster getCaster() { return caster; }
 
+    /** 治疗药水的目标；只在该目标附近提前结算，避免被路上的友军截胡。 */
+    public void setIntendedTarget(@Nullable UUID targetUuid) {
+        this.intendedTargetUuid = targetUuid;
+    }
+
     @Override
     protected double getDefaultGravity() {
         return FLIGHT_GRAVITY;
@@ -102,9 +109,25 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
                 || e instanceof WarHorseEntity;
     }
 
+    /**
+     * 友军 / 非预定目标不参与投射物命中判定。
+     *
+     *   仅在 onHit 里返回会让射线每 tick 继续选中同一个单位；药水贴着人飞时
+     *   就会一直忽略实体命中，直到越过方块碰撞才停下。直接在命中判定阶段
+     *   排除这些单位，射线会继续检查其后的方块与预定目标。
+     */
+    @Override
+    protected boolean canHitEntity(Entity target) {
+        if (!super.canHitEntity(target)) return false;
+        if (!(target instanceof LivingEntity living)) return true;
+        return kind == Kind.HEAL ? isIntendedTarget(living) : !isAlly(living);
+    }
+
     @Override
     public void tick() {
         super.tick();
+        // 命中方块的 tick 已经在 onHit 里结算并销毁；不要再用邻近判定重复溅射。
+        if (this.isRemoved()) return;
 
         if (level().isClientSide) {
             if (tickCount % 4 == 0) {
@@ -130,7 +153,10 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
                 // 同族和平：不因原版灾厄生物 / 村民 / 铁傀儡而提前引爆。
                 if (NativePeace.isPeacefulPair(potionOwner, e)) continue;
 
-                boolean shouldTrigger = (kind == Kind.HEAL) ? isAlly(e) : !isAlly(e);
+                // 治疗药水只认预定目标；路径上的其他友军不能让药水提前炸开。
+                //   有害药水仍然遇到非友军提前结算，友军会直接穿过。
+                boolean shouldTrigger = (kind == Kind.HEAL)
+                        ? isIntendedTarget(e) : !isAlly(e);
                 // 不允许穿墙：隔着墙的单位不会引爆药水
                 if (shouldTrigger && hasLineOfSight(e)) {
                     applySplash();
@@ -143,8 +169,20 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
 
     @Override
     protected void onHit(HitResult result) {
-        if (!level().isClientSide) applySplash();
+        if (level().isClientSide) return;
+        // 命中判定阶段已经排除穿过的单位；这里再兜底一次，避免事件路径直接送入友军。
+        if (result instanceof EntityHitResult entityHit
+                && !canHitEntity(entityHit.getEntity())) return;
+
+        applySplash();
         super.onHit(result);
+        // ThrowableItemProjectile 不会自动销毁：不显式 discard 时，药水会带着
+        //   当前速度继续穿过后面的方块，并且每 tick 重复结算。
+        this.discard();
+    }
+
+    private boolean isIntendedTarget(Entity entity) {
+        return intendedTargetUuid != null && intendedTargetUuid.equals(entity.getUUID());
     }
 
     private void applySplash() {
@@ -234,6 +272,7 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
         tag.putString("Caster", caster.name());
         tag.putInt("Tier", tier);
         if (commanderUuid != null) tag.putUUID("Cmd", commanderUuid);
+        if (intendedTargetUuid != null) tag.putUUID("IntendedTarget", intendedTargetUuid);
         if (factionId != null) tag.putString("Faction", factionId.toString());
     }
 
@@ -246,6 +285,7 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
         catch (Exception ignored) { caster = Caster.WITCH; }
         tier = tag.getInt("Tier");
         if (tag.hasUUID("Cmd")) commanderUuid = tag.getUUID("Cmd");
+        if (tag.hasUUID("IntendedTarget")) intendedTargetUuid = tag.getUUID("IntendedTarget");
         if (tag.contains("Faction")) factionId = ResourceLocation.tryParse(tag.getString("Faction"));
     }
 }

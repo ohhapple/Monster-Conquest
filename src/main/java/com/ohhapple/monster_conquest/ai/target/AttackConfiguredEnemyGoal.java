@@ -1,31 +1,42 @@
 package com.ohhapple.monster_conquest.ai.target;
 
-import com.ohhapple.monster_conquest.config.FactionConfig;
-import com.ohhapple.monster_conquest.config.GeneralConfig;
-import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
-import com.ohhapple.monster_conquest.army.relation.FactionHostility;
-import com.ohhapple.monster_conquest.army.relation.NativePeace;
+import com.ohhapple.monster_conquest.ai.nav.PathProbe;
+import com.ohhapple.monster_conquest.army.ArmyAnchor;
 import com.ohhapple.monster_conquest.army.FactionIds;
 import com.ohhapple.monster_conquest.army.FactionRegistry;
+import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
+import com.ohhapple.monster_conquest.army.relation.FactionAlly;
+import com.ohhapple.monster_conquest.army.relation.FactionHostility;
+import com.ohhapple.monster_conquest.army.relation.NativePeace;
+import com.ohhapple.monster_conquest.config.FactionConfig;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.player.PlayerArmyManager;
+import com.ohhapple.monster_conquest.player.PlayerCommandState;
+import com.ohhapple.monster_conquest.util.PeacefulUtil;
+
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.player.Player;
+
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -53,6 +64,11 @@ public class AttackConfiguredEnemyGoal extends Goal {
     /** 目标记忆：失去视线后仍继续追击的时长（tick）。8 秒 */
     private static final int TARGET_MEMORY_TICKS = 160;
 
+    /** 严格不可达探测间隔：同一目标至少间隔 2 秒再确认一次。 */
+    private static final int UNREACHABLE_PROBE_INTERVAL_TICKS = 40;
+    /** 连续确认不可达的持续时间：3 次独立探测均失败后才允许放弃。 */
+    private static final int UNREACHABLE_EVIDENCE_TICKS = 80;
+
     /** 每个扫描周期最多做多少次视线检测（防止大范围扫描时射线过多）。 */
     private static final int MAX_LOS_CHECKS = 8;
 
@@ -64,6 +80,13 @@ public class AttackConfiguredEnemyGoal extends Goal {
 
     private final Mob mob;
     private int scanCooldown = -1;
+    private long keepScanTick = -10000L;
+    @Nullable private UUID keepScanTarget;
+    private boolean keepScanResult;
+    @Nullable private UUID unreachableEvidenceTarget;
+    private long unreachableEvidenceSince = -1L;
+    private long unreachableLastProbeTick = -10000L;
+    private int unreachableDefinitiveProbes = 0;
 
     public AttackConfiguredEnemyGoal(Mob mob) {
         this.mob = mob;
@@ -79,7 +102,27 @@ public class AttackConfiguredEnemyGoal extends Goal {
     public boolean canUse() {
 
         // 和平模式：不索敌（单位保留，但没有任何敌意）
-        if (com.ohhapple.monster_conquest.util.PeacefulUtil.isPeaceful(this.mob)) return false;
+        if (PeacefulUtil.isPeaceful(this.mob)) return false;
+
+        // 刚被攻击时优先直接锁定攻击者，不再等 4~20 tick 的扫描冷却。
+        if (this.mob.getTarget() == null) {
+            if (this.mob instanceof AbstractArmySoldier soldier
+                    && soldier.isUnderRecentAttack()) {
+                LivingEntity attacker = soldier.getLastHurtByMob();
+                if (attacker != null && attacker.isAlive() && soldier.canAttack(attacker)) {
+                    soldier.setTarget(attacker);
+                    return true;
+                }
+            } else if (this.mob instanceof AbstractArmyCommander commander
+                    && commander.isUnderRecentAttack()) {
+                LivingEntity attacker = commander.getLastHurtByMob();
+                if (attacker != null && attacker.isAlive() && commander.canAttack(attacker)) {
+                    commander.setTarget(attacker);
+                    return true;
+                }
+            }
+        }
+
         // "前往指定点"命令优先：命令执行期间不主动索敌，先把命令走完；
         //   玩家点名攻击（强制目标 / 精确打击）不受影响，仍然是攻击优先。
         //   无差别攻击是玩家明确的攻击策略：行军 / 驻守途中照样索敌。
@@ -87,7 +130,9 @@ public class AttackConfiguredEnemyGoal extends Goal {
                 && !moveOrdered.hasPlayerOrderedTarget()
                 && !moveOrdered.isFreeAggressiveStance()
                 && moveOrdered.isMoveOrderPriorityActive()) {
-            if (moveOrdered.getTarget() != null) moveOrdered.setTarget(null);
+            if (moveOrdered.getTarget() != null) {
+                clearTarget(moveOrdered.getTarget(), "move_order_priority");
+            }
             return false;
         }
         // 精确打击 / 强制目标的清理必须在冷却检查之前，
@@ -100,7 +145,13 @@ public class AttackConfiguredEnemyGoal extends Goal {
         boolean noTarget;
         if (current != null) {
             if (!current.isAlive()) {
-                this.mob.setTarget(null);
+                clearTarget(current, "target_dead");
+                current = null;
+                noTarget = true;
+                unseenTicks = 0;
+            } else if (isSameFactionOrArmy(current)) {
+                // 旧仇恨表 / 军队敌对数据可能留下同阵营目标；即使路线可达也必须立即丢弃。
+                clearTarget(current, "same_faction_or_army");
                 current = null;
                 noTarget = true;
                 unseenTicks = 0;
@@ -111,7 +162,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
                     refreshHatred(current);
                     noTarget = false;
                 } else {
-                    this.mob.setTarget(null);
+                    clearTarget(current, "not_enemy_and_unreachable");
                     current = null;
                     noTarget = true;
                     unseenTicks = 0;
@@ -123,15 +174,27 @@ public class AttackConfiguredEnemyGoal extends Goal {
             noTarget = true;
         }
 
+        // 普通仇恨 / 自主索敌只能追到巡逻路线附近；玩家点名目标不受限制。
+        if (current != null && !isTargetWithinPatrolLeash(current)) {
+            clearTarget(current, "patrol_leash");
+            current = null;
+            noTarget = true;
+            unseenTicks = 0;
+        }
+
         // ==================== 扫描冷却 ====================
-        // 无目标时用短冷却（2~5 tick），尽快从共享仇恨列表
+        // 无目标时用短冷却（4~8 tick），尽快从共享仇恨列表
         //   拿到下一个敌人；有活目标时用正常冷却（10~20 tick），
         //   避免高频换目标。
         int cd = noTarget
-                ? 2 + this.mob.getRandom().nextInt(4)         // 2..5
+                ? 4 + this.mob.getRandom().nextInt(5)         // 4..8
                 : nextScanCooldown();                          // 10..20
 
-        if (scanCooldown < 0) scanCooldown = cd;
+        if (scanCooldown < 0) {
+            long hash = this.mob.getUUID().getMostSignificantBits()
+                    ^ this.mob.getUUID().getLeastSignificantBits();
+            scanCooldown = 1 + (int) Math.floorMod(hash, 8L);
+        }
         if (--scanCooldown > 0) return false;
         scanCooldown = cd;
 
@@ -150,10 +213,25 @@ public class AttackConfiguredEnemyGoal extends Goal {
                     unseenTicks = 0;
                     // 失去视线超时：只有"路线完全无法到达"才放弃目标（仇恨过期）。
                     if (!canStillReachTarget(current)) {
-                        this.mob.setTarget(null);
+                        clearTarget(current, "unseen_unreachable");
                         current = null;
                     }
                 }
+            }
+        }
+
+        // 当前目标既有严格不可达证据、又处于攻击范围 / 视线之外时，
+        //   才允许放弃。放弃前先寻找一个更近且现在就能攻击的替代目标。
+        if (current != null && shouldDropDefinitivelyUnreachable(current)) {
+            LivingEntity replacement = findAttackableCloserAlternative(current);
+            markUnreachable(current);
+            clearTarget(current, "definitively_unreachable");
+            current = null;
+            if (replacement != null) {
+                unseenTicks = 0;
+                this.mob.setTarget(replacement);
+                logTargetSelection(replacement);
+                return true;
             }
         }
 
@@ -161,7 +239,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
             if (shouldKeepCurrentTarget(current)) {
                 return false;      // 保留当前目标
             }
-            this.mob.setTarget(null);
+            clearTarget(current, "superseded_by_nearer");
         }
 
         // ==================== 新目标选择 ====================
@@ -169,6 +247,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
         if (found != null) {
             unseenTicks = 0;
             this.mob.setTarget(found);
+            logTargetSelection(found);
             return true;
         }
         return false;
@@ -180,7 +259,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
      */
     /** "能否到达目标"的探测缓存（路径规划开销大：同一目标 2 秒内只算一次，降低服务器压力）。 */
     private int reachProbeTick = -10000;
-    @Nullable private java.util.UUID reachProbeTargetId = null;
+    @Nullable private UUID reachProbeTargetId = null;
     private boolean reachProbeResult = false;
 
     private boolean canStillReachTarget(LivingEntity target) {
@@ -204,13 +283,138 @@ public class AttackConfiguredEnemyGoal extends Goal {
         if (this.mob instanceof AbstractArmyCommander commander) {
             return commander.hasPathToTarget(target);
         }
-        net.minecraft.world.entity.ai.navigation.PathNavigation nav = this.mob.getNavigation();
-        net.minecraft.world.level.pathfinder.Path path = nav.createPath(target, 1);
-        return path != null && path.canReach();
+        return PathProbe.canReach(
+                this.mob, target.blockPosition(), 128);
+    }
+
+    private boolean canCurrentlyAttackTarget(LivingEntity target) {
+        if (this.mob instanceof AbstractArmySoldier soldier) {
+            return soldier.canCurrentlyAttack(target);
+        }
+        if (this.mob instanceof AbstractArmyCommander commander) {
+            return commander.canCurrentlyAttack(target);
+        }
+        return this.mob.hasLineOfSight(target)
+                && this.mob.distanceToSqr(target) <= 16.0;
+    }
+
+    /**
+     * 玩家明确点名 / 强制攻击的目标不能被“不可达换目标”接管。
+     *   威胁记忆、共享仇恨和个人受击记忆仍属于可降级仇恨：
+     *   它们可以维持追击，但在严谨确认完全打不到后应让位给眼前可攻击的敌人。
+     */
+    private boolean isHardPriorityTarget(LivingEntity target) {
+        if (this.mob instanceof AbstractArmySoldier soldier
+                && soldier.isCommandedAttackTarget(target)) {
+            return true;
+        }
+        return isPlayerForcedTarget(target);
+    }
+
+    private boolean canDefinitivelyNotReach(LivingEntity target) {
+        if (this.mob instanceof AbstractArmySoldier soldier) {
+            return soldier.canDefinitivelyNotReachTarget(target);
+        }
+        if (this.mob instanceof AbstractArmyCommander commander) {
+            return commander.canDefinitivelyNotReachTarget(target);
+        }
+        return !PathProbe.canReach(this.mob, target.blockPosition(), 128);
+    }
+
+    /**
+     * 只有连续三次、间隔至少 2 秒的独立探测都确认不可达，且当前攻击判定也失败，
+     *   才允许放弃。任何一次出现可达路线 / 可攻击状态都会清零证据。
+     */
+    private boolean shouldDropDefinitivelyUnreachable(LivingEntity target) {
+        if (!target.isAlive()) return false;
+        if (isHardPriorityTarget(target)) {
+            resetUnreachableEvidence();
+            return false;
+        }
+        if (canCurrentlyAttackTarget(target)) {
+            resetUnreachableEvidence();
+            return false;
+        }
+
+        long now = this.mob.level().getGameTime();
+        if (unreachableEvidenceTarget == null
+                || !unreachableEvidenceTarget.equals(target.getUUID())) {
+            unreachableEvidenceTarget = target.getUUID();
+            unreachableEvidenceSince = -1L;
+            unreachableLastProbeTick = -10000L;
+            unreachableDefinitiveProbes = 0;
+        }
+
+        if (now - unreachableLastProbeTick >= UNREACHABLE_PROBE_INTERVAL_TICKS) {
+            unreachableLastProbeTick = now;
+            if (canDefinitivelyNotReach(target)) {
+                if (unreachableDefinitiveProbes == 0) {
+                    unreachableEvidenceSince = now;
+                }
+                unreachableDefinitiveProbes++;
+            } else {
+                unreachableEvidenceSince = -1L;
+                unreachableDefinitiveProbes = 0;
+            }
+        }
+
+        return unreachableDefinitiveProbes >= 3
+                && unreachableEvidenceSince >= 0
+                && now - unreachableEvidenceSince >= UNREACHABLE_EVIDENCE_TICKS;
+    }
+
+    private void resetUnreachableEvidence() {
+        unreachableEvidenceTarget = null;
+        unreachableEvidenceSince = -1L;
+        unreachableLastProbeTick = -10000L;
+        unreachableDefinitiveProbes = 0;
+    }
+
+    /** 只换到更近、当前就能攻击且合法敌对的目标，避免换到另一个走不到的目标。 */
+    @Nullable
+    private LivingEntity findAttackableCloserAlternative(LivingEntity current) {
+        double currentDistanceSqr = this.mob.distanceToSqr(current);
+        LivingEntity best = null;
+        double bestDistanceSqr = currentDistanceSqr;
+        for (LivingEntity candidate : this.mob.level().getEntitiesOfClass(
+                LivingEntity.class,
+                this.mob.getBoundingBox().inflate(DEFAULT_RANGE),
+                e -> e != this.mob
+                        && e != current
+                        && e.isAlive()
+                        && isEnemyOf(e)
+                        && isTargetWithinPatrolLeash(e))) {
+            double distanceSqr = this.mob.distanceToSqr(candidate);
+            if (distanceSqr >= bestDistanceSqr) continue;
+            if (!canCurrentlyAttackTarget(candidate)) continue;
+            best = candidate;
+            bestDistanceSqr = distanceSqr;
+        }
+        return best;
+    }
+
+    private void markUnreachable(LivingEntity target) {
+        if (this.mob instanceof AbstractArmySoldier soldier) {
+            soldier.markTargetUnreachable(target);
+        } else if (this.mob instanceof AbstractArmyCommander commander) {
+            commander.markTargetUnreachable(target);
+        }
+    }
+
+    private void logTargetSelection(LivingEntity target) {
+        if (!GeneralConfig.debugMovementLog) return;
+        Monster_conquest.LOGGER.info(
+                "[COMBAT-TARGET] t={} unit={} target={} dist={}",
+                this.mob.tickCount,
+                this.mob.getUUID().toString().substring(0, 8),
+                target.getUUID().toString().substring(0, 8),
+                String.format(Locale.ROOT, "%.2f",
+                        Math.sqrt(this.mob.distanceToSqr(target))));
     }
 
     /** 刷新对目标的仇恨：重建军队敌对关系与玩家阵营共享仇恨。 */
     private void refreshHatred(LivingEntity target) {
+        if (isSameFactionOrArmy(target)) return;
         if (this.mob instanceof AbstractArmySoldier soldier) {
             soldier.refreshHatredOf(target);
         } else if (this.mob instanceof AbstractArmyCommander commander) {
@@ -231,25 +435,86 @@ public class AttackConfiguredEnemyGoal extends Goal {
      *     · 否则                              → 允许重估
      */
     private boolean shouldKeepCurrentTarget(LivingEntity current) {
+        // 玩家点名目标 / 军队仇恨目标 / 单位受击记忆不应被旁边的更近敌人顶掉。
+        if (isPriorityTarget(current)) return true;
+        // 当前目标此刻已经能攻击时优先维持输出，绝不为“更近但同样可攻击”的单位抖动换目标。
+        if (canCurrentlyAttackTarget(current)) return true;
+
         double curD = this.mob.distanceToSqr(current);
         if (curD < KEEP_IF_IN_MELEE_SQR) return true;
+
+        long now = this.mob.level().getGameTime();
+        if (keepScanTarget != null && keepScanTarget.equals(current.getUUID())
+                && now - keepScanTick < 30) {
+            return keepScanResult;
+        }
 
         double nearD = Double.MAX_VALUE;
         for (LivingEntity e : this.mob.level().getEntitiesOfClass(
                 LivingEntity.class,
                 this.mob.getBoundingBox().inflate(DEFAULT_RANGE),
-                e -> e != this.mob && e != current && e.isAlive() && isEnemyOf(e))) {
+                e -> e != this.mob && e != current && e.isAlive() && isEnemyOf(e)
+                        && canCurrentlyAttackTarget(e))) {
             double d = this.mob.distanceToSqr(e);
             if (d < nearD) nearD = d;
         }
-        if (nearD == Double.MAX_VALUE) return true;
-
-        return curD <= nearD * KEEP_RATIO_SQR;
+        boolean keep = nearD == Double.MAX_VALUE || curD <= nearD * KEEP_RATIO_SQR;
+        keepScanTarget = current.getUUID();
+        keepScanTick = now;
+        keepScanResult = keep;
+        return keep;
     }
 
     private int nextScanCooldown() {
         int half = Math.max(1, SCAN_INTERVAL / 2);
         return half + this.mob.getRandom().nextInt(SCAN_INTERVAL - half + 1);
+    }
+
+    private void clearTarget(@Nullable LivingEntity target, String reason) {
+        if (GeneralConfig.debugMovementLog) {
+            String squad = "-";
+            String attack = "-";
+            String precise = "false";
+            String forced = "false";
+            if (this.mob instanceof AbstractArmySoldier soldier) {
+                squad = String.valueOf(soldier.getSquadId());
+                Player owner = soldier.getCommanderPlayer();
+                if (owner != null) {
+                    var st = PlayerArmyManager
+                            .getIfPresent(owner.getUUID());
+                    if (st != null) {
+                        long now = soldier.level().getGameTime();
+                        var ss = PlayerCommandState
+                                .stateForCommand(soldier, st);
+                        attack = ss.getAttack().name();
+                        UUID preciseId = st.getPreciseStrikeTarget(now);
+                        precise = String.valueOf(preciseId != null
+                                && st.isSquadInPreciseStrike(soldier.getSquadId())
+                                && st.isPreciseStrikeTarget(
+                                        target == null ? null : target.getUUID()));
+                        forced = String.valueOf(target != null
+                                && ss.isForcedTarget(target.getUUID()));
+                    }
+                }
+            }
+            Monster_conquest.LOGGER.info(
+                    "[TARGET-CLEAR] t={} unit={} target={} reason={} squad={}"
+                            + " attack={} precise={} forced={}",
+                    this.mob.tickCount,
+                    this.mob.getUUID().toString().substring(0, 8),
+                    target == null ? "-" : target.getUUID().toString().substring(0, 8),
+                    reason, squad, attack, precise, forced);
+        }
+        this.mob.setTarget(null);
+        // 目标死亡 / 失效后必须立刻重新选目标。目标 Goal 运行期间不会推进
+        //   scanCooldown；若沿用战斗前留下的旧值，会白白站 10~20 tick，
+        //   这段时间还可能被自然游走接管。
+        this.scanCooldown = 0;
+        this.keepScanTarget = null;
+        this.keepScanTick = -10000L;
+        this.keepScanResult = false;
+        this.unseenTicks = 0;
+        resetUnreachableEvidence();
     }
 
     @Override
@@ -270,36 +535,45 @@ public class AttackConfiguredEnemyGoal extends Goal {
         //   使用配置的统一范围（GeneralConfig.armyFollowRange），
         //   不受兵种"自然索敌半径"限制，也不要求视线。
         LivingEntity priority = findPriorityTarget(GeneralConfig.armyFollowRange);
-        if (priority != null) return priority;
+        if (priority != null && isTargetWithinPatrolLeash(priority)) return priority;
 
         double fullRange = DEFAULT_RANGE;
         var attr = this.mob.getAttribute(
-                net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE);
+                Attributes.FOLLOW_RANGE);
         if (attr != null) fullRange = attr.getValue();
 
         double nearRange = Math.min(fullRange, NEAR_SCAN_RANGE);
         LivingEntity close = scanInRadius(nearRange);
         if (close != null) return close;
-
-        if (fullRange > nearRange) return scanInRadius(fullRange);
-        return null;
+        return fullRange > nearRange ? scanInRadius(fullRange) : null;
     }
 
     /**
      * 优先目标获取：玩家强制目标 / 精确打击目标 / 威胁传播目标 / 共享仇恨目标。
      *
      *   这类目标一律按 GeneralConfig.armyFollowRange 的统一范围（默认 128 格）获取——
-     *   兵种自然索敌半径（近战 32 / 弓手 64 等）只约束自动索敌，
+     *   兵种自然索敌半径（近战 32 / 弓手 96 等）只约束自动索敌，
      *   被命令或被威胁时部队会主动朝目标推进。
      */
     @Nullable
     private LivingEntity findPriorityTarget(double range) {
         if (!(this.mob.level() instanceof ServerLevel sl)) return null;
 
+        if (this.mob instanceof AbstractArmySoldier soldier) {
+            UUID commandedId = soldier.getCommandedAttackTargetId();
+            if (commandedId != null) {
+                LivingEntity commanded = livingByUuid(sl, commandedId);
+                if (commanded != null && soldier.isCommandedAttackTarget(commanded)
+                        && this.mob.distanceToSqr(commanded) <= range * range) {
+                    return commanded;
+                }
+            }
+        }
+
         if (this.mob instanceof AbstractArmySoldier soldier && soldier.isPlayerArmy()) {
             Player owner = soldier.getCommanderPlayer();
             if (owner != null) {
-                var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+                var st = PlayerArmyManager
                         .getIfPresent(owner.getUUID());
                 if (st != null) {
                     long nowGT = soldier.level().getGameTime();
@@ -311,7 +585,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
                     }
 
                     // 无小队单兵读个人状态（与小队共用同一套强制目标逻辑）
-                    var ss = com.ohhapple.monster_conquest.player.PlayerCommandState
+                    var ss = PlayerCommandState
                             .stateForCommand(soldier, st);
                     if (ss.getForcedTarget() != null) {
                         LivingEntity e = nearestInGroup(sl, ss.getForcedTargetGroup(), range);
@@ -334,6 +608,10 @@ public class AttackConfiguredEnemyGoal extends Goal {
         } else if (this.mob instanceof AbstractArmyCommander cmd) {
             LivingEntity h = nearestHatred(cmd.getHatredList(), range);
             if (h != null) return h;
+        }
+        if (this.mob instanceof AbstractArmySoldier soldier) {
+            LivingEntity remembered = soldier.pickPersonalHatredTarget(range);
+            if (remembered != null) return remembered;
         }
         return null;
     }
@@ -381,7 +659,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
     /** 玩家军队共享仇恨列表里最近的敌人（含仇恨军队的指挥官与士兵）。 */
     @Nullable
     private LivingEntity nearestSharedHatred(ServerLevel sl,
-                                             com.ohhapple.monster_conquest.player.PlayerCommandState st,
+                                             PlayerCommandState st,
                                              double range) {
         long nowGT = sl.getGameTime();
         LivingEntity best = null;
@@ -426,6 +704,10 @@ public class AttackConfiguredEnemyGoal extends Goal {
 
     /** 优先目标：玩家强制 / 精确打击 / 威胁传播 / 共享仇恨（不受视线与自然半径限制）。 */
     private boolean isPriorityTarget(LivingEntity entity) {
+        if (this.mob instanceof AbstractArmySoldier soldier
+                && soldier.isCommandedAttackTarget(entity)) {
+            return true;
+        }
         if (isPlayerForcedTarget(entity)) return true;
 
         if (this.mob instanceof AbstractArmySoldier soldier) {
@@ -438,7 +720,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
             if (soldier.isPlayerArmy()) {
                 Player owner = soldier.getCommanderPlayer();
                 if (owner != null) {
-                    var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+                    var st = PlayerArmyManager
                             .getIfPresent(owner.getUUID());
                     if (st != null) {
                         long nowGT = soldier.level().getGameTime();
@@ -448,6 +730,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
                     }
                 }
             }
+            if (soldier.isPersonalHatredTarget(entity)) return true;
         } else if (this.mob instanceof AbstractArmyCommander cmd) {
             for (LivingEntity h : cmd.getHatredList()) {
                 if (h == entity) return true;
@@ -470,7 +753,8 @@ public class AttackConfiguredEnemyGoal extends Goal {
         List<LivingEntity> candidates = this.mob.level().getEntitiesOfClass(
                 LivingEntity.class,
                 this.mob.getBoundingBox().inflate(range),
-                e -> e != this.mob && e.isAlive() && isEnemyOf(e));
+                e -> e != this.mob && e.isAlive() && isEnemyOf(e)
+                        && isTargetWithinPatrolLeash(e));
         if (candidates.isEmpty()) return null;
 
         candidates.sort(Comparator.comparingDouble(e -> e.distanceToSqr(this.mob)));
@@ -481,7 +765,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
         List<LivingEntity> visible = new ArrayList<>(DISPERSE_PICK_N);
         int checked = 0;
         for (LivingEntity e : candidates) {
-            if (visible.size() >= DISPERSE_PICK_N || checked >= MAX_LOS_CHECKS) break;
+            if (checked >= MAX_LOS_CHECKS) break;
             checked++;
             if (isPriorityTarget(e) || this.mob.hasLineOfSight(e)) {
                 visible.add(e);
@@ -489,11 +773,19 @@ public class AttackConfiguredEnemyGoal extends Goal {
         }
         if (visible.isEmpty()) return null;
 
-        int pickRange = Math.min(visible.size(), DISPERSE_PICK_N);
+        // 当前就能攻击的敌人优先，避免锁到一个看得见但暂时打不到的远处目标，
+        //   把旁边已经贴脸的单位晾着。没有可攻击候选时才回退到其余可见敌人。
+        List<LivingEntity> attackable = new ArrayList<>(DISPERSE_PICK_N);
+        for (LivingEntity candidate : visible) {
+            if (canCurrentlyAttackTarget(candidate)) attackable.add(candidate);
+        }
+        List<LivingEntity> pool = attackable.isEmpty() ? visible : attackable;
+
+        int pickRange = Math.min(pool.size(), DISPERSE_PICK_N);
         long h = this.mob.getUUID().getMostSignificantBits()
                 ^ this.mob.getUUID().getLeastSignificantBits();
         int idx = (int) Math.floorMod(h, (long) pickRange);
-        return visible.get(idx);
+        return pool.get(idx);
     }
 
     /**
@@ -505,7 +797,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
         if (!soldier.isPlayerArmy() || !soldier.isPlayerOrderAccepted()) return false;
         Player owner = soldier.getCommanderPlayer();
         if (owner == null) return false;
-        var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var st = PlayerArmyManager
                 .getIfPresent(owner.getUUID());
         if (st == null) return false;
 
@@ -514,7 +806,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
                 && st.isPreciseStrikeTarget(entity.getUUID())) {
             return true;
         }
-        return com.ohhapple.monster_conquest.player.PlayerCommandState
+        return PlayerCommandState
                 .stateForCommand(soldier, st).isForcedTarget(entity.getUUID());
     }
 
@@ -527,7 +819,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
         if (!soldier.isPlayerArmy()) return;
         Player owner = soldier.getCommanderPlayer();
         if (owner == null) return;
-        var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var st = PlayerArmyManager
                 .getIfPresent(owner.getUUID());
         if (st == null) return;
 
@@ -555,21 +847,21 @@ public class AttackConfiguredEnemyGoal extends Goal {
         if (!soldier.isPlayerArmy()) return;
         Player owner = soldier.getCommanderPlayer();
         if (owner == null) return;
-        var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var st = PlayerArmyManager
                 .getIfPresent(owner.getUUID());
         if (st == null) return;
 
-        var ss = com.ohhapple.monster_conquest.player.PlayerCommandState
+        var ss = PlayerCommandState
                 .stateForCommand(soldier, st);
         if (ss.getAttack()
-                != com.ohhapple.monster_conquest.player.PlayerCommandState.AttackMode.COMMANDED) {
+                != PlayerCommandState.AttackMode.COMMANDED) {
             return;
         }
 
         UUID forced = ss.getForcedTarget();
         if (forced == null) {
             ss.setAttackMode(
-                    com.ohhapple.monster_conquest.player.PlayerCommandState.AttackMode.AUTONOMOUS);
+                    PlayerCommandState.AttackMode.AUTONOMOUS);
             return;
         }
         if (!(soldier.level() instanceof ServerLevel sl)) return;
@@ -580,7 +872,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
             ss.setForcedTargetId(null);
             ss.setForcedTargetGroup(null);
             ss.setAttackMode(
-                    com.ohhapple.monster_conquest.player.PlayerCommandState.AttackMode.AUTONOMOUS);
+                    PlayerCommandState.AttackMode.AUTONOMOUS);
         }
     }
 
@@ -596,6 +888,8 @@ public class AttackConfiguredEnemyGoal extends Goal {
     private boolean isEnemyOf(LivingEntity entity) {
         if (entity instanceof Player p && (p.isCreative() || p.isSpectator())) return false;
         if (entity instanceof WarHorseEntity) return false;
+        // 同阵营 / 同军队是绝对友军，不能被个人记忆、共享仇恨或旧军队敌对标记覆盖。
+        if (isSameFactionOrArmy(entity)) return false;
         // "寻路不通"黑名单：攻城时敌人站在城墙上够不到 → 暂时不当目标（避免反复推墙）
         if (this.mob instanceof AbstractArmySoldier soldierBlacklist
                 && soldierBlacklist.isTargetBlacklisted(entity)) return false;
@@ -604,7 +898,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
         // 不可选中的目标（无敌 / 旁观等）不作为敌人：例如袭击代理
         if (!entity.canBeSeenAsEnemy()) return false;
         // 锚点保护：村庄巡逻队 / 袭击增援不把活动范围之外的目标视为敌人
-        if (!com.ohhapple.monster_conquest.army.ArmyAnchor.targetAllowed(this.mob, entity)) return false;
+        if (!ArmyAnchor.targetAllowed(this.mob, entity)) return false;
 
         // 同族和平：灾厄阵营 ↔ 原版灾厄生物、村民阵营 ↔ 原版村民 / 铁傀儡，互不仇视。
         if (NativePeace.isPeacefulPair(this.mob, entity)) return false;
@@ -613,7 +907,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
         ResourceLocation myFac0 = myFaction();
         ResourceLocation theirFac0 = factionOf(entity);
         if (myFac0 != null && theirFac0 != null
-                && com.ohhapple.monster_conquest.army.relation.FactionAlly
+                && FactionAlly
                 .isAlly(myFac0, theirFac0)) return false;
 
         // 反击判定
@@ -638,7 +932,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
             if (soldier.isPlayerOrderAccepted()) {
                 Player owner = soldier.getCommanderPlayer();
                 if (owner != null) {
-                    var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+                    var st = PlayerArmyManager
                             .getIfPresent(owner.getUUID());
                     if (st != null) {
                         UUID precise = st.getPreciseStrikeTarget(
@@ -649,15 +943,15 @@ public class AttackConfiguredEnemyGoal extends Goal {
                             return st.isPreciseStrikeTarget(entity.getUUID());
                         }
 
-                        var ss = com.ohhapple.monster_conquest.player.PlayerCommandState
+                        var ss = PlayerCommandState
                                 .stateForCommand(soldier, st);
                         var attack = ss.getAttack();
 
                         // 硬驻守：只把驻守范围内的目标当作合法目标（站住不动，不追远处）。
                         if (ss.getMovement()
-                                == com.ohhapple.monster_conquest.player.PlayerCommandState.MovementMode.STATION
+                                == PlayerCommandState.MovementMode.STATION
                                 && !ss.isSoftStation()) {
-                            if (!com.ohhapple.monster_conquest.player.PlayerCommandState
+                            if (!PlayerCommandState
                                     .allowsHardStationTarget(
                                             soldier,
                                             ss.getFormationAnchor(),
@@ -665,13 +959,13 @@ public class AttackConfiguredEnemyGoal extends Goal {
                                 return false;
                             }
                         }
-                        else if (attack == com.ohhapple.monster_conquest.player.PlayerCommandState.AttackMode.COMMANDED) {
+                        else if (attack == PlayerCommandState.AttackMode.COMMANDED) {
                             if (ss.getForcedTarget() != null) {
                                 // 强制目标是"整支军队"时，组内任意成员都是合法目标
                                 return ss.isForcedTarget(entity.getUUID());
                             }
                         }
-                        else if (attack == com.ohhapple.monster_conquest.player.PlayerCommandState.AttackMode.HOLD_GROUND) {
+                        else if (attack == PlayerCommandState.AttackMode.HOLD_GROUND) {
                             if (this.mob.distanceToSqr(entity) > 64.0) return false;
                         }
                     }
@@ -701,6 +995,14 @@ public class AttackConfiguredEnemyGoal extends Goal {
             if (theirArmy.equals(myArmy)) return false;
             if (ArmyRelations.isHostile(myArmy, theirArmy)) return true;
         }
+        if (this.mob instanceof AbstractArmySoldier soldierPersonal
+                && soldierPersonal.isPersonalHatredTarget(entity)) {
+            return true;
+        }
+        if (this.mob instanceof AbstractArmySoldier soldierCommanded
+                && soldierCommanded.isCommandedAttackTarget(entity)) {
+            return true;
+        }
 
         ResourceLocation myFaction = myFaction();
         if (myFaction != null) {
@@ -727,7 +1029,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
         if (this.mob instanceof AbstractArmySoldier soldier && soldier.isPlayerArmy()) {
             Player owner = soldier.getCommanderPlayer();
             if (owner != null) {
-                var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+                var st = PlayerArmyManager
                         .getIfPresent(owner.getUUID());
                 if (st != null) {
                     long nowGT = soldier.level().getGameTime();
@@ -742,6 +1044,33 @@ public class AttackConfiguredEnemyGoal extends Goal {
         }
 
         return false;
+    }
+
+    private boolean isSameFactionOrArmy(LivingEntity entity) {
+        ResourceLocation mine = myFaction();
+        ResourceLocation theirs = factionOf(entity);
+        if (mine != null && mine.equals(theirs)) return true;
+
+        UUID myArmy = myArmy();
+        UUID theirArmy = AbstractArmySoldier.resolveArmyUuid(
+                entity, this.mob.level());
+        return myArmy != null && myArmy.equals(theirArmy);
+    }
+
+    /**
+     * 有巡逻路线的单位只追击路线附近的普通目标。
+     *   玩家通过强制目标 / 精确打击点名的目标不受限制，仍然按玩家命令追击。
+     *   路线数据所在的区块未加载时由 PathRoutes.cleanup 自行处理，这里只做活动范围过滤。
+     */
+    private boolean isTargetWithinPatrolLeash(@Nullable LivingEntity target) {
+        if (target == null) return true;
+        if (this.mob instanceof AbstractArmySoldier soldier) {
+            return soldier.isPatrolTargetAllowed(target);
+        }
+        if (this.mob instanceof AbstractArmyCommander commander) {
+            return commander.isPatrolTargetAllowed(target);
+        }
+        return true;
     }
 
     @Nullable
@@ -764,9 +1093,9 @@ public class AttackConfiguredEnemyGoal extends Goal {
         ResourceLocation theirs = factionOf(entity);
         if (mine != null && theirs != null) {
             if (mine.equals(theirs)) return false;
-            if (com.ohhapple.monster_conquest.army.relation.FactionAlly
+            if (FactionAlly
                     .isAlly(mine, theirs)) return false;
-            if (com.ohhapple.monster_conquest.army.relation.FactionAlly
+            if (FactionAlly
                     .isAlly(theirs, mine)) return false;
         }
         UUID myArmy = soldier.getCommanderUuid().orElse(null);
@@ -786,7 +1115,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
         if (!soldier.isPlayerArmy()) return false;
         Player owner = soldier.getCommanderPlayer();
         if (owner == null) return false;
-        var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var st = PlayerArmyManager
                 .getIfPresent(owner.getUUID());
         if (st == null) return false;
 
@@ -796,9 +1125,9 @@ public class AttackConfiguredEnemyGoal extends Goal {
             return st.isPreciseStrikeTarget(entity.getUUID());
         }
 
-        var ss = com.ohhapple.monster_conquest.player.PlayerCommandState
+        var ss = PlayerCommandState
                 .stateForCommand(soldier, st);
-        if (!com.ohhapple.monster_conquest.player.PlayerCommandState
+        if (!PlayerCommandState
                 .allowsHardStationTarget(soldier, ss.getFormationAnchor(), entity.position())) {
             return false;
         }

@@ -7,29 +7,33 @@ import com.ohhapple.monster_conquest.army.PlayerFactionRegistry;
 import com.ohhapple.monster_conquest.army.SoldierRole;
 import com.ohhapple.monster_conquest.army.SoldierType;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.item.component.CustomData;
+import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
-import net.minecraft.world.item.component.CustomData;
-import net.minecraft.world.item.context.UseOnContext;
-import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.Level;
+
 import net.neoforged.neoforge.registries.DeferredHolder;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
@@ -42,17 +46,37 @@ public class SoldierSpawnEggItem extends Item {
     private final DeferredHolder<EntityType<?>, ? extends EntityType<? extends Mob>> typeHolder;
     private final SoldierType defaultType;
     private final EquipmentTier defaultTier;
+    private final boolean singleLevel;
+    private final boolean canToggleCavalry;
 
     public SoldierSpawnEggItem(
             DeferredHolder<EntityType<?>, ? extends EntityType<? extends Mob>> type,
             SoldierType defaultType,
             EquipmentTier defaultTier,
             Properties props) {
+        this(type, defaultType, defaultTier, false, true, props);
+    }
+
+    public SoldierSpawnEggItem(
+            DeferredHolder<EntityType<?>, ? extends EntityType<? extends Mob>> type,
+            SoldierType defaultType,
+            EquipmentTier defaultTier,
+            boolean singleLevel,
+            boolean canToggleCavalry,
+            Properties props) {
         super(props);
         this.typeHolder = type;
         this.defaultType = defaultType;
         this.defaultTier = defaultTier;
+        this.singleLevel = singleLevel;
+        this.canToggleCavalry = canToggleCavalry;
     }
+
+    /** 蛋自带的等级（蛋里没有 Tier 数据时用）。 */
+    public EquipmentTier getDefaultTier() { return defaultTier; }
+    public boolean isSingleLevel() { return singleLevel; }
+    public boolean canToggleCavalry() { return canToggleCavalry; }
+    public boolean isForEntityType(EntityType<?> type) { return typeHolder.get() == type; }
 
     @Override
     public InteractionResult useOn(UseOnContext ctx) {
@@ -70,23 +94,11 @@ public class SoldierSpawnEggItem extends Item {
                 ? clicked
                 : clicked.relative(face);
 
-        Mob mob = typeHolder.get().create(sl);
-        if (!(mob instanceof AbstractArmySoldier soldier)) return InteractionResult.PASS;
+        AbstractArmySoldier soldier = createSoldierFromEgg(sl, stack);
+        if (soldier == null) return InteractionResult.PASS;
 
         float yaw = ctx.getPlayer() != null ? ctx.getPlayer().getYRot() : 0f;
         soldier.moveTo(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5, yaw, 0);
-
-        CompoundTag tag = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
-        boolean cavalry = tag.getBoolean(RetrievalToolItem.KEY_CAVALRY);
-        SoldierType type = cavalry ? defaultType.toggleMounted() : defaultType;
-        soldier.setSoldierType(type);
-
-        EquipmentTier tier = EquipmentTier.values()[readTierIdx(stack, defaultTier.ordinal())];
-        soldier.setTier(tier);
-        soldier.applyEquipment(tier);
-        // 蛋里带着收纳 / 升级时保留下来的手动装备：恢复并覆盖默认装备
-        soldier.readGearTag(tag);
-        soldier.setHealth(soldier.getMaxHealth());
 
         ResourceLocation faction = getEggFaction(stack);
         if (faction == null && ctx.getPlayer() != null) {
@@ -113,7 +125,7 @@ public class SoldierSpawnEggItem extends Item {
         }
 
         sl.addFreshEntity(soldier);
-        if (type.isCavalry()) soldier.switchToCavalry();
+        if (soldier.getSoldierType().isCavalry()) soldier.switchToCavalry();
 
         sl.playSound(null, pos, SoundEvents.CHICKEN_EGG, SoundSource.NEUTRAL,
                 1.0f, (sl.random.nextFloat() - sl.random.nextFloat()) * 0.2f + 1.0f);
@@ -122,11 +134,38 @@ public class SoldierSpawnEggItem extends Item {
         return InteractionResult.SUCCESS;
     }
 
+    /**
+     * 刷怪蛋 → 士兵实例：形态 / 等级 / 手动装备都按蛋里的数据还原，等级默认取这颗蛋自己的档位。
+     *   不含阵营兜底、也不加进世界 —— 交给调用方决定（刷怪蛋放置 / 刷怪点模板都走这里，
+     *   保证两者生成的单位完全一致）。
+     */
+    @Nullable
+    public static AbstractArmySoldier createSoldierFromEgg(ServerLevel level, ItemStack stack) {
+        if (!(stack.getItem() instanceof SoldierSpawnEggItem egg)) return null;
+        if (!(egg.typeHolder.get().create(level) instanceof AbstractArmySoldier soldier)) return null;
+
+        CompoundTag tag = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
+        boolean cavalry = egg.canToggleCavalry()
+                && tag.getBoolean(RetrievalToolItem.KEY_CAVALRY);
+        soldier.setSoldierType(cavalry ? egg.defaultType.toggleMounted() : egg.defaultType);
+
+        int tierIndex = egg.singleLevel ? egg.defaultTier.ordinal()
+                : readTierIdx(stack, egg.defaultTier.ordinal());
+        EquipmentTier tier = EquipmentTier.values()[tierIndex];
+        soldier.setTier(tier);
+        soldier.applyEquipment(tier);
+        // 蛋里带着收纳 / 升级时保留下来的手动装备：恢复并覆盖默认装备
+        soldier.readGearTag(tag);
+        soldier.setHealth(soldier.getMaxHealth());
+        return soldier;
+    }
+
     @Override
     public void appendHoverText(ItemStack stack, TooltipContext ctx,
                                 List<Component> tooltip, TooltipFlag flag) {
         CompoundTag tag = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
-        EquipmentTier tier = EquipmentTier.values()[readTierIdx(stack, defaultTier.ordinal())];
+        EquipmentTier tier = EquipmentTier.values()[
+                singleLevel ? defaultTier.ordinal() : readTierIdx(stack, defaultTier.ordinal())];
 
         // 收纳 / 升级保留过装备时给个提示
         if (hasStoredGear(tag)) {
@@ -140,10 +179,15 @@ public class SoldierSpawnEggItem extends Item {
                                 + role.name().toLowerCase()))
                 .withStyle(ChatFormatting.LIGHT_PURPLE));
 
-        tooltip.add(Component.translatable("tooltip.monster_conquest.tier",
-                        Component.translatable("tooltip.monster_conquest.tier_name."
-                                + tier.name().toLowerCase()))
-                .withStyle(ChatFormatting.AQUA));
+        if (singleLevel) {
+            tooltip.add(Component.translatable("tooltip.monster_conquest.single_level")
+                    .withStyle(ChatFormatting.AQUA));
+        } else {
+            tooltip.add(Component.translatable("tooltip.monster_conquest.tier",
+                            Component.translatable("tooltip.monster_conquest.tier_name."
+                                    + tier.name().toLowerCase()))
+                    .withStyle(ChatFormatting.AQUA));
+        }
 
         String factionStr = tag.getString(RetrievalToolItem.KEY_FACTION);
         ResourceLocation factionRl = factionStr.isEmpty() ? null : ResourceLocation.tryParse(factionStr);
@@ -168,13 +212,15 @@ public class SoldierSpawnEggItem extends Item {
             }
         }
 
-        boolean cavalry = tag.getBoolean(RetrievalToolItem.KEY_CAVALRY);
-        tooltip.add(Component.translatable("tooltip.monster_conquest.form",
-                        Component.translatable("tooltip.monster_conquest.form."
-                                + (cavalry ? "cavalry" : "infantry")))
-                .withStyle(ChatFormatting.YELLOW));
+        if (canToggleCavalry) {
+            boolean cavalry = tag.getBoolean(RetrievalToolItem.KEY_CAVALRY);
+            tooltip.add(Component.translatable("tooltip.monster_conquest.form",
+                            Component.translatable("tooltip.monster_conquest.form."
+                                    + (cavalry ? "cavalry" : "infantry")))
+                    .withStyle(ChatFormatting.YELLOW));
+        }
 
-        appendActionHints(tooltip, tag, factionRl, true);
+        appendActionHints(tooltip, tag, factionRl, true, canToggleCavalry);
 
         super.appendHoverText(stack, ctx, tooltip, flag);
     }
@@ -182,13 +228,22 @@ public class SoldierSpawnEggItem extends Item {
     static void appendActionHints(List<Component> tooltip, CompoundTag tag,
                                   @Nullable ResourceLocation factionRl,
                                   boolean allowFactionSwitch) {
+        appendActionHints(tooltip, tag, factionRl, allowFactionSwitch, true);
+    }
+
+    static void appendActionHints(List<Component> tooltip, CompoundTag tag,
+                                  @Nullable ResourceLocation factionRl,
+                                  boolean allowFactionSwitch,
+                                  boolean allowCavalrySwitch) {
         Minecraft mc = Minecraft.getInstance();
         boolean clientCreative = mc.player != null && mc.player.isCreative();
         boolean fromTool = RetrievalToolItem.isFromTool(tag);
 
         if (clientCreative) {
-            tooltip.add(Component.translatable("item.monster_conquest.egg.left_click_cavalry")
-                    .withStyle(ChatFormatting.GRAY));
+            if (allowCavalrySwitch) {
+                tooltip.add(Component.translatable("item.monster_conquest.egg.left_click_cavalry")
+                        .withStyle(ChatFormatting.GRAY));
+            }
             // 首领 / 巡逻队长刷怪蛋不支持中键切换阵营 → 不显示这条提示
             if (allowFactionSwitch) {
                 tooltip.add(Component.translatable("item.monster_conquest.egg.middle_click_faction")
@@ -241,8 +296,8 @@ public class SoldierSpawnEggItem extends Item {
 
     /** 蛋里是否存过手动装备 / 战术装备（收纳工具或升级保留）。 */
     private static boolean hasStoredGear(CompoundTag tag) {
-        return !tag.getList("ManualGear", net.minecraft.nbt.Tag.TAG_COMPOUND).isEmpty()
-                || !tag.getList("ManualTactical", net.minecraft.nbt.Tag.TAG_COMPOUND).isEmpty();
+        return !tag.getList("ManualGear", Tag.TAG_COMPOUND).isEmpty()
+                || !tag.getList("ManualTactical", Tag.TAG_COMPOUND).isEmpty();
     }
 
     public static void writeTierIdxStatic(ItemStack stack, int idx) {

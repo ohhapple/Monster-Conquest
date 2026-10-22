@@ -1,12 +1,15 @@
 package com.ohhapple.monster_conquest.player;
 
-import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
+import com.ohhapple.monster_conquest.ai.nav.PathProbe;
 import com.ohhapple.monster_conquest.ai.nav.RoutePlanner;
 import com.ohhapple.monster_conquest.army.SoldierType;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+
 import net.minecraft.core.BlockPos;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -14,16 +17,19 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.function.Predicate;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
-import java.util.function.Predicate;
+import java.util.UUID;
 
 /**
  * 玩家军队阵型槽位计算：本地坐标（面朝 +z）算完后按 yaw 旋转到世界坐标。
@@ -58,9 +64,22 @@ public final class PlayerFormationCalculator {
                                PlayerCommandState.SquadState ss,
                                PlayerCommandState.FormationMode mode,
                                Vec3 anchor, float yaw, boolean centerOnAnchor) {
-        if (ss.shouldRebuildFormation(player.tickCount, mode, anchor, yaw)) {
+        long worldVersion = RoutePlanner.worldVersion(player.level());
+        boolean shifted = ss.shiftFormationTo(player.tickCount, mode, anchor, yaw, worldVersion,
+                p -> AiNavUtil.isSafeStandingSpot(player.level(), p.x, p.y, p.z));
+        if (shifted) {
+            Vec3 shiftedSlot = ss.getFormationSlots().get(soldier.getUUID());
+            if (shiftedSlot != null
+                    && !ss.shouldRebuildFormation(player.tickCount, mode, anchor, yaw,
+                    soldier.getUUID(), worldVersion)) {
+                return shiftedSlot;
+            }
+        }
+        if (ss.shouldRebuildFormation(player.tickCount, mode, anchor, yaw,
+                soldier.getUUID(), worldVersion)) {
             rebuild(player, soldier, ss, mode, anchor, yaw, centerOnAnchor);
             ss.commitFormationCache(player.tickCount, mode, anchor, yaw);
+            ss.cachedWorldVersion = worldVersion;
         }
         Vec3 own = ss.getFormationSlots().get(soldier.getUUID());
         if (own != null) return own;
@@ -113,6 +132,15 @@ public final class PlayerFormationCalculator {
                         && (lone ? s == soldier : s.getSquadId() == squadId));
         if (all.isEmpty()) return;
         all.sort(Comparator.comparing(e -> e.getUUID().toString()));
+
+        // 无小队单兵：命令点就是站位本身，不做"最近可达落点"改写。
+        //   命令点隔着墙 / 在封闭空间里时，改写会把站位挪到墙外最近的可达格，
+        //   单位走到那里就判到位、锁朝向盯着墙后 —— 看起来像"隔着墙到了目的地"。
+        //   保持原命令点，由寻路 / 绕路判断能不能到；走不到时上层只停住等待，不伪装到位。
+        if (lone) {
+            ss.getFormationSlots().put(soldier.getUUID(), resolveLoneSlot(player, soldier, anchor));
+            return;
+        }
 
         Map<AbstractArmySoldier, Integer> indexMap = new HashMap<>();
         for (int i = 0; i < all.size(); i++) indexMap.put(all.get(i), i);
@@ -194,12 +222,40 @@ public final class PlayerFormationCalculator {
             double wz = center.z + rz;
             AbstractArmySoldier s = all.get(i);
             boolean riding = s.getVehicle() instanceof Mob && reachableMount != null;
-            ss.getFormationSlots().put(s.getUUID(), resolveSlot(player, s, wx, center.y, wz, center,
+            Vec3 assigned = resolveSlot(player, s, wx, center.y, wz, center,
                     claimed,
+                    riding ? reachableMount : reachable,
+                    riding ? reachOrderedMount : reachOrdered,
+                    riding ? reachCursorMount : reachCursor);
+            ss.getFormationSlots().put(s.getUUID(), ensureReachableSlot(
+                    player, s, assigned, center, claimed,
                     riding ? reachableMount : reachable,
                     riding ? reachOrderedMount : reachOrdered,
                     riding ? reachCursorMount : reachCursor));
         }
+    }
+
+    /**
+     * 无小队单兵的站位：命令点本身。
+     *   已经踩在命令点附近（1 格内、同层、直线可达）时维持当前位置，避免站位微动引起反复起步；
+     *   其余情况一律返回命令点 —— 不做"就近可达落点"替换。
+     */
+    private static Vec3 resolveLoneSlot(Player player, AbstractArmySoldier soldier, Vec3 anchor) {
+        Level level = player.level();
+        Mob ownMover = soldier.getVehicle() instanceof Mob vehicle ? vehicle : soldier;
+        double dx = ownMover.getX() - anchor.x;
+        double dz = ownMover.getZ() - anchor.z;
+        if (dx * dx + dz * dz <= 1.0
+                && Math.abs(ownMover.getY() - anchor.y) <= 2.0
+                && AiNavUtil.isOpenStandingSpot(level, ownMover.getX(), ownMover.getY(), ownMover.getZ())
+                && moverFits(soldier, level, ownMover.getX(), ownMover.getY(), ownMover.getZ())
+                && AiNavUtil.hasClearLineForBody(level,
+                        ownMover.position().add(0.0, 0.5, 0.0),
+                        new Vec3(anchor.x, ownMover.getY(), anchor.z).add(0.0, 0.5, 0.0),
+                        ownMover.getBbWidth() * 0.5 + 0.05)) {
+            return ownMover.position();
+        }
+        return anchor;
     }
 
     /**
@@ -218,8 +274,29 @@ public final class PlayerFormationCalculator {
                                     Vec3 anchor, List<Vec3> claimed,
                                     Set<Long> reachable, List<Long> reachOrdered, int[] reachCursor) {
         Level level = player.level();
+        // 已经踩在理想阵位上（1 格内）、同层、脚下站得住、中间没有墙 → 就地把当前位置当阵位。
+        //   换形态（步兵 → 骑兵）会换一套可达性：马过不了梯子，平台顶对"马"不可达，
+        //   不这样做的话已经站在平台上的单位会被重新指到平台下面，下来（变步兵）后再被指回平台，
+        //   上马又被指下去 —— 表现为在梯子上反复上下。
+        //   容差收在 1 格内并要求直线可通：迷宫 / 绕墙时"两格内"经常还在墙角另一侧，
+        //   把那种位置认领成阵位会让单位永远停在半路（不会再走完最后一段）。
+        Mob ownMover = soldier.getVehicle() instanceof Mob vehicle ? vehicle : soldier;
+        double ownDx = ownMover.getX() - wx;
+        double ownDz = ownMover.getZ() - wz;
+        if (ownDx * ownDx + ownDz * ownDz <= 1.0
+                && Math.abs(ownMover.getY() - baseY) <= 2.0
+                && !claimedNear(claimed, ownMover.getX(), ownMover.getY(), ownMover.getZ())
+                && AiNavUtil.isOpenStandingSpot(level, ownMover.getX(), ownMover.getY(), ownMover.getZ())
+                && moverFits(soldier, level, ownMover.getX(), ownMover.getY(), ownMover.getZ())
+                && AiNavUtil.hasClearLineForBody(level,
+                        ownMover.position().add(0.0, 0.5, 0.0),
+                        new Vec3(wx, ownMover.getY(), wz).add(0.0, 0.5, 0.0),
+                        ownMover.getBbWidth() * 0.5 + 0.05)) {
+            return claim(claimed, ownMover.getX(), ownMover.getY(), ownMover.getZ());
+        }
         double wy = findGroundY(player, wx, baseY, wz);
-        if (!claimedNear(claimed, wx, wz) && isUsableSlot(level, anchor, wx, wy, wz)
+        if (slotLevelFits(ownMover.getY(), wy)
+                && !claimedNear(claimed, wx, wy, wz) && isUsableSlot(level, anchor, wx, wy, wz)
                 && isReachable(reachable, wx, wy, wz)
                 && moverFits(soldier, level, wx, wy, wz)) {
             return claim(claimed, wx, wy, wz);
@@ -232,7 +309,8 @@ public final class PlayerFormationCalculator {
                 double nx = wx + Math.cos(a) * r;
                 double nz = wz + Math.sin(a) * r;
                 double ny = findGroundY(player, nx, baseY, nz);
-                if (claimedNear(claimed, nx, nz)) continue;
+                if (!slotLevelFits(ownMover.getY(), ny)) continue;
+                if (claimedNear(claimed, nx, ny, nz)) continue;
                 if (isUsableSlot(level, anchor, nx, ny, nz)
                         && isReachable(reachable, nx, ny, nz)
                         && moverFits(soldier, level, nx, ny, nz)) {
@@ -247,7 +325,8 @@ public final class PlayerFormationCalculator {
             double nx = wx + (anchor.x - wx) * t;
             double nz = wz + (anchor.z - wz) * t;
             double ny = findGroundY(player, nx, anchor.y, nz);
-            if (claimedNear(claimed, nx, nz)) continue;
+            if (!slotLevelFits(ownMover.getY(), ny)) continue;
+            if (claimedNear(claimed, nx, ny, nz)) continue;
             if (isUsableSlot(level, anchor, nx, ny, nz)
                     && isReachable(reachable, nx, ny, nz)
                     && moverFits(soldier, level, nx, ny, nz)) {
@@ -262,7 +341,8 @@ public final class PlayerFormationCalculator {
             double nx = wx + (anchor.x - wx) * t;
             double nz = wz + (anchor.z - wz) * t;
             double ny = findGroundY(player, nx, anchor.y, nz);
-            if (!claimedNear(claimed, nx, nz)
+            if (slotLevelFits(ownMover.getY(), ny)
+                    && !claimedNear(claimed, nx, ny, nz)
                     && AiNavUtil.isOpenStandingSpot(level, nx, ny, nz)
                     && isReachable(reachable, nx, ny, nz)
                     && moverFits(soldier, level, nx, ny, nz)) {
@@ -275,7 +355,8 @@ public final class PlayerFormationCalculator {
                 double nx = wx + Math.cos(a) * r;
                 double nz = wz + Math.sin(a) * r;
                 double ny = findGroundY(player, nx, baseY, nz);
-                if (!claimedNear(claimed, nx, nz)
+                if (slotLevelFits(ownMover.getY(), ny)
+                        && !claimedNear(claimed, nx, ny, nz)
                         && AiNavUtil.isOpenStandingSpot(level, nx, ny, nz)
                         && isReachable(reachable, nx, ny, nz)
                         && moverFits(soldier, level, nx, ny, nz)) {
@@ -290,18 +371,180 @@ public final class PlayerFormationCalculator {
             double fx = BlockPos.getX(key) + 0.5;
             double fy = BlockPos.getY(key);
             double fz = BlockPos.getZ(key) + 0.5;
-            if (claimedNear(claimed, fx, fz)) continue;
+            if (!slotLevelFits(ownMover.getY(), fy)) continue;
+            if (claimedNear(claimed, fx, fy, fz)) continue;
             if (!moverFits(soldier, level, fx, fy, fz)) continue;
             return claim(claimed, fx, fy, fz);
         }
-        // 理论上到不了这里（可达集合至少含指挥官脚下那格）；保底保留理想落点。
+        // 候选全部失败时不要再把单位指回一个未验证的理想点；能站就留在当前位置，
+        // 否则才保留理想点交给上层继续报错/重规划。
+        if (!claimedNear(claimed, ownMover.getX(), ownMover.getY(), ownMover.getZ())
+                && AiNavUtil.isOpenStandingSpot(level,
+                ownMover.getX(), ownMover.getY(), ownMover.getZ())
+                && moverFits(soldier, level, ownMover.getX(), ownMover.getY(), ownMover.getZ())) {
+            return claim(claimed, ownMover.getX(), ownMover.getY(), ownMover.getZ());
+        }
         return new Vec3(wx, wy, wz);
+    }
+
+    /**
+     * 目的地附近已经有友军站在本单位阵位上时，换到最近的空余落点。
+     *   否则单位会持续朝同一个被身体挡住的位置寻路，在目的地附近来回绕。
+     */
+    public static Vec3 resolveOccupiedSlot(Player player, AbstractArmySoldier soldier,
+                                           PlayerCommandState.SquadState ss,
+                                           Vec3 slot, Vec3 anchor) {
+        Level level = player.level();
+        Mob mover = soldier.getVehicle() instanceof Mob mount ? mount : soldier;
+        if (soldier.getSquadId() == 0) return slot;
+
+        AABB area = new AABB(slot.x - 7.0, slot.y - 3.0, slot.z - 7.0,
+                slot.x + 7.0, slot.y + 3.0, slot.z + 7.0);
+        List<Mob> mates = new ArrayList<>();
+        for (AbstractArmySoldier other : level.getEntitiesOfClass(
+                AbstractArmySoldier.class, area,
+                s -> s != soldier && s.isAlive() && !s.isRemoved()
+                        && s.getSquadId() == soldier.getSquadId()
+                        && player.getUUID().equals(s.getCommanderUuid().orElse(null)))) {
+            mates.add(other.getVehicle() instanceof Mob mount ? mount : other);
+        }
+
+        List<Vec3> reserved = new ArrayList<>();
+        for (Map.Entry<UUID, Vec3> entry : ss.getFormationSlots().entrySet()) {
+            if (!entry.getKey().equals(soldier.getUUID())) reserved.add(entry.getValue());
+        }
+
+        if (!positionOccupied(mates, reserved, slot.x, slot.y, slot.z, 0.85)) {
+            return slot;
+        }
+
+        int bx = Mth.floor(slot.x);
+        int bz = Mth.floor(slot.z);
+        for (int radius = 1; radius <= 8; radius++) {
+            Vec3 best = null;
+            double bestDist = Double.MAX_VALUE;
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) continue;
+                    double x = bx + dx + 0.5;
+                    double z = bz + dz + 0.5;
+                    double y = findGroundY(player, x, slot.y, z);
+                    if (Math.abs(y - slot.y) > 1.5) continue;
+                    if (positionOccupied(mates, reserved, x, y, z, 0.85)) continue;
+                    if (!AiNavUtil.isOpenStandingSpot(level, x, y, z)) continue;
+                    if (!moverFits(soldier, level, x, y, z)) continue;
+                    if (!AiNavUtil.hasClearLineForBody(level,
+                            slot.add(0.0, 0.5, 0.0), new Vec3(x, y + 0.5, z),
+                            mover.getBbWidth() * 0.5 + 0.05)) {
+                        continue;
+                    }
+                    double dist = slot.distanceToSqr(x, y, z);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        best = new Vec3(x, y, z);
+                    }
+                }
+            }
+            if (best != null) {
+                ss.getFormationSlots().put(soldier.getUUID(), best);
+                return best;
+            }
+        }
+
+        // 周围都被占满时，允许在当前安全位置驻守，避免继续绕着友军转。
+        double dx = mover.getX() - slot.x;
+        double dz = mover.getZ() - slot.z;
+        if (dx * dx + dz * dz <= 9.0
+                && Math.abs(mover.getY() - slot.y) <= 1.5
+                && !positionOccupied(mates, reserved,
+                        mover.getX(), mover.getY(), mover.getZ(), 0.65)
+                && AiNavUtil.isOpenStandingSpot(level,
+                        mover.getX(), mover.getY(), mover.getZ())
+                && moverFits(soldier, level,
+                        mover.getX(), mover.getY(), mover.getZ())) {
+            Vec3 fallback = mover.position();
+            ss.getFormationSlots().put(soldier.getUUID(), fallback);
+            return fallback;
+        }
+        return slot;
+    }
+
+    private static boolean positionOccupied(List<Mob> mates, List<Vec3> reserved,
+                                            double x, double y, double z,
+                                            double horizontalRadius) {
+        double radiusSq = horizontalRadius * horizontalRadius;
+        for (Mob mate : mates) {
+            double dx = mate.getX() - x;
+            double dz = mate.getZ() - z;
+            if (dx * dx + dz * dz < radiusSq && Math.abs(mate.getY() - y) < 1.6) {
+                return true;
+            }
+        }
+        for (Vec3 other : reserved) {
+            double dx = other.x - x;
+            double dz = other.z - z;
+            if (dx * dx + dz * dz < radiusSq && Math.abs(other.y - y) < 1.6) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 全局可达集合只能证明“从队伍某一侧有路”，不能证明每个单位都能从自己的
+     * 楼层走到这个阵位。槽位和单位高度差较大时，再做一次独立探测；走不到就
+     * 退到本单位当前安全位置，避免一直朝上层平台顶墙。
+     */
+    private static Vec3 ensureReachableSlot(Player player, AbstractArmySoldier soldier,
+                                             Vec3 slot, Vec3 anchor, List<Vec3> claimed,
+                                             Set<Long> reachable,
+                                             List<Long> reachOrdered, int[] reachCursor) {
+        Mob mover = soldier.getVehicle() instanceof Mob mount ? mount : soldier;
+        double verticalGap = Math.abs(mover.getY() - slot.y);
+        if (verticalGap <= 1.5) return slot;
+        // 三格以上的垂直落差通常意味着阵位在另一层平台。马和步兵的原版跟随
+        // 只按水平距离推进节点，很容易在下一层“以为走完了”；这种阵位不直接采用。
+        if (verticalGap <= 2.5
+                && PathProbe.canReach(mover, BlockPos.containing(slot), 128)) {
+            return slot;
+        }
+
+        Level level = player.level();
+        double cx = mover.getX();
+        double cy = mover.getY();
+        double cz = mover.getZ();
+
+        // 优先选同一楼层的可达落点；上层/下层格即使全局可达，也不应在这里顶替。
+        while (reachCursor[0] < reachOrdered.size()) {
+            long key = reachOrdered.get(reachCursor[0]++);
+            double fx = BlockPos.getX(key) + 0.5;
+            double fy = BlockPos.getY(key);
+            double fz = BlockPos.getZ(key) + 0.5;
+            if (Math.abs(fy - mover.getY()) > 1.5) continue;
+            if (claimedNear(claimed, fx, fy, fz)) continue;
+            if (!moverFits(soldier, level, fx, fy, fz)) continue;
+            return claim(claimed, fx, fy, fz);
+        }
+
+        // 同层候选都用完才留在原地。先占当前位置可以避免单位为了一个跨层阵位
+        // 反复顶墙，也不会让后续士兵被分到与它重叠的格子。
+        if (!claimedNear(claimed, cx, cy, cz)
+                && AiNavUtil.isOpenStandingSpot(level, cx, cy, cz)
+                && moverFits(soldier, level, cx, cy, cz)) {
+            return claim(claimed, cx, cy, cz);
+        }
+        return slot;
     }
 
     /** 这个落点（脚所在格）是不是"可达落点"。 */
     private static boolean isReachable(Set<Long> reachable, double x, double y, double z) {
         if (reachable.isEmpty()) return true;   // 没有任何可达信息时不额外限制（保底行为）
         return reachable.contains(BlockPos.containing(x, y + 0.5, z).asLong());
+    }
+
+    /** 阵位和移动实体处于同一落脚层。台阶允许 1 格，超过 1.5 格视为另一层。 */
+    private static boolean slotLevelFits(double moverY, double slotY) {
+        return Math.abs(moverY - slotY) <= 1.5;
     }
 
     /** 一次重建要用的两套可达落点：foot = 步兵（人身宽），mounted = 骑乘（无骑乘单位时为 null）。 */
@@ -321,47 +564,48 @@ public final class PlayerFormationCalculator {
         double maxOff = 0.0;
         for (Vec3 off : offsets) maxOff = Math.max(maxOff, Math.max(Math.abs(off.x), Math.abs(off.z)));
 
-        // 起点取"士兵这一侧"（离命令点最近的那名士兵）：指挥官可能站在屋顶 / 飞在建筑上方，
-        //   从它的位置出发会把"屋顶"当成可达区域，阵位就会排到士兵上不去的高处。
-        BlockPos seed = null;
-        AbstractArmySoldier closest = null;
-        double best = Double.MAX_VALUE;
-        for (AbstractArmySoldier s : squad) {
-            double d = s.position().distanceToSqr(anchor);
-            if (d < best) {
-                best = d;
-                closest = s;
-            }
-        }
+        // 起点取所有士兵各自所在的连通区域：只从离命令点最近的一名士兵泛洪时，
+        //   如果它恰好在平台 / 墙顶，其他楼层的士兵会被误判成走不到阵位。
+        //   指挥官可能飞在建筑上方，所以它的位置只作为最后兜底。
+        List<BlockPos> footSeeds = new ArrayList<>();
         Level level = player.level();
-        if (closest != null) {
-            seed = findWalkableSeed(level, closest.getX(), closest.getY(), closest.getZ());
+        for (AbstractArmySoldier s : squad) {
+            BlockPos seed = findWalkableSeed(level, s.getX(), s.getY(), s.getZ());
+            if (seed != null) footSeeds.add(seed);
         }
-        if (seed == null) {
-            seed = findWalkableSeed(level, player.getX(), player.getY(), player.getZ());
+        if (footSeeds.isEmpty()) {
+            BlockPos seed = findWalkableSeed(level, player.getX(), player.getY(), player.getZ());
+            if (seed != null) footSeeds.add(seed);
         }
         // 半径必须覆盖"起点 → 命令点"的整段距离 + 阵型展开尺寸：远距离命令时
         //   搜索才不会在半路被截断（截断会让阵位判定失效、退回理想点）。
+        double seedDistance = 0.0;
+        for (BlockPos seed : footSeeds) {
+            seedDistance = Math.max(seedDistance,
+                    Math.hypot(seed.getX() + 0.5 - anchor.x,
+                            seed.getZ() + 0.5 - anchor.z));
+        }
         double radius = Math.min(160.0, Math.max(32.0,
-                seed == null ? 48.0
-                        : Math.hypot(seed.getX() + 0.5 - anchor.x, seed.getZ() + 0.5 - anchor.z)
-                                + maxOff + 12.0));
+                (footSeeds.isEmpty() ? 48.0 : seedDistance) + maxOff + 12.0));
         // 半径按 16 格取整后再做缓存判定：否则单位一动半径就变，缓存永远不命中，
         //   每次重建都要跑一遍全量搜索（部队移动时就是每 20 tick 一次的卡顿来源）。
         radius = Math.ceil(radius / 16.0) * 16.0;
         boolean anchorSame = Math.abs(ss.reachCacheAnchorX - anchor.x) < 4.0
                 && Math.abs(ss.reachCacheAnchorZ - anchor.z) < 4.0
                 && Math.abs(ss.reachCacheAnchorY - anchor.y) < 6.0;
+        long worldVersion = RoutePlanner.worldVersion(level);
 
-        boolean footCached = seed != null && ss.reachCache != null
-                && ss.reachCacheRadius >= radius - 0.5 && anchorSame;
+        boolean footCached = !footSeeds.isEmpty() && ss.reachCache != null
+                && ss.reachCacheRadius >= radius - 0.5 && anchorSame
+                && ss.reachCacheWorldVersion == worldVersion;
         if (!footCached) {
-            ss.reachCache = floodReachable(level, anchor, seed, radius,
+            ss.reachCache = floodReachable(level, anchor, footSeeds, radius,
                     p -> walkableSpot(level, p));
             ss.reachCacheAnchorX = anchor.x;
             ss.reachCacheAnchorZ = anchor.z;
             ss.reachCacheAnchorY = anchor.y;
             ss.reachCacheRadius = radius;
+            ss.reachCacheWorldVersion = worldVersion;
         }
 
         // 骑乘那套：只在有骑乘单位时算；跟随同一个缓存窗口。
@@ -383,50 +627,93 @@ public final class PlayerFormationCalculator {
             boolean mountCached = ss.reachCacheMount != null
                     && Math.abs(ss.reachCacheMountWidth - mountWidth) < 1.0E-4
                     && Math.abs(ss.reachCacheMountExtra - mountExtra) < 1.0E-4
-                    && ss.reachCacheMountRadius >= radius - 0.5 && anchorSame;
+                    && ss.reachCacheMountRadius >= radius - 0.5 && anchorSame
+                    && ss.reachCacheMountWorldVersion == worldVersion;
             if (mountCached) {
                 mounted = ss.reachCacheMount;
             } else {
-                BlockPos mountSeed = findMountSeed(mountSample.getX(), mountSample.getY(),
-                        mountSample.getZ(), mountWalkable);
-                if (mountSeed != null) {
-                    Set<Long> set = floodReachable(level, anchor, mountSeed, radius, mountWalkable);
+                List<BlockPos> mountSeeds = new ArrayList<>();
+                for (AbstractArmySoldier s : squad) {
+                    if (!(s.getVehicle() instanceof Mob mount)) continue;
+                    BlockPos seed = findMountSeed(mount.getX(), mount.getY(), mount.getZ(),
+                            mountWalkable);
+                    if (seed != null) mountSeeds.add(seed);
+                }
+                if (!mountSeeds.isEmpty()) {
+                    Set<Long> set = floodReachable(level, anchor, mountSeeds, radius, mountWalkable);
                     if (!set.isEmpty()) {
                         ss.reachCacheMount = set;
                         ss.reachCacheMountRadius = radius;
                         ss.reachCacheMountWidth = mountWidth;
                         ss.reachCacheMountExtra = mountExtra;
+                        ss.reachCacheMountWorldVersion = worldVersion;
                         mounted = set;
                     }
                 }
             }
         }
-        return new Reach(ss.reachCache, mounted);
+        // 只把"锚点附近"的落点交给阵位计算：
+        //   集合是按士兵一侧的起点泛洪、按"锚点大致没变"复用缓存的，部队从远处走来时
+        //   集合会残留在旧区域，而阵型中心取的是"集合里离锚点最近的落点"——
+        //   不裁掉远处残留的话，已经接近命令点的单位会被重新指到几十格外的旧地方。
+        double saneRadius = maxOff + 6.0;
+        Set<Long> footNear = filterNearAnchor(ss.reachCache, anchor, saneRadius);
+        Set<Long> mountNear = mounted == null ? null : filterNearAnchor(mounted, anchor, saneRadius);
+        return new Reach(footNear, mountNear);
+    }
+
+    /** 只保留锚点周围 radius 格内的落点。 */
+    private static Set<Long> filterNearAnchor(Set<Long> cells, Vec3 anchor, double radius) {
+        if (cells == null || cells.isEmpty()) return cells;
+        double radiusSq = radius * radius;
+        Set<Long> out = new HashSet<>();
+        for (long key : cells) {
+            BlockPos p = BlockPos.of(key);
+            double dx = p.getX() + 0.5 - anchor.x;
+            double dz = p.getZ() + 0.5 - anchor.z;
+            if (dx * dx + dz * dz <= radiusSq) out.add(key);
+        }
+        return out;
     }
 
     /**
      * 有界广度搜索：从 seed 出发，走法与绕路器一致（八方向、上 1 下 3、不切角）。
      *   同一格子的通行判定做记忆化 —— 邻居展开会反复查同一格，宽体判定更贵，缓存能省很多。
      */
-    private static Set<Long> floodReachable(Level level, Vec3 anchor, @Nullable BlockPos seed,
+    private static Set<Long> floodReachable(Level level, Vec3 anchor, List<BlockPos> seeds,
                                             double radius, Predicate<BlockPos> walkable) {
         Set<Long> result = new HashSet<>();
-        if (seed == null) return result;
-        result.add(seed.asLong());
+        if (seeds.isEmpty()) return result;
         Map<Long, Boolean> passCache = new HashMap<>();
         Predicate<BlockPos> pass = p -> passCache.computeIfAbsent(p.asLong(), k -> walkable.test(p));
         double radiusSq = radius * radius;
         // 优先朝命令点方向展开（命令点很远时也不会把预算全花在路上）
-        java.util.PriorityQueue<BlockPos> queue = new java.util.PriorityQueue<>(
+        PriorityQueue<BlockPos> queue = new PriorityQueue<>(
                 Comparator.comparingDouble(p -> {
                     double dx = p.getX() + 0.5 - anchor.x;
                     double dz = p.getZ() + 0.5 - anchor.z;
                     double dy = p.getY() - anchor.y;
                     return dx * dx + dz * dz + dy * dy * 4.0;
                 }));
-        queue.add(seed);
+        for (BlockPos seed : seeds) {
+            if (result.add(seed.asLong())) queue.add(seed);
+        }
         while (!queue.isEmpty() && result.size() < 5000) {
             BlockPos cur = queue.poll();
+            // 1 格宽的梯子列：竖直逐节上下也要算能走。
+            //   下面的八方向走法是"横向 + 上 1 格"，进不了梯子列 ——
+            //   梯子格自己可通行，但它四周没有可站的落脚点，扩展全会被拒；
+            //   于是"只能靠梯子上去的平台"会被误判成不可达，阵位被挪到平台旁的地面。
+            if (level.getBlockState(cur).is(BlockTags.CLIMBABLE)) {
+                for (int ddy : new int[] { 1, -1 }) {
+                    BlockPos next = cur.above(ddy);
+                    double ddx = next.getX() + 0.5 - anchor.x;
+                    double ddz = next.getZ() + 0.5 - anchor.z;
+                    if (ddx * ddx + ddz * ddz > radiusSq) continue;
+                    if (!pass.test(next)) continue;
+                    if (result.add(next.asLong())) queue.add(next);
+                }
+            }
             for (int dx = -1; dx <= 1; dx++) {
                 for (int dz = -1; dz <= 1; dz++) {
                     if (dx == 0 && dz == 0) continue;
@@ -512,8 +799,8 @@ public final class PlayerFormationCalculator {
 
     /** 这一格能不能走过去：能站（两格净空 + 地面）、能用手开的门、或可攀爬（梯子 / 藤蔓 / 脚手架）。 */
     private static boolean walkableSpot(Level level, BlockPos pos) {
-        if (level.getBlockState(pos).is(net.minecraft.tags.BlockTags.CLIMBABLE)
-                || level.getBlockState(pos.above()).is(net.minecraft.tags.BlockTags.CLIMBABLE)) {
+        if (level.getBlockState(pos).is(BlockTags.CLIMBABLE)
+                || level.getBlockState(pos.above()).is(BlockTags.CLIMBABLE)) {
             return true;
         }
         // 木门 / 栅栏门：单位会自己开门走过去，算可通行
@@ -524,12 +811,18 @@ public final class PlayerFormationCalculator {
         return AiNavUtil.isOpenStandingSpot(level, pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5);
     }
 
-    /** 这个落点是否已经被同一次重建里别的士兵占了（水平 1.2 格内视为同一格）。 */
-    private static boolean claimedNear(List<Vec3> claimed, double x, double z) {
+    /**
+     * 这个落点是否已经被同一次重建里别的士兵占了。
+     *   阈值必须小于一格：单格宽走廊里相邻两格都是合法站位，按 1.2 格排除会让
+     *   后半队只能退回当前位置，看起来一半站位、一半抱团。
+     */
+    private static boolean claimedNear(List<Vec3> claimed, double x, double y, double z) {
         for (Vec3 c : claimed) {
             double dx = c.x - x;
+            double dy = c.y - y;
             double dz = c.z - z;
-            if (dx * dx + dz * dz < 1.44) return true;
+            // 同一 (x,z) 的上下层是不同站位；只看水平会把平台上下层互相占掉。
+            if (dx * dx + dz * dz < 0.81 && Math.abs(dy) < 2.0) return true;
         }
         return false;
     }
@@ -597,13 +890,10 @@ public final class PlayerFormationCalculator {
         return true;
     }
 
-    /** 纵队：锚点卡在极窄地形（1~2 格宽）时用；分成两条交错的纵列，避免排成几十格长的一字长蛇。 */
+    /** 纵队：锚点卡在单格宽地形时沿通道排成一列，避免横向站位被墙挡住后全部退回原地。 */
     private static void columnOffsets(List<AbstractArmySoldier> all, List<Vec3> out) {
-        double z = -4.0;
         for (int i = 0; i < all.size(); i++) {
-            double x = (i % 2 == 0) ? -0.7 : 0.7;
-            out.set(i, new Vec3(x, 0, z));
-            if (i % 2 == 1) z -= ROW_GAP_INFANTRY;
+            out.set(i, new Vec3(0, 0, -1.0 - i * CELL_INFANTRY));
         }
     }
 

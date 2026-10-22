@@ -1,15 +1,17 @@
 package com.ohhapple.monster_conquest.entity.projectile;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.ModSounds;
 import net.minecraft.core.particles.DustParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
-import net.minecraft.sounds.SoundEvent;
-import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3f;
 
@@ -18,6 +20,11 @@ import org.joml.Vector3f;
  * 与火箭弹一致：由实体模型表现（中心对称弹体），不使用粒子渲染弹道。
  */
 public class ArmyBullet extends ArmyGunProjectile {
+
+    /** 子弹线段离本地玩家眼睛的最大距离；超过后不播放掠过声。 */
+    private static final double FLYBY_RANGE = 6.0;
+
+    private boolean flyByPlayed;
 
     public ArmyBullet(EntityType<? extends ArmyGunProjectile> type, Level level) {
         super(type, level);
@@ -32,11 +39,39 @@ public class ArmyBullet extends ArmyGunProjectile {
     protected double defaultGravity() { return 0.008; }
 
     @Override
-    protected SoundEvent getFlightSound() { return SoundEvents.PLAYER_ATTACK_SWEEP; }
+    protected void playClientFlightSound(Vec3 from, Vec3 to) {
+        if (flyByPlayed || !isFlightSoundEnabled()) return;
 
-    @Override protected int getFlightSoundInterval() { return 4; }
-    @Override protected float getFlightSoundVolume() { return 0.22f; }
-    @Override protected float getFlightSoundPitch() { return 1.8f; }
+        Vec3 segment = to.subtract(from);
+        double lengthSqr = segment.lengthSqr();
+        if (lengthSqr < 1.0E-6) return;
+
+        AABB search = new AABB(from, to).inflate(FLYBY_RANGE);
+        Player localPlayer = null;
+        for (Player candidate : level().getEntitiesOfClass(
+                Player.class, search,
+                p -> p.isLocalPlayer() && p != getOwner())) {
+            localPlayer = candidate;
+            break;
+        }
+        if (localPlayer == null) return;
+
+        Vec3 eye = localPlayer.getEyePosition();
+        double t = eye.subtract(from).dot(segment) / lengthSqr;
+        t = Math.max(0.0, Math.min(1.0, t));
+        Vec3 closest = from.add(segment.scale(t));
+        double distance = Math.sqrt(closest.distanceToSqr(eye));
+        if (distance > FLYBY_RANGE) return;
+
+        float proximity = (float) (1.0 - distance / FLYBY_RANGE);
+        float energy = Math.max(0.25f, flightEnergyFraction());
+        float volume = (0.10f + 0.34f * proximity) * (0.65f + 0.35f * energy);
+        float pitch = 1.03f + this.random.nextFloat() * 0.03f;
+        level().playLocalSound(closest.x, closest.y, closest.z,
+                ModSounds.BULLET_FLYBY.get(), SoundSource.PLAYERS,
+                volume, pitch, false);
+        flyByPlayed = true;
+    }
 
     @Override
     protected Item getDefaultItem() { return Monster_conquest.BULLET_PROJECTILE.get(); }

@@ -8,6 +8,28 @@ plugins {
 version = mod_version
 group = mod_group_id
 
+def resolveBuildBranch = {
+    String branch = providers.gradleProperty("gitBranch").orNull?.trim()
+    if (branch == null) {
+        branch = providers.environmentVariable("GITHUB_HEAD_REF").orNull?.trim()
+    }
+    if (branch == null
+            && providers.environmentVariable("GITHUB_REF_TYPE").orNull == "branch") {
+        branch = providers.environmentVariable("GITHUB_REF_NAME").orNull?.trim()
+    }
+    if (branch == null) {
+        branch = providers.exec {
+            commandLine "git", "branch", "--show-current"
+            ignoreExitValue = true
+        }.standardOutput.asText.get().trim()
+    }
+    if (!branch || branch == "HEAD") {
+        return "unknown"
+    }
+    return branch
+}
+def buildGitBranch = resolveBuildBranch()
+
 repositories {
     mavenLocal()
 }
@@ -62,6 +84,33 @@ neoForge {
     }
 }
 
+// NeoFormRuntime 每次运行会留下带时间戳的空临时目录。只清理空目录，
+// 运行中或仍有文件的目录会保留，避免影响正在执行的开发任务。
+def pruneNeoFormTemp = tasks.register("pruneNeoFormTemp") {
+    group = "build"
+    description = "Removes empty NeoFormRuntime temporary directories."
+    def neoFormTemp = layout.buildDirectory.dir("tmp/neoformruntime")
+    doLast {
+        def root = neoFormTemp.get().asFile
+        if (!root.isDirectory()) return
+        def purgeEmpty
+        purgeEmpty = { File dir ->
+            dir.listFiles()?.each { child ->
+                if (child.isDirectory()) purgeEmpty(child)
+            }
+            if (dir.listFiles()?.length == 0) dir.delete()
+        }
+        purgeEmpty(root)
+    }
+}
+
+tasks.matching {
+    it.name in ["runClient", "runServer", "gameTestServer",
+                "createMinecraftArtifacts", "downloadAssets", "build"]
+}.configureEach {
+    finalizedBy(pruneNeoFormTemp)
+}
+
 sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 // LICENSE 随 jar 一起分发（放在 jar 根目录，解包即可看到）
@@ -84,6 +133,8 @@ var generateModMetadata = tasks.register("generateModMetadata", ProcessResources
                              mod_name               : mod_name,
                              mod_license            : mod_license,
                              mod_version            : mod_version,
+                             git_branch             : buildGitBranch,
+                             mod_loader             : mod_loader,
                              mod_authors            : mod_authors,
                              mod_description        : mod_description]
     inputs.properties replaceProperties

@@ -1,31 +1,41 @@
 package com.ohhapple.monster_conquest.entity;
 
-import com.ohhapple.monster_conquest.config.CombatConfig;
-import com.ohhapple.monster_conquest.config.FactionConfig;
-import com.ohhapple.monster_conquest.config.GeneralConfig;
-import com.ohhapple.monster_conquest.config.PlayerConfig;
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.ai.commander.CommanderCombatGoal;
 import com.ohhapple.monster_conquest.ai.commander.CommanderMarchGoal;
 import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import com.ohhapple.monster_conquest.ai.nav.BallisticAim;
+import com.ohhapple.monster_conquest.ai.nav.ClimbMoveControl;
+import com.ohhapple.monster_conquest.ai.nav.ClimbPathNavigation;
 import com.ohhapple.monster_conquest.ai.nav.LancePierce;
+import com.ohhapple.monster_conquest.ai.nav.MeleeReach;
+import com.ohhapple.monster_conquest.ai.nav.MarchRouteFollower;
+import com.ohhapple.monster_conquest.ai.nav.PathProbe;
 import com.ohhapple.monster_conquest.ai.nav.RoutePlanner;
 import com.ohhapple.monster_conquest.ai.target.AttackConfiguredEnemyGoal;
 import com.ohhapple.monster_conquest.army.*;
+import com.ohhapple.monster_conquest.army.FactionShield;
 import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
 import com.ohhapple.monster_conquest.army.relation.FactionAlly;
 import com.ohhapple.monster_conquest.army.relation.FactionHostility;
 import com.ohhapple.monster_conquest.army.relation.NativePeace;
-import com.ohhapple.monster_conquest.army.FactionShield;
 import com.ohhapple.monster_conquest.army.threat.ArmyThreatUtil;
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
+import com.ohhapple.monster_conquest.config.CombatConfig;
+import com.ohhapple.monster_conquest.config.FactionConfig;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
+import com.ohhapple.monster_conquest.config.PlayerConfig;
 import com.ohhapple.monster_conquest.entity.projectile.ArmyArrow;
+import com.ohhapple.monster_conquest.gun.GunItem;
 import com.ohhapple.monster_conquest.item.CommanderBlade;
 import com.ohhapple.monster_conquest.item.LanceItem;
+import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.path.PathRoute;
+import com.ohhapple.monster_conquest.path.PathRoutes;
 import com.ohhapple.monster_conquest.util.PeacefulUtil;
 import com.ohhapple.monster_conquest.world.ArmySpawnUtil;
+
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
@@ -36,17 +46,20 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
-import net.minecraft.world.DifficultyInstance;
+import net.minecraft.util.RandomSource;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.entity.*;
-import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.goal.*;
 import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
@@ -54,22 +67,27 @@ import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.monster.RangedAttackMob;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
-import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
+import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.Enchantments;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.pathfinder.Path;
+import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 import java.util.function.Predicate;
 
 public abstract class AbstractArmyCommander extends PathfinderMob
-        implements RangedAttackMob, ArmyAnchor.AnchoredUnit, ManagedUnit {
+        implements RangedAttackMob, ArmyAnchor.AnchoredUnit, ManagedUnit, ShieldGuardUser {
 
     public enum WeaponMode { BOW, LANCE, BLADE }
     public enum Formation { LINE, WEDGE, SHIELD_WALL, SKIRMISH }
@@ -80,6 +98,11 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     /** 手动装备掩码（按位对应 6 个手动装备栏）：客户端渲染阵营图案时要知道哪些部位被玩家装备盖住了。 */
     protected static final EntityDataAccessor<Byte> DATA_MANUAL_GEAR =
             SynchedEntityData.defineId(AbstractArmyCommander.class, EntityDataSerializers.BYTE);
+
+    private static final EntityDataAccessor<Integer> DATA_SHIELD_GUARD_STANCE =
+            SynchedEntityData.defineId(AbstractArmyCommander.class, EntityDataSerializers.INT);
+    private static final EntityDataAccessor<Integer> DATA_SHIELD_GUARD_ATTACK_LOCK =
+            SynchedEntityData.defineId(AbstractArmyCommander.class, EntityDataSerializers.INT);
 
     /**
      * 单位锚点：随村庄刷出的巡逻队长 / 随袭击刷出的增援才带锚点，
@@ -120,6 +143,11 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     }
     private boolean equipmentInitialized = false;
     private int lastHurtTick = -10000;
+    private int shieldGuardBraceTicks;
+    private int shieldGuardRecoveryTicks;
+    private int shieldGuardAttackLockTicks;
+    /** 玩家明确攻击命令的巡逻范围豁免截止 tick（仅运行期）。 */
+    private long patrolLeashBypassUntil = 0L;
 
     private boolean cachedOpenTerrain = false;
     private int openTerrainCacheTick = -1000;
@@ -146,12 +174,12 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     private boolean retreating = false;
 
     /** 骑枪穿刺的每目标冷却（与近战士兵共用 LancePierce，独立计时）。 */
-    private final java.util.Map<java.util.UUID, Integer> lanceHitCd = new java.util.HashMap<>();
+    private final Map<UUID, Integer> lanceHitCd = new HashMap<>();
 
     @Nullable private Vec3 manualMarchTarget = null;
 
     /** 行军轨迹：无战斗目标行进时记录的路点（索引 0 最旧），士兵沿它排队跟随。 */
-    private final java.util.ArrayList<Vec3> marchTrail = new java.util.ArrayList<>();
+    private final ArrayList<Vec3> marchTrail = new ArrayList<>();
     private int marchTrailExpireTick = 0;
     private boolean marching = false;
     /** 轨迹最多保留的路点数（约 64 格）。 */
@@ -191,7 +219,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     /** 上次探测"到目标有没有路"的 tick（限流，避免频繁 A* 规划拖慢服务器）。 */
     private int lastPathProbeTick = -10000;
     /** "寻路不通"被暂时拉黑的目标。 */
-    @Nullable private java.util.UUID unreachableTargetId = null;
+    @Nullable private UUID unreachableTargetId = null;
     private int unreachableTargetUntil = 0;
     /** 完全无路可走时触发传送脱困的累计时间（tick）。10 秒。 */
     private static final int NO_PATH_TELEPORT_TICKS = 200;
@@ -208,7 +236,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     private double lastMarchDistSq = -1;
 
     // 绕路规划 / 路线跟随状态（与士兵同一套逻辑）
-    private final java.util.ArrayDeque<Vec3> routePoints = new java.util.ArrayDeque<>();
+    private final ArrayDeque<Vec3> routePoints = new ArrayDeque<>();
     @Nullable private UUID routeTargetId = null;
     private int routeExpireTick = 0;
     private int routeIssueTick = 0;
@@ -217,10 +245,10 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     private int routeStallTicks = 0;
     private double routeLastDistSq = -1.0;
     private boolean routeReachesGoal = false;
-    private java.util.List<BlockPos> lastRoutePoints = java.util.List.of();
+    private List<BlockPos> lastRoutePoints = List.of();
     /** 手动行军目标的"方块级 A* 绕路"跟随器（迷宫 / 隔墙，与士兵共用）。 */
-    private final com.ohhapple.monster_conquest.ai.nav.MarchRouteFollower marchRoute =
-            new com.ohhapple.monster_conquest.ai.nav.MarchRouteFollower();
+    private final MarchRouteFollower marchRoute =
+            new MarchRouteFollower();
     /** 因地形主动下马后的免重上马冷却（tick）。 */
     private int terrainDismountCooldown = 0;
     /** 崎岖地形连续确认计数（避免边缘地形反复上马 / 下马）。 */
@@ -235,6 +263,9 @@ public abstract class AbstractArmyCommander extends PathfinderMob
 
     private final Map<UUID, Vec3> formationSlots = new HashMap<>();
     private int formationCacheTick = Integer.MIN_VALUE;
+    private int lastFormationRebuildTick = Integer.MIN_VALUE;
+    @Nullable private Vec3 formationSlotOrigin;
+    private float formationFacingAtBuild = Float.NaN;
 
     private enum SummonCategory { MELEE, RANGED, DUAL, WITCH, MAGE }
 
@@ -292,8 +323,8 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     public double getCommanderHorseArmorBonus() { return 0.0; }
 
     /**
-     * 首领索敌半径：64 格，仍受 GeneralConfig.armyFollowRange 上限约束。
-     *   统一用 128 格索敌扫描开销偏大、也容易隔墙锁敌。
+     * 首领索敌半径的基类兜底值为 64 格；各阵营首领在具体类中覆盖为 128 格。
+     *   无论取哪个值，都仍受 GeneralConfig.armyFollowRange 上限约束。
      */
     public double getCommanderFollowRange() {
         return Math.min(64.0, GeneralConfig.armyFollowRange);
@@ -308,6 +339,8 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         super.defineSynchedData(builder);
         builder.define(DATA_FACTION, "");
         builder.define(DATA_MANUAL_GEAR, (byte) 0);
+        builder.define(DATA_SHIELD_GUARD_STANCE, GuardStance.LOWERED.id());
+        builder.define(DATA_SHIELD_GUARD_ATTACK_LOCK, 0);
     }
 
     public final ResourceLocation getFactionId() {
@@ -341,13 +374,19 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     // ===================== 属性 =====================
     public static AttributeSupplier.Builder createAttributes() {
         // 首领同样不再继承 Monster（避免被别的模组当"敌对生物"默认锁定）。
-        return Mob.createMobAttributes().add(Attributes.ATTACK_DAMAGE)
+        return Mob.createMobAttributes()
                 .add(Attributes.MAX_HEALTH, 100.0D)
                 .add(Attributes.ATTACK_DAMAGE, 8.0D)
                 .add(Attributes.MOVEMENT_SPEED, 0.27D)
                 .add(Attributes.FOLLOW_RANGE, 128.0D)
                 .add(Attributes.ARMOR, 3.0D)
-                .add(Attributes.KNOCKBACK_RESISTANCE, 0.5D);
+                .add(Attributes.KNOCKBACK_RESISTANCE, 0.5D)
+                .add(GuardAttributes.SHIELD_GUARD_CHANCE,
+                        GuardAttributes.DEFAULT_GUARD_CHANCE)
+                .add(GuardAttributes.SHIELD_GUARD_REDUCTION,
+                        GuardAttributes.DEFAULT_GUARD_REDUCTION)
+                .add(GuardAttributes.SHIELD_GUARD_LIMIT,
+                        GuardAttributes.DEFAULT_GUARD_LIMIT);
     }
 
     public void setWeaponMode(WeaponMode mode) { this.weaponMode = mode; }
@@ -357,6 +396,9 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     public void setFormation(Formation f) {
         this.formation = f;
         this.formationCacheTick = Integer.MIN_VALUE;
+        this.lastFormationRebuildTick = Integer.MIN_VALUE;
+        this.formationSlotOrigin = null;
+        this.formationFacingAtBuild = Float.NaN;
     }
 
     // ===================== 控制工具：手动行军目标 =====================
@@ -366,6 +408,35 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         this.manualMarchTarget = target;
     }
 
+    /**
+     * 控制工具对首领下达的直接行军命令。
+     *   旧战斗绕路 / 旧 A* 路线 / 旧导航目标必须先清掉，否则
+     *   CommanderCombatGoal 停下后，tickRoute 仍可能把单位带向旧敌人。
+     */
+    public void issueDirectMarchOrder(Vec3 target) {
+        if (target == null) return;
+        this.manualMarchTarget = target;
+        this.pathIssuedPoint = null;
+        setTarget(null);
+        setLastHurtByMob(null);
+        clearRoute();
+        clearMarchRoute();
+        this.stuckAccumTicks = 0;
+        this.lastMarchDistSq = -1.0;
+        Entity mover = getVehicle() != null ? getVehicle() : this;
+        if (mover instanceof Mob mob) {
+            AiNavUtil.stopMovementInput(mob);
+            mob.getNavigation().stop();
+        }
+        if (mover != this) AiNavUtil.stopMovementInput(this);
+    }
+
+    /** 路径点工具最近一次下发的路径点（运行状态，不存档）。 */
+    @Nullable private Vec3 pathIssuedPoint = null;
+
+    @Nullable public Vec3 getPathIssuedPoint() { return pathIssuedPoint; }
+    public void setPathIssuedPoint(@Nullable Vec3 point) { this.pathIssuedPoint = point; }
+
     /** 是否正在无战斗目标行军（士兵沿行军轨迹排队跟随，不再各自排阵型）。 */
     public boolean isMarching() { return marching; }
 
@@ -373,7 +444,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
      * 行军轨迹点（只读，索引 0 = 最旧，末尾最接近首领当前位置）。
      *   首领停下后保留一小段时间，让落后的士兵走完最后一段再展开阵型。
      */
-    public java.util.List<Vec3> getMarchTrail() { return marchTrail; }
+    public List<Vec3> getMarchTrail() { return marchTrail; }
 
     // ===================== AI =====================
     @Override
@@ -392,6 +463,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     public boolean canAttack(LivingEntity target) {
         // 和平模式：不索敌、不反击
         if (PeacefulUtil.isPeaceful(this)) return false;
+        if (!isPatrolTargetAllowed(target)) return false;
         // 锚点保护：不攻击锚点活动范围之外的目标（村庄巡逻 / 袭击增援）
         if (!ArmyAnchor.targetAllowed(this, target)) return false;
         if (target instanceof Player p && (p.isCreative() || p.isSpectator())) return false;
@@ -404,6 +476,9 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         if (target instanceof AbstractArmySoldier
                 || target instanceof AbstractArmyCommander
                 || target instanceof Player) {
+            // 同阵营 / 同军队是绝对友军，必须排在旧 ArmyRelations 敌对标记之前。
+            if (isFactionOrArmyFriendly(target)) return false;
+
             UUID targetArmy = AbstractArmySoldier.resolveArmyUuid(target, level());
             if (targetArmy != null && targetArmy.equals(this.getUUID())) return false;
 
@@ -459,6 +534,12 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         return null;
     }
 
+    /** 走梯子的寻路：原版寻路不认梯子，路线里永远不会有梯子。 */
+    @Override
+    protected PathNavigation createNavigation(Level level) {
+        return new ClimbPathNavigation(this, level);
+    }
+
     @Override
     public PathNavigation getNavigation() {
         if (this.getVehicle() instanceof Mob horse) return horse.getNavigation();
@@ -499,18 +580,51 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     /** 和平模式下不接受新目标。 */
     @Override
     public void setTarget(@Nullable LivingEntity target) {
-        if (target != null && PeacefulUtil.isPeaceful(this)) return;
+        if (target != null && (PeacefulUtil.isPeaceful(this)
+                || !isPatrolTargetAllowed(target))) return;
         super.setTarget(target);
+    }
+
+    /** 有巡逻路线时，普通仇恨目标只能在路线附近；没有路线则不限制。 */
+    public boolean isPatrolTargetAllowed(@Nullable LivingEntity target) {
+        if (target == null) return true;
+        if (tickCount < patrolLeashBypassUntil) return true;
+        if (!(level() instanceof ServerLevel sl)) return true;
+        PathRoutes routes = PathRoutes.get(sl);
+        PathRoute route = routes.route(routes.effectiveKey(this));
+        return route == null || route.size() == 0
+                || PathRoutes.isWithinLeash(route, target.position());
+    }
+
+    /** 控制工具明确攻击时，短时间内允许追出巡逻路线。 */
+    public void allowPatrolLeashBypass(int ticks) {
+        if (ticks > 0) {
+            patrolLeashBypassUntil = Math.max(patrolLeashBypassUntil, tickCount + ticks);
+        }
+    }
+
+    /** 最近 5 秒内是否被攻击；用于让手动行军不能屏蔽反击。 */
+    public boolean isUnderRecentAttack() {
+        LivingEntity attacker = getLastHurtByMob();
+        return attacker != null && attacker.isAlive()
+                && tickCount - getLastHurtByMobTimestamp() <= 100;
     }
 
     // ===================== Tick =====================
     @Override
     public void tick() {
+        // 在本 tick 的 AI / 骑枪穿刺写入新锁盾窗口之前先推进旧窗口。
+        ShieldGuardController.tick(this);
         super.tick();
         if (level().isClientSide) return;
 
         // 爬梯子：目标是上方、身边 / 脚下有梯子时自动攀爬
-        AiNavUtil.tryClimbLadder(this, resolveClimbGoalY());
+        Vec3 climbGoal = resolveClimbGoal();
+        AiNavUtil.tickClimbApproach(this, climbGoal.y, climbGoal);
+        // 梯子感知移动控制器：跟在梯子列里时不会贴着梯子方块乱跳
+        if (!(getMoveControl() instanceof ClimbMoveControl)) {
+            this.moveControl = new ClimbMoveControl(this);
+        }
         // 移动控制器"串线"保护：坐骑的移动目标点离自己超过 6 格（上马前 / 旧路径残留）
         //   → 清掉，否则快速坐骑会掉头朝旧点走（到目标前原地转圈）。
         if (getVehicle() instanceof Mob mount) {
@@ -573,6 +687,10 @@ public abstract class AbstractArmyCommander extends PathfinderMob
 
         tickHatred();
         if (getTarget() instanceof Player p2 && (p2.isCreative() || p2.isSpectator())) setTarget(null);
+        if (getTarget() != null && isFactionOrArmyFriendly(getTarget())) {
+            setTarget(null);
+            setLastHurtByMob(null);
+        }
 
         if (tickCount % Math.max(1, GeneralConfig.recruitInterval) == 0) tryRecruit();
         if (tickCount % 40 == 0) tryRecruitStrays();
@@ -581,6 +699,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         controlMount();
         tickLancePierce();
         syncWeapon();
+        tickLanceModel();
         tickStuckCheck();
         tickRoute();
         tickMarchRoute();
@@ -947,14 +1066,18 @@ public abstract class AbstractArmyCommander extends PathfinderMob
             double melee = CommanderCombatGoal.MELEE_RANGE + 1.0;
             // 高度差受限：墙头 / 高台上的目标不算"打得到"
             if (horizSq <= melee * melee
-                    && Math.abs(getY() - target.getY()) <= CommanderCombatGoal.MAX_MELEE_Y_DIFF) {
+                    && MeleeReach.canReachVertically(
+                            this, target, CommanderCombatGoal.MAX_MELEE_Y_DIFF)
+                    && hasBodyLineOfSight(target)) {
                 return true;
             }
         }
 
         double rangedMin = CommanderCombatGoal.RANGED_THRESHOLD;
         double rangedMax = CommanderCombatGoal.RANGED_MAX_RANGE + 1.0;
-        return horizSq > rangedMin * rangedMin && horizSq < rangedMax * rangedMax;
+        return horizSq > rangedMin * rangedMin && horizSq < rangedMax * rangedMax
+                && BallisticAim.solve(level(), this, target,
+                        CombatConfig.arrowSpeed) != null;
     }
 
     private void applyWaterFloat() {
@@ -996,7 +1119,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
 
     /**
      * 爬梯子 / 脚手架 / 藤蔓前必须下马（坐骑无法攀爬），并在攀爬期间保持下马。
-     *   由 AiNavUtil.tryClimbLadder 在需要攀爬时调用（可重复调用，安全）。
+     *   由 AiNavUtil.tickClimbApproach 在需要攀爬时调用（可重复调用，安全）。
      */
     public void dismountForClimb() {
         if (getVehicle() instanceof WarHorseEntity) {
@@ -1025,12 +1148,29 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     /** 是否正在按"行军绕路"（方块级 A* 路线）前往手动指定的行军目标。 */
     public boolean isFollowingMarchRoute() { return marchRoute.isFollowing(); }
 
+    /** 是否正在跨 tick 计算行军路线（尚未安装路径）。 */
+    public boolean isMarchRoutePlanning() { return marchRoute.isPlanning(); }
+
     /** 当前绕路路线是否正通向这个指定点（中途改命令时用来判断是否要重新规划）。 */
     public boolean isFollowingMarchTowards(Vec3 target) {
         return marchRoute.isFollowingTowards(target);
     }
 
     public void clearMarchRoute() { marchRoute.clear(); }
+
+    /**
+     * 低血撤退需要独占移动。先释放旧战斗路线和 MarchRouteFollower，
+     * 再清理坐骑 / 骑手两侧的移动输入，避免旧追击坐标把首领继续带向敌人。
+     */
+    public void releaseMovementRouteForRetreat() {
+        clearRoute();
+        clearMarchRoute();
+        Mob mover = getVehicle() instanceof Mob mount ? mount : this;
+        AiNavUtil.haltMovement(mover);
+        if (mover != this) {
+            AiNavUtil.stopMovementInput(this);
+        }
+    }
 
     /**
      * 手动行军目标的方块级 A* 绕路：原版寻路在迷宫 / 长绕路里只能给"半路路径"
@@ -1046,19 +1186,19 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         Mob mover = mounted && mount != null ? mount : this;
         double extraHeight = mounted ? WarHorseEntity.RIDER_HEIGHT : 0.0;
         // 偏好：自己刚走过的行军轨迹（重规划时不会在迷宫岔路之间来回换）
-        java.util.List<BlockPos> favored = null;
+        List<BlockPos> favored = null;
         if (!marchTrail.isEmpty()) {
-            java.util.List<BlockPos> list = new java.util.ArrayList<>(marchTrail.size());
+            List<BlockPos> list = new ArrayList<>(marchTrail.size());
             for (Vec3 p : marchTrail) list.add(BlockPos.containing(p));
             favored = list;
         }
         return marchRoute.start(this, mounted ? mount : null, target, tickCount, extraHeight,
-                favored, this::dismountHorseForTerrain);
+                favored, this::dismountHorseForTerrain, false);
     }
 
     /** 跟随行军绕路路线：在 AI goal 之后执行，保证导航不被覆盖。 */
     private void tickMarchRoute() {
-        if (!marchRoute.isFollowing()) return;
+        if (!marchRoute.isFollowing() && !marchRoute.isPlanning()) return;
         Mob mover = getVehicle() instanceof Mob mount ? mount : this;
         LivingEntity combat = getCombatTarget();
         marchRoute.tick(mover, tickCount, combat != null && combat.isAlive());
@@ -1074,9 +1214,8 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     /** 到指定坐标是否存在可行路线（绝对距离 vs 路径距离判定用）。 */
     public boolean hasReachablePathTo(@Nullable Vec3 target) {
         if (target == null) return false;
-        net.minecraft.world.level.pathfinder.Path path =
-                getNavigation().createPath(BlockPos.containing(target), 1);
-        return path != null && path.canReach();
+        Mob mover = getVehicle() instanceof Mob mount ? mount : this;
+        return PathProbe.canReach(mover, BlockPos.containing(target), 128);
     }
 
     /** 到目标有没有可行路线（限流调用：先看已有路线 → 原版寻路 → 自研 A* 完整规划）。 */
@@ -1087,6 +1226,19 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         return replanRouteTo(target, true);
     }
 
+    /** 严格确认目标不可达；任何延迟、半路路线或跨 tick 规划都不算不可达。 */
+    public boolean canDefinitivelyNotReachTarget(@Nullable LivingEntity target) {
+        if (target == null || !target.isAlive()) return false;
+        if (hasReachingRoute(target)) return false;
+        if (hasReachablePathTo(target.position())) return false;
+
+        boolean planned = replanRouteTo(target, true);
+        if (planned || marchRoute.isFollowing() || marchRoute.isPlanning()) return false;
+        return !marchRoute.isStartDeferred()
+                && !RoutePlanner.wasLastCallDeferred()
+                && !AiNavUtil.wasLastHeavyAttemptDeferred();
+    }
+
     /** 该目标是否在"寻路不通"黑名单里（索敌时跳过）。 */
     public boolean isTargetBlacklisted(@Nullable LivingEntity target) {
         return target != null && unreachableTargetId != null
@@ -1094,13 +1246,13 @@ public abstract class AbstractArmyCommander extends PathfinderMob
                 && tickCount < unreachableTargetUntil;
     }
 
-    /** 当前想去的目标高度（战斗目标 / 行军目标 / 自己），用于爬梯子判断。 */
-    private double resolveClimbGoalY() {
+    /** 当前想去的目标点（战斗目标 / 行军目标 / 自己），用于爬梯子判断（高度 + 出梯方向）。 */
+    private Vec3 resolveClimbGoal() {
         LivingEntity t = getCombatTarget();
-        if (t != null && t.isAlive()) return t.getY();
+        if (t != null && t.isAlive()) return t.position();
         Vec3 march = getManualMarchTarget();
-        if (march != null) return march.y;
-        return getY();
+        if (march != null) return march;
+        return position();
     }
 
     /** 标记目标"寻路不通"：暂时不再把它当目标，也不会被传送到它身边。 */
@@ -1120,7 +1272,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         int baseX = (int) Math.floor(getX());
         int baseY = (int) Math.floor(getY());
         int baseZ = (int) Math.floor(getZ());
-        net.minecraft.util.RandomSource random = getRandom();
+        RandomSource random = getRandom();
         for (int attempt = 0; attempt < 24; attempt++) {
             double angle = random.nextDouble() * Math.PI * 2.0;
             double dist = 1.0 + random.nextDouble() * 9.0;
@@ -1177,7 +1329,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         }
         AiNavUtil.markHeavyAttemptDeferred(false);
 
-        net.minecraft.world.entity.ai.attributes.AttributeInstance followAttr =
+        AttributeInstance followAttr =
                 mover.getAttribute(Attributes.FOLLOW_RANGE);
         double originalFollow = followAttr != null ? followAttr.getBaseValue() : 0.0D;
         try {
@@ -1205,7 +1357,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
                 double planRadius = Math.min(96.0, Math.sqrt(distanceToSqr(target)) + 24.0);
                 boolean mounted = getVehicle() instanceof WarHorseEntity;
                 double extraHeight = mounted ? WarHorseEntity.RIDER_HEIGHT : 0.0;
-                java.util.List<BlockPos> favored = routeTargetId != null
+                List<BlockPos> favored = routeTargetId != null
                         && routeTargetId.equals(target.getUUID()) ? lastRoutePoints : null;
 
                 RoutePlanner.Result planned = RoutePlanner.plan(level(), mover, target.position(),
@@ -1244,7 +1396,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     private double routeGoalRadius() { return CommanderCombatGoal.MELEE_RANGE + 0.5; }
 
     private static boolean pathReaches(PathNavigation nav) {
-        net.minecraft.world.level.pathfinder.Path path = nav.getPath();
+        Path path = nav.getPath();
         return path != null && path.canReach();
     }
 
@@ -1261,7 +1413,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
             BlockPos p = points.get(i);
             routePoints.add(new Vec3(p.getX() + 0.5, p.getY(), p.getZ() + 0.5));
         }
-        lastRoutePoints = java.util.List.copyOf(points);
+        lastRoutePoints = List.copyOf(points);
         routeReachesGoal = reachesGoal;
         routeTargetId = target.getUUID();
         routeExpireTick = tickCount + 200;
@@ -1332,6 +1484,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     /** 朝参考点方向 1.5 / 2.5 格处"马 + 骑手"站不下 → 立即下马步行。 */
     public boolean tryDismountForMountTerrain(Vec3 reference) {
         if (!(getVehicle() instanceof WarHorseEntity)) return false;
+        if (isMarchRoutePlanning() || isFollowingMarchRoute()) return false;
         if (reference == null) return false;
 
         double dx = reference.x - getX();
@@ -1372,6 +1525,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     /** 每 10 tick 检查：马走不动且前方过不去 → 立即下马步行。 */
     private void tickTerrainDismountCheck() {
         if (!(getVehicle() instanceof WarHorseEntity horse)) return;
+        if (isMarchRoutePlanning() || isFollowingMarchRoute()) return;
         if (tickCount % 10 != 0) return;
 
         Vec3 ref = null;
@@ -1565,7 +1719,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
             }
             ItemStack held = this.getMainHandItem();
             if (!held.is(Monster_conquest.FACTION_BANNER.get())
-                    || !java.util.Objects.equals(
+                    || !Objects.equals(
                             FactionBanner.factionOf(held), getFactionId())) {
                 this.setItemSlot(EquipmentSlot.MAINHAND, bannerStack.copy());
             }
@@ -1616,12 +1770,45 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     // ===================== 方阵槽位 =====================
     @Nullable
     public Vec3 getFormationSlot(AbstractArmySoldier soldier) {
-        if (formationCacheTick == Integer.MIN_VALUE
-                || tickCount - formationCacheTick > 20) {
+        float facing = getFormationFacing();
+        boolean facingChanged = Float.isNaN(formationFacingAtBuild)
+                || Math.abs(Mth.wrapDegrees(formationFacingAtBuild - facing)) > 15f;
+        boolean rebuild = formationCacheTick == Integer.MIN_VALUE
+                || facingChanged
+                || lastFormationRebuildTick == Integer.MIN_VALUE
+                || tickCount - lastFormationRebuildTick > 200;
+
+        if (!rebuild && formationSlotOrigin != null) {
+            Vec3 delta = position().subtract(formationSlotOrigin);
+            double movedSq = delta.lengthSqr();
+            if (movedSq > 64.0) {
+                rebuild = true;
+            } else if (movedSq > 1.0E-4) {
+                for (Map.Entry<UUID, Vec3> entry : formationSlots.entrySet()) {
+                    entry.setValue(entry.getValue().add(delta));
+                }
+                formationSlotOrigin = position();
+                formationCacheTick = tickCount;
+            }
+        }
+
+        if (rebuild) {
             rebuildFormationSlots();
             formationCacheTick = tickCount;
+            lastFormationRebuildTick = tickCount;
+            formationSlotOrigin = position();
+            formationFacingAtBuild = facing;
         }
-        return formationSlots.get(soldier.getUUID());
+        Vec3 slot = formationSlots.get(soldier.getUUID());
+        if (slot == null) {
+            rebuildFormationSlots();
+            formationCacheTick = tickCount;
+            lastFormationRebuildTick = tickCount;
+            formationSlotOrigin = position();
+            formationFacingAtBuild = facing;
+            slot = formationSlots.get(soldier.getUUID());
+        }
+        return slot;
     }
 
     private void rebuildFormationSlots() {
@@ -2118,7 +2305,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
      */
     private static void enchantIfPresent(ItemStack stack,
                                          HolderLookup.RegistryLookup<Enchantment> enchants,
-                                         net.minecraft.resources.ResourceKey<Enchantment> key,
+                                         ResourceKey<Enchantment> key,
                                          int level) {
         if (stack.isEmpty()) return;
         var opt = enchants.get(key);
@@ -2180,8 +2367,8 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         ItemStack def = defaultGear[index];
         if (def.isEmpty()) return worn;
         if (!def.getEnchantments().isEmpty()) {
-            worn.set(net.minecraft.core.component.DataComponents.ENCHANTMENTS,
-                    def.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS));
+            worn.set(DataComponents.ENCHANTMENTS,
+                    def.get(DataComponents.ENCHANTMENTS));
         }
         return worn;
     }
@@ -2377,6 +2564,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     }
 
     private boolean isRecruitableStray(AbstractArmySoldier s) {
+        if (s.isSummoned()) return false;
         UUID id = s.getCommanderUuid().orElse(null);
         if (id == null) return sameFaction(s);
         if (id.equals(this.getUUID())) return false;
@@ -2399,6 +2587,20 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         ResourceLocation b = this.getFactionId();
         if (a == null || b == null) return false;
         return a.equals(b);
+    }
+
+    /**
+     * 同阵营单位之间不互相推挤（首领穿过自家士兵时也一样）。
+     *   不同阵营仍然照旧互顶，保留通道防守的效果。
+     */
+    @Override
+    public void push(Entity entity) {
+        if (entity instanceof LivingEntity living) {
+            ResourceLocation mine = getFactionId();
+            ResourceLocation theirs = factionOf(living);
+            if (mine != null && mine.equals(theirs)) return;
+        }
+        super.push(entity);
     }
 
     protected void trySummonIfFew() {
@@ -2638,6 +2840,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
 
     // ===================== 坐骑 =====================
     private void controlMount() {
+        if (isMarchRoutePlanning() || isFollowingMarchRoute()) return;
         LivingEntity threat = getCombatTarget();
 
         if (!(getVehicle() instanceof WarHorseEntity horse)) {
@@ -2645,7 +2848,10 @@ public abstract class AbstractArmyCommander extends PathfinderMob
             // 站在梯子 / 脚手架 / 藤蔓上时不自动上马（坐骑没法攀爬，也会卡在梯子上）
             if (terrainDismountCooldown <= 0 && !AiNavUtil.isOnClimbable(this)) {
                 if (threat != null && threat.isAlive()) shouldMount = true;
-                else if (tickCount % 40 == 0 && isOpenTerrainCached()) shouldMount = true;
+                else if (tickCount % 40 == 0
+                        && AiNavUtil.mountFitsAt(level(), this, getX(), getY(), getZ())) {
+                    shouldMount = true;
+                }
             }
             if (shouldMount) mountCommanderHorse();
             return;
@@ -2776,7 +2982,10 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         }
 
         sl.addFreshEntity(horse);
-        startRiding(horse, true);
+        if (!startRiding(horse, true)) {
+            horse.discard();
+            return;
+        }
         // 形态变了（步行 → 骑乘）：旧的绕路路线按步行净空算的，作废让上层重新规划
         clearMarchRoute();
     }
@@ -2788,12 +2997,29 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         LancePierce.tick(this, getCombatTarget(), lastChargeSpeed, tickCount, lanceHitCd, this::canAttack);
     }
 
+    /** 冲锋时把主手骑枪切到平放模型；穿越期间保持，结束冲锋后恢复普通模型。 */
+    private void tickLanceModel() {
+        ItemStack held = getMainHandItem();
+        if (!(held.getItem() instanceof LanceItem)) return;
+
+        boolean charging = getVehicle() instanceof WarHorseEntity horse
+                && (horse.isCharging() || horse.isPassingThrough());
+        if (LanceItem.hasChargingModel(held) == charging) return;
+
+        ItemStack visual = held.copy();
+        LanceItem.setChargingModel(visual, charging);
+        this.setItemSlot(EquipmentSlot.MAINHAND, visual);
+    }
+
     @Override
     public boolean doHurtTarget(Entity target) {
+        // 只让出极短的攻击窗口；盾牌在其余挥砍动画期间仍然举着。
+        setShieldGuardAttackLockTicks(ShieldGuardController.ATTACK_LOCK_TICKS);
+
         // 近战高度差限制：站在墙头 / 高台上的目标砍不到（骑枪允许略大一点的高度差）
         if (target instanceof LivingEntity livingTarget) {
             double maxDy = this.getMainHandItem().getItem() instanceof LanceItem ? 2.0 : 1.5;
-            if (Math.abs(this.getY() - livingTarget.getY()) > maxDy) return false;
+            if (!MeleeReach.canReachVertically(this, livingTarget, maxDy)) return false;
         }
 
         // 不穿墙：近战 / 骑枪都要求身体中心之间没有方块遮挡
@@ -2843,10 +3069,10 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     private boolean hasBodyLineOfSight(LivingEntity target) {
         Vec3 from = position().add(0, getBbHeight() * 0.5, 0);
         Vec3 to = target.position().add(0, target.getBbHeight() * 0.5, 0);
-        return level().clip(new net.minecraft.world.level.ClipContext(from, to,
-                net.minecraft.world.level.ClipContext.Block.COLLIDER,
-                net.minecraft.world.level.ClipContext.Fluid.NONE, this))
-                .getType() == net.minecraft.world.phys.HitResult.Type.MISS;
+        return level().clip(new ClipContext(from, to,
+                ClipContext.Block.COLLIDER,
+                ClipContext.Fluid.NONE, this))
+                .getType() == HitResult.Type.MISS;
     }
 
     @Override
@@ -2856,15 +3082,9 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         double baseSpeed = CombatConfig.arrowSpeed;
         double speedJitter = 0.85 + this.getRandom().nextDouble() * 0.30;
 
-        ResourceLocation myFaction = getFactionId();
         BallisticAim.Solution sol = BallisticAim.solve(
                 level(), this, target,
-                baseSpeed * speedJitter,
-                e -> {
-                    if (!(e instanceof LivingEntity)) return false;
-                    ResourceLocation f = ArmyThreatUtil.factionOf(e);
-                    return f != null && f.equals(myFaction);
-                });
+                baseSpeed * speedJitter);
 
         if (sol == null) return;
 
@@ -2874,7 +3094,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         // 用子类可覆盖的首领远程伤害
         arrow.setBaseDamage(getCommanderRangedDamage());
 
-        this.playSound(net.minecraft.sounds.SoundEvents.SKELETON_SHOOT, 1.0F,
+        this.playSound(SoundEvents.SKELETON_SHOOT, 1.0F,
                 1.0F / (this.getRandom().nextFloat() * 0.4F + 0.8F));
         this.level().addFreshEntity(arrow);
     }
@@ -2883,6 +3103,11 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     /** 士兵每 20 tick 登记一次存在（见 AbstractArmySoldier.tick 的编制登记）。 */
     public void noteSoldierPresence(AbstractArmySoldier soldier) {
         if (soldier == null || level().isClientSide) return;
+        // 召唤物可以跟随所属小队，但不进入正式编制 / 阵型，也不占军队人数上限。
+        if (soldier.isSummoned()) {
+            soldierRoster.remove(soldier.getUUID());
+            return;
+        }
         soldierRoster.put(soldier.getUUID(), level().getGameTime());
     }
 
@@ -2905,6 +3130,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
                 getBoundingBox().inflate(r),
                 s -> s.isAlive()
                         && !s.isRemoved()
+                        && !s.isSummoned()
                         && this.getUUID().equals(s.getCommanderUuid().orElse(null)))) {
             found.put(s.getUUID(), s);
         }
@@ -2917,6 +3143,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
                 Entity e = sl.getEntities().get(id);
                 if (e instanceof AbstractArmySoldier s
                         && s.isAlive() && !s.isRemoved()
+                        && !s.isSummoned()
                         && this.getUUID().equals(s.getCommanderUuid().orElse(null))) {
                     found.put(id, s);
                 }
@@ -2947,6 +3174,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         hatredMap.entrySet().removeIf(e -> {
             HatredEntry h = e.getValue();
             if (h.entity == null || !h.entity.isAlive()) return true;
+            if (isFactionOrArmyFriendly(h.entity)) return true;
             if (h.entity instanceof Player p && (p.isCreative() || p.isSpectator())) return true;
             if (h.entity.distanceToSqr(this) > maxDist * maxDist) return true;
             // 仇恨过期：只有路线完全无法到达时才移除；还能到达就续期继续追击
@@ -2969,15 +3197,17 @@ public abstract class AbstractArmyCommander extends PathfinderMob
 
     /** 仇恨目标是否仍能通过寻路到达（用于仇恨过期判定）。 */
     private boolean canStillReach(LivingEntity target) {
-        net.minecraft.world.entity.ai.navigation.PathNavigation nav = getNavigation();
-        net.minecraft.world.level.pathfinder.Path path = nav.createPath(target, 1);
-        return path != null && path.canReach();
+        Mob mover = getVehicle() instanceof Mob mount ? mount : this;
+        return PathProbe.canReach(mover, target.blockPosition(), 128);
     }
 
     public List<LivingEntity> getHatredList() {
         List<LivingEntity> out = new ArrayList<>();
         for (HatredEntry h : hatredMap.values()) {
-            if (h.entity != null && h.entity.isAlive()) out.add(h.entity);
+            if (h.entity != null && h.entity.isAlive()
+                    && !isFactionOrArmyFriendly(h.entity)) {
+                out.add(h.entity);
+            }
         }
         return out;
     }
@@ -3000,9 +3230,18 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         if (PeacefulUtil.isPeaceful(this)) return;
         if (target instanceof WarHorseEntity) return;
         if (target instanceof Player p && (p.isCreative() || p.isSpectator())) return;
+        if (isFactionOrArmyFriendly(target)) return;
 
         int expire = GeneralConfig.threatDuration;
-        hatredMap.put(target.getUUID(), new HatredEntry(target, tickCount + expire));
+        List<LivingEntity> threats = level() instanceof ServerLevel sl
+                ? ThreatDispatcher.expandSummonThreatTargets(target, sl)
+                : List.of(target);
+        for (LivingEntity enemy : threats) {
+            if (enemy instanceof WarHorseEntity) continue;
+            if (enemy instanceof Player p && (p.isCreative() || p.isSpectator())) continue;
+            if (isFactionOrArmyFriendly(enemy)) continue;
+            hatredMap.put(enemy.getUUID(), new HatredEntry(enemy, tickCount + expire));
+        }
 
         if (getTarget() == null || !getTarget().isAlive()) {
             setTarget(target);
@@ -3013,7 +3252,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     public LivingEntity getCombatTarget() {
         if (PeacefulUtil.isPeaceful(this)) return null;
         LivingEntity t = getTarget();
-        if (t != null && t.isAlive()) return t;
+        if (t != null && t.isAlive() && isPatrolTargetAllowed(t)) return t;
         return pickOwnThreat();
     }
 
@@ -3027,24 +3266,91 @@ public abstract class AbstractArmyCommander extends PathfinderMob
             if (atk == null) atk = source.getDirectEntity();
             if (atk instanceof Projectile proj) atk = proj.getOwner();
             if (atk instanceof LivingEntity attacker && attacker != this) {
+                // 即使盾牌把伤害完全挡住，也算"被攻击"，移动命令不能屏蔽反击。
+                setLastHurtByMob(attacker);
                 ThreatDispatcher.propagate(this, attacker);
             }
         }
 
-        float blocked = computeCommanderShieldBlock(source, amount);
-        if (blocked > 0f) playShieldBlockSound();
-        float remaining = amount - blocked;
-        if (remaining <= 0f) return false;
-
-        boolean hurt = super.hurt(source, remaining);
+        boolean hurt = super.hurt(source, amount);
         if (hurt) lastHurtTick = this.tickCount;
         return hurt;
     }
 
-    private void playShieldBlockSound() {
-        this.level().playSound(null, this.getX(), this.getY(), this.getZ(),
-                net.minecraft.sounds.SoundEvents.SHIELD_BLOCK, this.getSoundSource(),
-                1.0f, 0.8f + this.getRandom().nextFloat() * 0.4f);
+    /**
+     * 单位不接管原版举盾的整段免伤；举盾物品状态只用于动画和第三方兼容，
+     * 实际挡伤统一交给 LivingShieldBlockEvent。
+     */
+    @Override
+    public boolean isDamageSourceBlocked(DamageSource source) {
+        return false;
+    }
+
+    @Override
+    public LivingEntity shieldGuardEntity() {
+        return this;
+    }
+
+    @Override
+    public GuardStance getShieldGuardStance() {
+        return GuardStance.byId(this.entityData.get(DATA_SHIELD_GUARD_STANCE));
+    }
+
+    @Override
+    public void setShieldGuardStance(GuardStance stance) {
+        this.entityData.set(DATA_SHIELD_GUARD_STANCE, stance.id());
+    }
+
+    @Override
+    public int getShieldGuardBraceTicks() {
+        return shieldGuardBraceTicks;
+    }
+
+    @Override
+    public void setShieldGuardBraceTicks(int ticks) {
+        shieldGuardBraceTicks = Math.max(0, ticks);
+    }
+
+    @Override
+    public int getShieldGuardRecoveryTicks() {
+        return shieldGuardRecoveryTicks;
+    }
+
+    @Override
+    public void setShieldGuardRecoveryTicks(int ticks) {
+        shieldGuardRecoveryTicks = Math.max(0, ticks);
+    }
+
+    @Override
+    public int getShieldGuardAttackLockTicks() {
+        return level().isClientSide
+                ? this.entityData.get(DATA_SHIELD_GUARD_ATTACK_LOCK)
+                : shieldGuardAttackLockTicks;
+    }
+
+    @Override
+    public void setShieldGuardAttackLockTicks(int ticks) {
+        int value = Math.max(0, ticks);
+        shieldGuardAttackLockTicks = value;
+        if (!level().isClientSide) {
+            this.entityData.set(DATA_SHIELD_GUARD_ATTACK_LOCK, value);
+        }
+    }
+
+    @Override
+    public boolean isShieldGuardRoleEligible() {
+        if (getMainHandItem().getItem() instanceof BowItem
+                || getMainHandItem().getItem()
+                        instanceof GunItem) {
+            return false;
+        }
+        return hasManualMainHand() || getWeaponMode() != WeaponMode.BOW;
+    }
+
+    @Override
+    public boolean hasShieldGuardTarget() {
+        LivingEntity target = getCombatTarget();
+        return target != null && target.isAlive();
     }
 
     private boolean isFriendlyFire(DamageSource source) {
@@ -3056,6 +3362,8 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         }
         if (!(attacker instanceof LivingEntity livingAttacker)) return false;
         if (livingAttacker == this) return true;
+
+        if (isFactionOrArmyFriendly(livingAttacker)) return true;
 
         UUID myArmy = this.getUUID();
         UUID theirArmy = AbstractArmySoldier.resolveArmyUuid(livingAttacker, level());
@@ -3071,18 +3379,23 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         return NativePeace.isPeacefulPair(this, livingAttacker);
     }
 
-    private float computeCommanderShieldBlock(DamageSource source, float amount) {
-        // 自定义 / 模组盾牌同样能格挡
-        if (!CombatRules.isShieldItem(this.getOffhandItem())) return 0f;
-        // 魔法伤害 / 破盾伤害一律无法被盾牌格挡。
-        if (CombatRules.bypassesShieldBlock(source)) return 0f;
-        double chance = CombatConfig.shieldBlockChance;
-        if (chance <= 0.0) return 0f;
-        if (this.getRandom().nextDouble() >= chance) return 0f;
+    /** 同军队或同阵营属于绝对友军；结盟关系仍按原有单向规则单独判断。 */
+    private boolean isFactionOrArmyFriendly(LivingEntity other) {
+        if (other == null) return false;
+        ResourceLocation mine = getFactionId();
+        ResourceLocation theirs = factionOf(other);
 
-        double maxAbsorb = CombatConfig.shieldBlockMaxAbsorb
-                + getCommanderTier().ordinal() * CombatConfig.shieldBlockMaxAbsorbPerTier;
-        return (float) Math.min(amount, maxAbsorb);
+        UUID theirArmy = AbstractArmySoldier.resolveArmyUuid(other, level());
+        if (mine != null && mine.equals(theirs)) {
+            UUID myArmy = getUUID();
+            if (!level().isClientSide && theirArmy != null
+                    && !myArmy.equals(theirArmy)
+                    && ArmyRelations.isHostile(myArmy, theirArmy)) {
+                ArmyRelations.clearHostile(myArmy, theirArmy);
+            }
+            return true;
+        }
+        return theirArmy != null && theirArmy.equals(getUUID());
     }
 
     /**
@@ -3105,6 +3418,29 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         if (mspd != null) mspd.setBaseValue(getCommanderMovementSpeed());
         var follow = this.getAttribute(Attributes.FOLLOW_RANGE);
         if (follow != null) follow.setBaseValue(getCommanderFollowRange());
+        applyShieldGuardAttributes();
+    }
+
+    private void applyShieldGuardAttributes() {
+        var chance = this.getAttribute(GuardAttributes.SHIELD_GUARD_CHANCE);
+        if (chance != null) chance.setBaseValue(getCommanderShieldGuardChanceBase());
+        var reduction = this.getAttribute(GuardAttributes.SHIELD_GUARD_REDUCTION);
+        if (reduction != null) reduction.setBaseValue(getCommanderShieldGuardReductionBase());
+        var limit = this.getAttribute(GuardAttributes.SHIELD_GUARD_LIMIT);
+        if (limit != null) limit.setBaseValue(getCommanderShieldGuardLimitBase());
+    }
+
+    protected double getCommanderShieldGuardChanceBase() {
+        return CombatConfig.shieldBlockChance;
+    }
+
+    protected double getCommanderShieldGuardReductionBase() {
+        return CombatConfig.shieldBlockDamageReduction;
+    }
+
+    protected double getCommanderShieldGuardLimitBase() {
+        return CombatConfig.shieldBlockMaxAbsorb
+                + getCommanderTier().ordinal() * CombatConfig.shieldBlockMaxAbsorbPerTier;
     }
 
     @Override
@@ -3169,6 +3505,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
         if (tag.contains("MC_Health")) {
             this.setHealth(tag.getFloat("MC_Health"));
         }
+        ShieldGuardController.reset(this);
         anchor.load(tag, "Anchor");
         readStackList(tag.getList("ManualGear", Tag.TAG_COMPOUND), manualGear);
         readStackList(tag.getList("DefaultGear", Tag.TAG_COMPOUND), defaultGear);

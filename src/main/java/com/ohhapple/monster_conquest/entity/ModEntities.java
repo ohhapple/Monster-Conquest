@@ -104,6 +104,14 @@ public class ModEntities {
             reg("soldier_villager_archer", VillagerArcherSoldier::new, 0.6f, 1.95f, 1.74f, 10);
     public static final DeferredHolder<EntityType<?>, EntityType<VillagerPriestSoldier>> VILLAGER_PRIEST_SOLDIER =
             reg("soldier_villager_priest", VillagerPriestSoldier::new, 0.6f, 1.95f, 1.74f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<PiglinShieldSoldier>> PIGLIN_SHIELD_SOLDIER =
+            reg("soldier_piglin_shield", PiglinShieldSoldier::new, 0.6f, 1.95f, 1.74f, 10);
+
+    // 飞行单位（当前两种为单一等级；飞行角色本身支持其他等级制兵种）
+    public static final DeferredHolder<EntityType<?>, EntityType<VexFlyingSoldier>> VEX_FLYING =
+            reg("soldier_vex", VexFlyingSoldier::new, 0.4f, 0.8f, 0.51875f, 8);
+    public static final DeferredHolder<EntityType<?>, EntityType<AllayFlyingSoldier>> ALLAY_FLYING =
+            reg("soldier_allay", AllayFlyingSoldier::new, 0.35f, 0.6f, 0.36f, 8);
 
     // ===================== 战马 / 三叉戟 / 药水 =====================
     public static final DeferredHolder<EntityType<?>, EntityType<WarHorseEntity>> WAR_HORSE =

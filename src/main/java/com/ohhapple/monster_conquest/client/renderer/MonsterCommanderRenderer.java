@@ -7,12 +7,15 @@ import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import net.minecraft.client.model.HumanoidModel;
 import net.minecraft.client.model.PlayerModel;
 import net.minecraft.client.model.geom.ModelLayers;
+import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
 import net.minecraft.client.renderer.entity.HumanoidMobRenderer;
 import net.minecraft.client.renderer.entity.layers.HumanoidArmorLayer;
 import net.minecraft.client.renderer.entity.layers.ItemInHandLayer;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.UseAnim;
 
 public class MonsterCommanderRenderer
         extends HumanoidMobRenderer<AbstractArmyCommander, HumanoidModel<AbstractArmyCommander>> {
@@ -29,7 +32,7 @@ public class MonsterCommanderRenderer
 
     public MonsterCommanderRenderer(EntityRendererProvider.Context ctx, ResourceLocation texture) {
         // 首领 / 巡逻队长统一使用玩家模型
-        super(ctx, new PlayerModel<>(ctx.bakeLayer(ModelLayers.PLAYER), false), 0.7f);
+        super(ctx, new CommanderPlayerModel(ctx.bakeLayer(ModelLayers.PLAYER), false), 0.7f);
         this.texture = texture;
         this.addLayer(new HumanoidArmorLayer<>(this,
                 new HumanoidModel<>(ctx.bakeLayer(ModelLayers.ZOMBIE_INNER_ARMOR)),
@@ -48,7 +51,46 @@ public class MonsterCommanderRenderer
     }
 
     @Override
+    protected float getAttackAnim(AbstractArmyCommander entity, float partialTicks) {
+        if (entity.isUsingItem()
+                && entity.getUsedItemHand() == InteractionHand.MAIN_HAND
+                && entity.getUseItem().getUseAnimation() == UseAnim.BOW) {
+            return 0.0f;
+        }
+        return super.getAttackAnim(entity, partialTicks);
+    }
+
+    @Override
     public ResourceLocation getTextureLocation(AbstractArmyCommander entity) {
         return texture;
+    }
+
+    private static void applyArmPoses(HumanoidModel<AbstractArmyCommander> model,
+                                      AbstractArmyCommander entity) {
+        boolean drawingBow = entity.isUsingItem()
+                && entity.getUsedItemHand() == InteractionHand.MAIN_HAND
+                && entity.getUseItem().getUseAnimation() == UseAnim.BOW;
+        if (drawingBow) {
+            model.rightArmPose = HumanoidModel.ArmPose.BOW_AND_ARROW;
+            model.leftArmPose = HumanoidModel.ArmPose.BOW_AND_ARROW;
+        } else {
+            model.rightArmPose = HumanoidModel.ArmPose.EMPTY;
+            model.leftArmPose = HumanoidModel.ArmPose.EMPTY;
+        }
+        ShieldGuardPose.apply(model, entity);
+    }
+
+    private static final class CommanderPlayerModel
+            extends PlayerModel<AbstractArmyCommander> {
+        private CommanderPlayerModel(ModelPart part, boolean slim) {
+            super(part, slim);
+        }
+
+        @Override
+        public void setupAnim(AbstractArmyCommander entity, float limbSwing, float limbSwingAmount,
+                              float ageInTicks, float netHeadYaw, float headPitch) {
+            applyArmPoses(this, entity);
+            super.setupAnim(entity, limbSwing, limbSwingAmount, ageInTicks, netHeadYaw, headPitch);
+        }
     }
 }

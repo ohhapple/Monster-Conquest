@@ -1,14 +1,17 @@
 package com.ohhapple.monster_conquest.equipment;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.gun.GunAmmoType;
 import com.ohhapple.monster_conquest.item.AmmoBoxItem;
+import com.ohhapple.monster_conquest.item.BackpackItem;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.network.clientbound.gun.SyncEquipmentPayload;
+
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.ItemContainerContents;
+import net.minecraft.world.item.ItemStack;
+
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.ArrayList;
@@ -150,7 +153,7 @@ public final class TacticalEquipmentSlotsData {
             if (box.getItem() instanceof AmmoBoxItem) count += countInBox(box, type);
         }
         // 背包（物品）里的子弹 + 背包里弹药箱中的子弹
-        count += com.ohhapple.monster_conquest.item.BackpackItem.countAmmo(player, type);
+        count += BackpackItem.countAmmo(player, type);
         return count;
     }
 
@@ -174,7 +177,7 @@ public final class TacticalEquipmentSlotsData {
 
         // 再从背包（物品）里扣（背包里的散装子弹 + 背包里弹药箱中的子弹）
         if (taken < want) {
-            taken += com.ohhapple.monster_conquest.item.BackpackItem
+            taken += BackpackItem
                     .consumeAmmo(player, type, want - taken);
         }
 

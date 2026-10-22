@@ -1,5 +1,10 @@
 # Monster Conquest
+
+**语言 / Language:** [中文](README.md) | [English](README_EN.md)]
+
 [![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/ohhapple/Monster-Conquest/total?color=161616&label=Github%20downloads)](https://github.com/ohhapple/Monster-Conquest/releases)
+[![CurseForge](https://img.shields.io/curseforge/dt/1745982?label=CurseForge%20Downloads&color=orange)](https://www.curseforge.com/minecraft/mc-mods/monster-conquest)
+[![Modrinth](https://img.shields.io/modrinth/dt/AUNtGJFE?label=Modrinth%20Downloads)](https://modrinth.com/mod/monster-conquest)
 
 Minecraft 1.21.1 / NeoForge 的阵营战争模组：招募士兵、组建军队，用指挥工具和 RTS 视角带兵打仗。
 
@@ -15,10 +20,11 @@ Minecraft 1.21.1 / NeoForge 的阵营战争模组：招募士兵、组建军队�
   阵营之间可以结盟或敌对（默认关系写在配置里，也可以在游戏内界面里改）；
   同阵营的单位会互相支援，被攻击时整支军队会一起锁敌。
 - **招募与军费**：募兵站方块右键打开界面，按等级招募 / 升级士兵，价格按兵种逐个配置；
+  列表包含恼鬼、悦灵等固定单等级飞行士兵；
   交易站方块出售弹药、枪械和战术装备。两个方块都能直接读取玩家背包里的物品。
 - **指挥**：控制工具（中键选中单位，右键前往 / 攻击，低头右键＝让选中的单位跟随你）、
   R 键指挥轮盘、V 键 RTS 模式（框选部队后右键下达命令，数字键换阵型，Z / X 上下马）。
-- **兵种**：近战、弓手、枪手、投掷、魔法师、双形态。
+- **兵种**：近战、弓手、枪手、投掷、魔法师、双形态、飞行。
 - **枪械与战术装备**：步枪 / 霰弹枪 / 狙击枪 / 火箭筒与各自弹药（开镜、弹道下坠、炮弹溅射）；
   战术装备栏可放防弹衣、保暖衣、弹药箱和背包（背包也能直接装子弹）。
 - **单位 AI**：自研寻路与阵型系统负责阵型排布、行军跟队、迷宫绕行、开门、上下梯子和涉水；
@@ -40,16 +46,23 @@ Minecraft 1.21.1 / NeoForge 的阵营战争模组：招募士兵、组建军队�
 
 ## 命令
 
-- `/faction gui`：打开阵营关系界面。
+- `/monsterc faction GUI`：打开阵营关系界面。
+- `/monsterc spawnpoints（on/off）`：全局开关所有刷怪点刷怪。
 
 ## 配置
 
 首次启动后会在 `config/monster_conquest/` 下生成模块化配置（general / factions / combat / player / recruit 等），
-招募价格、阵营敌友、单位属性、AI 行为等都可以在里面细调。
+招募价格、阵营敌友、单位属性、AI 行为等都可以在里面细调。客户端默认读取仓库根目录的
+`gradle.properties` 检查版本；构建会把 Git 分支写入 JAR，并从同一分支读取配置，不依赖
+Release 标题、标签或附件名。客户端同时校验 `minecraft_version` 和 `mod_loader`。
+每次启动只尝试一次，失败后不重试。版本号仍只改 `gradle.properties` 的 `mod_version`。
+可在 `general-common.toml` 中把 `updateCheckEnabled` 设为 `false` 完全关闭外联。
 
 ## 构建
 
 需要 JDK 21。
+从 detached HEAD 构建时可用 `-PgitBranch=<分支名>` 指定更新分支；无法确定时分支会记为 `unknown`，
+构建照常完成，但客户端禁用更新检查。
 
 ```bash
 # 打包

@@ -1,30 +1,35 @@
 package com.ohhapple.monster_conquest.network.serverbound.egg;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.army.FactionIds;
 import com.ohhapple.monster_conquest.army.FactionRegistry;
 import com.ohhapple.monster_conquest.army.PlayerFactionRegistry;
 import com.ohhapple.monster_conquest.item.RetrievalToolItem;
 import com.ohhapple.monster_conquest.item.SoldierSpawnEggItem;
+import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.util.FactionDisplay;
+
 import net.minecraft.core.component.DataComponents;
-import net.minecraft.network.codec.ByteBufCodecs;
-import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.item.ItemStack;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.item.component.CustomData;
+import net.minecraft.world.item.ItemStack;
+
 import net.neoforged.neoforge.network.handling.IPayloadContext;
+
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 public record CycleEggFactionPayload(int direction) implements CustomPacketPayload {
     public static final Type<CycleEggFactionPayload> TYPE =
@@ -101,7 +106,7 @@ public record CycleEggFactionPayload(int direction) implements CustomPacketPaylo
                 stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
                 changed = true;
 
-                String display = factionDisplayName(target, player.getServer());
+                Component display = factionDisplayName(target, player.getServer());
                 player.displayClientMessage(
                         Component.translatable("gui.monster_conquest.egg.switched", display), true);
             } else {
@@ -125,7 +130,7 @@ public record CycleEggFactionPayload(int direction) implements CustomPacketPaylo
                         stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
                         changed = true;
 
-                        String display = factionDisplayName(own, player.getServer());
+                        Component display = factionDisplayName(own, player.getServer());
                         player.displayClientMessage(
                                 Component.translatable("gui.monster_conquest.egg.taken_over", display), true);
                     }
@@ -138,28 +143,29 @@ public record CycleEggFactionPayload(int direction) implements CustomPacketPaylo
         });
     }
 
-    public static String factionDisplayName(ResourceLocation id, MinecraftServer server) {
-        if (id == null) return "?";
-        if (FactionIds.isPlayer(id)) {
-            UUID owner = FactionIds.parsePlayer(id);
-            if (owner != null) {
-                if (server != null) {
-                    ServerPlayer p = server.getPlayerList().getPlayer(owner);
-                    if (p != null) return p.getGameProfile().getName();
-                    var cache = server.getProfileCache();
-                    if (cache != null) {
-                        var opt = cache.get(owner);
-                        if (opt.isPresent()) return opt.get().getName();
-                    }
+    /**
+     * 阵营显示名（返回 Component，交给客户端按自己的语言翻译）：
+     *   只在这里解析"玩家名"这类与语言无关的信息 —— 专用服务端没有语言文件，
+     *   在服务端 getString() 只会拿到翻译键。
+     */
+    public static Component factionDisplayName(@Nullable ResourceLocation id, MinecraftServer server) {
+        if (id == null) return Component.literal("?");
+        UUID owner = FactionIds.parsePlayer(id);
+        if (owner != null && server != null) {
+            ServerPlayer online = server.getPlayerList().getPlayer(owner);
+            if (online != null) {
+                return Component.translatable("faction.monster_conquest.player_short",
+                        online.getGameProfile().getName());
+            }
+            var cache = server.getProfileCache();
+            if (cache != null) {
+                var opt = cache.get(owner);
+                if (opt.isPresent()) {
+                    return Component.translatable("faction.monster_conquest.player_short",
+                            opt.get().getName());
                 }
-                String s = owner.toString();
-                return "player/" + s.substring(0, 8);
             }
         }
-        String key = "faction.monster_conquest." + id.getPath();
-        Component t = Component.translatable(key);
-        String raw = t.getString();
-        if (!raw.equals(key)) return raw;
-        return id.toString();
+        return FactionDisplay.displayName(id);
     }
 }

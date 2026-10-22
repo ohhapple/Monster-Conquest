@@ -1,30 +1,37 @@
 package com.ohhapple.monster_conquest.player;
 
+import com.ohhapple.monster_conquest.army.FactionIds;
+import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
+import com.ohhapple.monster_conquest.army.relation.FactionAlly;
+import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
 import com.ohhapple.monster_conquest.config.CombatConfig;
 import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.config.PlayerConfig;
-import com.ohhapple.monster_conquest.army.FactionIds;
-import com.ohhapple.monster_conquest.army.relation.FactionAlly;
-import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.util.PeacefulUtil;
+
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.Tag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
+import java.util.function.Predicate;
 
 public class PlayerCommandState {
 
@@ -74,6 +81,9 @@ public class PlayerCommandState {
         }
     }
 
+    /** RTS 命令执行结果：数量用于刷新选中状态，提示由客户端画在 RTS 界面上。 */
+    public record RtsCommandResult(int count, @Nullable Component feedback) {}
+
     public static class SquadState {
         FormationMode formation = FormationMode.DEFAULT;
         MovementMode movement = MovementMode.STATION;
@@ -103,9 +113,11 @@ public class PlayerCommandState {
 
         final Map<UUID, Vec3> formationSlots = new HashMap<>();
         int formationCacheTick = Integer.MIN_VALUE;
+        int lastFullFormationBuildTick = Integer.MIN_VALUE;
         FormationMode cachedMode = null;
         @Nullable Vec3 cachedAnchor = null;
         float cachedYaw = Float.NaN;
+        long cachedWorldVersion = Long.MIN_VALUE;
 
         /**
          * 可达落点缓存（阵型重建用）：从指挥官脚下"能走过去"的落点集合。
@@ -116,11 +128,13 @@ public class PlayerCommandState {
         double reachCacheAnchorZ = Double.NaN;
         double reachCacheAnchorY = Double.NaN;
         double reachCacheRadius = -1.0;
+        long reachCacheWorldVersion = Long.MIN_VALUE;
         /** 骑乘单位专用的可达性缓存（按坐骑净空搜索）；null = 没算过 / 当前没有骑乘单位。 */
         @Nullable Set<Long> reachCacheMount = null;
         double reachCacheMountRadius = -1.0;
         double reachCacheMountWidth = -1.0;
         double reachCacheMountExtra = -1.0;
+        long reachCacheMountWorldVersion = Long.MIN_VALUE;
 
         /**
          * 移动指令代号：每次"去哪"的命令（前往 / 跟随 / 自由移动 / 驻守）下发时自增。
@@ -129,11 +143,22 @@ public class PlayerCommandState {
          *   否则单位会先沿旧路线走到一半才听新命令（表现为"还朝旧地点走一小会儿"）。
          */
         int moveOrderStamp = 0;
+        /**
+         * 当前这次 moveOrderStamp 变化是否属于"前往 / 驻守"这种明确的脱离战斗命令。
+         *   跟随、自由移动和普通行动模式切换同样要让旧路线失效，但不能清掉已有仇恨。
+         */
+        boolean clearsCombatOnMoveOrder = false;
         /** "前往指定点"命令的目标点与截止刻：命令执行期间士兵不主动索敌（命令优先）。 */
         @Nullable Vec3 moveOrderDest = null;
         long moveOrderUntilGT = 0L;
 
         public int getMoveOrderStamp() { return moveOrderStamp; }
+        public boolean shouldClearCombatOnMoveOrder() { return clearsCombatOnMoveOrder; }
+
+        private void markMoveOrderChanged(boolean clearsCombat) {
+            moveOrderStamp++;
+            clearsCombatOnMoveOrder = clearsCombat;
+        }
 
         /**
          * 最近一条"前往指定点"命令是否还没被后续命令（攻击 / 驻守 / 跟随 / 自由移动）覆盖。
@@ -141,6 +166,9 @@ public class PlayerCommandState {
          *   都等于把单位瞬移到目的地，必须禁止。
          */
         public boolean hasMoveOrder() { return moveOrderDest != null; }
+
+        /** "前往"命令的落点（爬梯判断要用它当目标高度）。 */
+        @Nullable public Vec3 getMoveOrderDest() { return moveOrderDest; }
 
         public FormationMode getFormation() { return formation; }
         public MovementMode getMovement() { return movement; }
@@ -178,10 +206,14 @@ public class PlayerCommandState {
             boolean changed = (this.formationAnchor == null) != (anchor == null)
                     || (this.formationAnchor != null && anchor != null
                     && this.formationAnchor.distanceToSqr(anchor) > 4.0);
+            boolean hardChange = (this.formationAnchor == null) != (anchor == null)
+                    || this.formationAnchor == null || anchor == null
+                    || this.formationAnchor.distanceToSqr(anchor) > 64.0
+                    || Math.abs(Mth.wrapDegrees(this.formationAnchorYaw - yaw)) > 15f;
             if (changed && gameTime >= 0) this.anchorChangedGameTime = gameTime;
             this.formationAnchor = anchor;
             this.formationAnchorYaw = yaw;
-            invalidateFormationCache();
+            if (hardChange) invalidateFormationCache();
         }
         @Nullable public UUID getForcedTarget() { return forcedTarget; }
 
@@ -192,8 +224,10 @@ public class PlayerCommandState {
          *   指挥小队和无小队单兵都调用这里。
          */
         public void applyMoveOrder(Vec3 dest, float yaw, long gameTime) {
-            moveOrderStamp++;
+            markMoveOrderChanged(true);
+            cancelVolley();
             setFormationAnchor(dest, yaw, gameTime);
+            invalidateFormationCache();
             setMovement(MovementMode.STATION);
             setSoftStation(false);
             // 移动命令优先：到达前不主动索敌（见 isMoveOrderPriorityActive）。
@@ -210,8 +244,10 @@ public class PlayerCommandState {
          *   否则隔着几十秒谁打到家门口都不还手（只有被攻击的反击目标能穿过）。
          */
         public void applyHoldOrder(Vec3 anchor, float yaw, long gameTime) {
-            moveOrderStamp++;
+            markMoveOrderChanged(true);
+            cancelVolley();
             setFormationAnchor(anchor, yaw, gameTime);
+            invalidateFormationCache();
             setMovement(MovementMode.STATION);
             setSoftStation(false);
             // 原地驻守没有"走到命令点"的阶段：清掉前往命令，驻守期间照常索敌
@@ -223,8 +259,9 @@ public class PlayerCommandState {
         }
 
         /**
-         * "前往指定点"命令是否仍在执行：命令期间士兵不主动索敌（命令优先于自主锁定）。
-         *   判断条件:还有命令目标、没超时、且这个士兵还没走到目标点附近。
+         * 粗略的"前往"命令判断（只在手里没有士兵实体时使用）。
+         *   士兵的实际优先级还要等 FormationGoal 把个人阵位排完；实体侧不能只看这个半径，
+         *   否则命令点附近有敌人时会在展开阵型前恢复索敌。
          */
         public boolean isMoveOrderPriorityActive(double x, double z, long nowGT) {
             if (moveOrderDest == null) return false;
@@ -232,6 +269,43 @@ public class PlayerCommandState {
             double dx = x - moveOrderDest.x;
             double dz = z - moveOrderDest.z;
             return dx * dx + dz * dz > MOVE_ORDER_ARRIVE_SQR;
+        }
+
+        /**
+         * 是否还有一条尚未超时的"前往"命令。
+         *   用于单位首次加载 / 首次同步时判断"当前是否真的在执行命令"，
+         *   避免把已经过期的命令重新当成新命令执行。
+         */
+        public boolean isMoveOrderCommandActive(long nowGT) {
+            return moveOrderDest != null && nowGT < moveOrderUntilGT;
+        }
+
+        /**
+         * 把同队的"位置命令"复制到个体状态。
+         *   单位在界面里单独调过阵型 / 攻击 / 骑乘策略后，仍应响应整队的
+         *   前往、驻守、跟随、自由移动；否则这些单位会留在旧锚点，表现为
+         *   "同一队里只有个别单位要过一会儿才动，甚至完全不动"。
+         *
+         *   只复制位置相关字段，个体策略（阵型、攻击模式、骑乘模式）保持不变。
+         */
+        public void adoptPositionalOrderFrom(SquadState from) {
+            if (from == null || from == this) return;
+            this.markMoveOrderChanged(from.clearsCombatOnMoveOrder);
+            this.movement = from.movement;
+            this.followTargetUuid = from.followTargetUuid;
+            this.formationAnchor = from.formationAnchor;
+            this.formationAnchorYaw = from.formationAnchorYaw;
+            this.anchorChangedGameTime = from.anchorChangedGameTime;
+            this.softStation = false;
+            this.softStationOrigin = MovementMode.STATION;
+            this.volleyTarget = null;
+            this.volleyEndGameTime = 0L;
+            this.moveOrderDest = from.moveOrderDest;
+            this.moveOrderUntilGT = from.moveOrderUntilGT;
+            this.forcedTarget = from.forcedTarget;
+            this.forcedTargetGroup.clear();
+            this.forcedTargetGroup.addAll(from.forcedTargetGroup);
+            invalidateFormationCache();
         }
 
         /**
@@ -258,9 +332,10 @@ public class PlayerCommandState {
          *   小队和无小队单兵共用；followUuid = 跟随对象（null = 跟随主人）。
          */
         public void applyFollowOrder(MovementMode m, @Nullable UUID followUuid) {
-            moveOrderStamp++;
+            markMoveOrderChanged(false);
+            cancelVolley();
             boolean changed = this.movement != m
-                    || !java.util.Objects.equals(this.followTargetUuid, followUuid);
+                    || !Objects.equals(this.followTargetUuid, followUuid);
             this.movement = m;
             this.followTargetUuid = followUuid;
             this.formationAnchor = null;
@@ -278,7 +353,8 @@ public class PlayerCommandState {
          *   由原版游走 AI 接管（像原版生物一样自由游走）。
          */
         public void applyFreeMoveOrder() {
-            moveOrderStamp++;
+            markMoveOrderChanged(false);
+            cancelVolley();
             boolean changed = this.movement != MovementMode.FREE;
             this.movement = MovementMode.FREE;
             this.followTargetUuid = null;
@@ -327,23 +403,75 @@ public class PlayerCommandState {
             return volleyTarget != null && nowGameTime < volleyEndGameTime;
         }
 
+        /** 移动命令会取消齐射；齐射 Goal 不应继续占用移动旗标。 */
+        public void cancelVolley() {
+            volleyTarget = null;
+            volleyEndGameTime = 0L;
+        }
+
         public Map<UUID, Vec3> getFormationSlots() { return formationSlots; }
 
         public boolean shouldRebuildFormation(int nowTick, FormationMode mode,
-                                              @Nullable Vec3 anchor, float yaw) {
+                                              @Nullable Vec3 anchor, float yaw,
+                                              @Nullable UUID soldierId, long worldVersion) {
             if (formationCacheTick == Integer.MIN_VALUE) return true;
-            if (nowTick - formationCacheTick > 20) return true;
+            if (cachedWorldVersion != worldVersion) return true;
             if (cachedMode != mode) return true;
             if (cachedAnchor == null || anchor == null
-                    || cachedAnchor.distanceToSqr(anchor) > 4.0) return true;
+                    || cachedAnchor.distanceToSqr(anchor) > 64.0) return true;
             if (Float.isNaN(cachedYaw) || Math.abs(
-                    net.minecraft.util.Mth.wrapDegrees(cachedYaw - yaw)) > 15f) return true;
-            return false;
+                    Mth.wrapDegrees(cachedYaw - yaw)) > 15f) return true;
+            if (soldierId != null && !formationSlots.containsKey(soldierId)) return true;
+            // 低频校验地形适配；正常移动由平移阵位处理，不再每 20 tick 全量重排。
+            return lastFullFormationBuildTick == Integer.MIN_VALUE
+                    || nowTick - lastFullFormationBuildTick > 200;
+        }
+
+        /**
+         * 锚点小幅移动时直接平移已有阵位。
+         *   跟随状态下命令点每天都在变，重新扫描全队和地形没有必要；偏移量保持不变，
+         *   只需在低频校验或大跳变时重新计算落点。
+         *
+         * @return true = 已平移缓存，调用方可以直接读取本单位的阵位
+         */
+        public boolean shiftFormationTo(int nowTick, FormationMode mode,
+                                        @Nullable Vec3 anchor, float yaw, long worldVersion,
+                                        Predicate<Vec3> usableSlot) {
+            if (formationCacheTick == Integer.MIN_VALUE
+                    || anchor == null || cachedAnchor == null
+                    || cachedMode != mode || formationSlots.isEmpty()
+                    || cachedWorldVersion != worldVersion) {
+                return false;
+            }
+            if (Float.isNaN(cachedYaw)
+                    || Math.abs(Mth.wrapDegrees(cachedYaw - yaw)) > 15f) {
+                return false;
+            }
+            double movedSq = cachedAnchor.distanceToSqr(anchor);
+            if (movedSq <= 1.0E-4 || movedSq > 64.0) return false;
+            Vec3 delta = anchor.subtract(cachedAnchor);
+            // 平移只适合连续的同一层地面。锚点上下变化时，旧阵位的高度和落脚面
+            // 已经不能照搬，必须重新扫描地形。
+            if (Math.abs(delta.y) > 0.75) return false;
+            List<Vec3> shifted = new ArrayList<>(formationSlots.size());
+            for (Map.Entry<UUID, Vec3> entry : formationSlots.entrySet()) {
+                Vec3 next = entry.getValue().add(delta);
+                if (usableSlot != null && !usableSlot.test(next)) return false;
+                shifted.add(next);
+            }
+            int index = 0;
+            for (Map.Entry<UUID, Vec3> entry : formationSlots.entrySet()) {
+                entry.setValue(shifted.get(index++));
+            }
+            cachedAnchor = anchor;
+            formationCacheTick = nowTick;
+            return true;
         }
 
         public void commitFormationCache(int nowTick, FormationMode mode,
                                          @Nullable Vec3 anchor, float yaw) {
             formationCacheTick = nowTick;
+            lastFullFormationBuildTick = nowTick;
             cachedMode = mode;
             cachedAnchor = anchor;
             cachedYaw = yaw;
@@ -351,9 +479,11 @@ public class PlayerCommandState {
 
         public void invalidateFormationCache() {
             formationCacheTick = Integer.MIN_VALUE;
+            lastFullFormationBuildTick = Integer.MIN_VALUE;
             cachedMode = null;
             cachedAnchor = null;
             cachedYaw = Float.NaN;
+            cachedWorldVersion = Long.MIN_VALUE;
             formationSlots.clear();
         }
 
@@ -465,7 +595,13 @@ public class PlayerCommandState {
     /** "前往指定点"命令期间不主动索敌的最长时间（tick）：60 秒内到不了就恢复自主索敌。 */
     public static final int MOVE_ORDER_PRIORITY_TICKS = 1200;
     /** 离命令目标点多近算"到达"（格²）：到达后恢复自主索敌（就地防御）。 */
-    public static final double MOVE_ORDER_ARRIVE_SQR = 6.0 * 6.0;
+    /**
+     * 移动优先级只在"已经贴近命令点"时才交给自动索敌。
+     *   原先用 6 格半径，命令点附近有敌人时会在半路重新锁定目标，
+     *   表现为"下了前往命令，单位先打一会儿才走"。
+     *   精确的到位判定仍由 FormationGoal 的楼层 + 视线检查负责。
+     */
+    public static final double MOVE_ORDER_ARRIVE_SQR = 1.5 * 1.5;
 
     private UUID preciseStrikeTarget = null;
     /** 精确打击目标组：目标属于军队 / 巡逻小队时，整队一起被锁定。 */
@@ -634,6 +770,13 @@ public class PlayerCommandState {
     public void clearSharedHatredEntities() { sharedHatredEntities.clear(); }
     public Map<UUID, Long> getSharedHatredEntities() { return sharedHatredEntities; }
 
+    /** 清理过期条目后判断玩家军队是否仍有共同仇恨目标。 */
+    public boolean hasActiveSharedHatred(long nowGT) {
+        tickSharedHatred(nowGT);
+        tickSharedHatredEntities(nowGT);
+        return !sharedHatredArmies.isEmpty() || !sharedHatredEntities.isEmpty();
+    }
+
     public void startPreciseStrike(UUID target,
                                    Collection<Integer> squads,
                                    long nowGT, long durationTicks) {
@@ -780,7 +923,7 @@ public class PlayerCommandState {
         }
         if (s.movement != m) {
             // 行动模式换了（例如"跟随 → 驻守"）也是新命令：立刻改走新目标
-            s.moveOrderStamp++;
+            s.markMoveOrderChanged(false);
             s.movement = m;
             s.invalidateFormationCache();
         }
@@ -898,6 +1041,9 @@ public class PlayerCommandState {
      *   与无小队单兵的 orderLoneMove 调用同一个 SquadState.applyMoveOrder。
      */
     public void orderMove(int squadId, Vec3 dest, float yaw, long nowGT) {
+        // 新的移动命令是明确的脱离战斗指令：清掉玩家共享仇恨，
+        //   否则移动优先级结束后会被旧仇恨重新拉回敌人。
+        clearSharedHatredForMoveOrder();
         if (squadId == 0) {
             for (int id : activeSquadIds()) {
                 SquadState s = squads.get(id);
@@ -927,6 +1073,7 @@ public class PlayerCommandState {
      *   各小队分别取自己的质心 → 分散的部队就地驻守，不会长途跋涉。
      */
     public void orderHoldInPlace(Player player, ServerLevel sl, long nowGT) {
+        clearSharedHatredForMoveOrder();
         if (selectedSquad == 0) {
             // 全选：所有"有状态"的小队 + 附近实际有士兵的小队，各自就地驻守
             Set<Integer> ids = new LinkedHashSet<>();
@@ -978,19 +1125,72 @@ public class PlayerCommandState {
      */
     public void orderLoneMove(Player player, ServerLevel sl, AbstractArmySoldier lone,
                               Vec3 dest, long nowGT) {
+        clearSharedHatredForMoveOrder();
+        // 先记住脱队前的旧锚点：单兵也可能是从某个小队里临时抽出来的，
+        //   朝向应当沿"上一处阵型位置 → 新落点"，而不是从单位脚下重新算。
+        Vec3 facingOrigin = stateForCommand(lone, this).getFormationAnchor();
+        if (facingOrigin == null && lone.getSquadId() > 0) {
+            facingOrigin = stateForSoldier(lone.getSquadId()).getFormationAnchor();
+        }
+        if (facingOrigin == null) facingOrigin = lone.position();
         detachToLone(player, sl, lone);
         lone.markPlayerCommanded();
 
-        double dx = dest.x - lone.getX();
-        double dz = dest.z - lone.getZ();
-        float yaw = player.getYRot();
-        if (dx * dx + dz * dz > 0.01) {
-            yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
-        }
+        float yaw = moveFacingYaw(facingOrigin, dest, player.getYRot());
 
         stateForCommand(lone, this).applyMoveOrder(dest, yaw, nowGT);
         lone.setTarget(null);
+        lone.setLastHurtByMob(null);
+        lone.clearPersonalHatred();
+        lone.clearCommandedAttackTarget();
+        lone.clearRoute();
+        lone.clearMarchRoute();
+        lone.clearReachProbeMemo();
         issueOrder(nowGT);
+    }
+
+    /** 移动命令的阵型朝向：旧锚点到新落点的连线方向。 */
+    private static float moveFacingYaw(Vec3 origin, Vec3 dest, float fallbackYaw) {
+        if (origin == null || dest == null) return fallbackYaw;
+        double dx = dest.x - origin.x;
+        double dz = dest.z - origin.z;
+        if (dx * dx + dz * dz <= 0.01) return fallbackYaw;
+        return (float) Math.toDegrees(Math.atan2(-dx, dz));
+    }
+
+    /**
+     * RTS 多选单位的"上一处阵型锚点"。
+     *   优先取编号最小的有锚点小队，与"全选"时控制工具的取法一致；
+     *   没有小队锚点时再找个体状态，最后才由调用方退回玩家位置。
+     */
+    @Nullable
+    private Vec3 resolveSelectedFormationAnchor(List<AbstractArmySoldier> units) {
+        int bestSquadId = Integer.MAX_VALUE;
+        Vec3 bestSquadAnchor = null;
+        for (AbstractArmySoldier soldier : units) {
+            int squadId = soldier.getSquadId();
+            if (squadId <= 0 || squadId >= bestSquadId) continue;
+            Vec3 anchor = stateForSoldier(squadId).getFormationAnchor();
+            if (anchor != null) {
+                bestSquadId = squadId;
+                bestSquadAnchor = anchor;
+            }
+        }
+        if (bestSquadAnchor != null) return bestSquadAnchor;
+
+        List<AbstractArmySoldier> sorted = new ArrayList<>(units);
+        sorted.sort(Comparator.comparing(s -> s.getUUID().toString()));
+        for (AbstractArmySoldier soldier : sorted) {
+            Vec3 anchor = stateForCommand(soldier, this).getFormationAnchor();
+            if (anchor != null) return anchor;
+        }
+        return null;
+    }
+
+    /** 移动 / 驻守命令覆盖旧的仇恨记录；部队到达后仍按正常索敌重新判断。 */
+    private void clearSharedHatredForMoveOrder() {
+        clearSharedHatred();
+        clearSharedHatredEntities();
     }
 
     /**
@@ -1030,10 +1230,8 @@ public class PlayerCommandState {
         UUID targetArmy = AbstractArmySoldier.resolveArmyUuid(target, sl);
         if (targetArmy != null && !targetArmy.equals(player.getUUID())) {
             ArmyRelations.setHostile(player.getUUID(), targetArmy);
-            markSharedHatredArmy(targetArmy, nowGT);
-        } else if (targetArmy == null) {
-            markSharedHatredEntity(target.getUUID(), nowGT);
         }
+        ThreatDispatcher.markPlayerSharedHatred(this, target, sl);
 
         SquadState ls = stateForCommand(lone, this);
         ls.setForcedTargetId(target.getUUID());
@@ -1059,7 +1257,7 @@ public class PlayerCommandState {
         // 目标是骑兵战马 → 等价于选中它的骑手（骑手再按军队展开）。
         //   士兵 AI 默认不把战马当攻击目标（伤害本来就会转嫁给骑手），
         //   所以命令打马 = 打骑手 + 打他所属的整支军队。
-        if (target instanceof com.ohhapple.monster_conquest.entity.WarHorseEntity horse) {
+        if (target instanceof WarHorseEntity horse) {
             out.add(horse.getUUID());
             UUID ownerUuid = horse.getOwnerUuid();
             if (ownerUuid != null) {
@@ -1088,6 +1286,9 @@ public class PlayerCommandState {
                     s -> p.getUUID().equals(s.getCommanderUuid().orElse(null)))) {
                 if (s.isAlive()) out.add(s.getUUID());
             }
+        }
+        for (LivingEntity related : ThreatDispatcher.expandSummonThreatTargets(target, sl)) {
+            out.add(related.getUUID());
         }
         return out;
     }
@@ -1137,7 +1338,19 @@ public class PlayerCommandState {
 
     public boolean shouldRebuildFormation(int nowTick, FormationMode mode,
                                           @Nullable Vec3 anchor, float yaw) {
-        return current().shouldRebuildFormation(nowTick, mode, anchor, yaw);
+        return current().shouldRebuildFormation(nowTick, mode, anchor, yaw, null, Long.MIN_VALUE);
+    }
+
+    public boolean shouldRebuildFormation(int nowTick, FormationMode mode,
+                                          @Nullable Vec3 anchor, float yaw,
+                                          @Nullable UUID soldierId, long worldVersion) {
+        return current().shouldRebuildFormation(nowTick, mode, anchor, yaw, soldierId, worldVersion);
+    }
+
+    public boolean shiftFormationTo(int nowTick, FormationMode mode,
+                                    @Nullable Vec3 anchor, float yaw, long worldVersion,
+                                    Predicate<Vec3> usableSlot) {
+        return current().shiftFormationTo(nowTick, mode, anchor, yaw, worldVersion, usableSlot);
     }
 
     public void commitFormationCache(int nowTick, FormationMode mode,
@@ -1645,11 +1858,13 @@ public class PlayerCommandState {
      *      · 部分抽取 → 新建隐藏队
      * 4. 对目标小队下令
      */
-    public int applyRtsCommand(ServerPlayer player,
-                               @Nullable LivingEntity target,
-                               Vec3 dest) {
-        if (rtsSelectedSoldiers.isEmpty()) return 0;
-        if (!(player.level() instanceof ServerLevel sl)) return 0;
+    public RtsCommandResult applyRtsCommand(ServerPlayer player,
+                                            @Nullable LivingEntity target,
+                                            Vec3 dest) {
+        if (rtsSelectedSoldiers.isEmpty()) return new RtsCommandResult(0, null);
+        if (!(player.level() instanceof ServerLevel sl)) {
+            return new RtsCommandResult(0, null);
+        }
         long nowGT = sl.getGameTime();
 
         List<AbstractArmySoldier> units = new ArrayList<>();
@@ -1660,15 +1875,13 @@ public class PlayerCommandState {
                 units.add(s);
             }
         }
-        if (units.isEmpty()) return 0;
+        if (units.isEmpty()) return new RtsCommandResult(0, null);
 
         // 和平模式：不能下达攻击命令（不能有敌意 / 仇恨）
         if (target != null && !isFriendlyTarget(player, target, sl)
-                && com.ohhapple.monster_conquest.util.PeacefulUtil.isPeaceful(player)) {
-            player.displayClientMessage(
-                    net.minecraft.network.chat.Component.translatable(
-                            "msg.monster_conquest.peaceful_no_attack"), true);
-            return 0;
+                && PeacefulUtil.isPeaceful(player)) {
+            return new RtsCommandResult(0,
+                    Component.translatable("msg.monster_conquest.peaceful_no_attack"));
         }
 
         // 右键友方单位 → 跟随它（自己 / 结盟阵营的玩家、士兵、首领、战马……）。
@@ -1698,7 +1911,7 @@ public class PlayerCommandState {
             }
             rtsMoveMarker = null;
             rtsMoveMarkerGT = 0L;
-            return units.size();
+            return new RtsCommandResult(units.size(), null);
         }
 
         // 单个士兵的命令：不占用小队号 —— 脱离原小队，用"个人状态"执行
@@ -1710,31 +1923,31 @@ public class PlayerCommandState {
                 orderLoneAttack(player, sl, lone, target, nowGT);
                 rtsMoveMarker = null;
                 rtsMoveMarkerGT = 0L;
-                return 1;
+                return new RtsCommandResult(1, attackOrderFeedback(1, target));
             }
 
             orderLoneMove(player, sl, lone, dest, nowGT);
             rtsMoveMarker = dest;
             rtsMoveMarkerGT = nowGT;
-            return 1;
+            return new RtsCommandResult(1, null);
         }
 
+        // 阵型朝向要取"下令前"的锚点；resolveCommandSquadId 可能会改队号 / 新建隐藏队。
+        Vec3 previousFormationAnchor = resolveSelectedFormationAnchor(units);
         int targetSquadId = resolveCommandSquadId(player, sl, units);
 
         if (target != null && target.isAlive()) {
             UUID targetArmy = AbstractArmySoldier.resolveArmyUuid(target, sl);
             if (targetArmy != null && !targetArmy.equals(player.getUUID())) {
-                ArmyRelations
-                        .setHostile(player.getUUID(), targetArmy);
-                markSharedHatredArmy(targetArmy, nowGT);
-            } else if (targetArmy == null) {
-                markSharedHatredEntity(target.getUUID(), nowGT);
+                ArmyRelations.setHostile(player.getUUID(), targetArmy);
             }
+            ThreatDispatcher.markPlayerSharedHatred(this, target, sl);
 
             int count = 0;
             for (AbstractArmySoldier s : units) {
                 if (s.isAttackStopped()) continue;
                 s.cancelManualMoveOrder();   // 攻击命令覆盖旧的移动命令
+                s.allowPatrolLeashBypass(200);
                 s.setTarget(target);
                 count++;
             }
@@ -1748,20 +1961,33 @@ public class PlayerCommandState {
             }
             rtsMoveMarker = null;
             rtsMoveMarkerGT = 0L;
-            return count;
+            return new RtsCommandResult(count,
+                    count > 0 ? attackOrderFeedback(count, target) : null);
         }
 
-        Vec3 origin = player.position();
-        double dx = dest.x - origin.x;
-        double dz = dest.z - origin.z;
-        float yaw = player.getYRot();
-        if (dx * dx + dz * dz > 0.01) {
-            yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        Vec3 origin = previousFormationAnchor != null
+                ? previousFormationAnchor : player.position();
+        float yaw = moveFacingYaw(origin, dest, player.getYRot());
+        for (AbstractArmySoldier soldier : units) {
+            soldier.cancelManualMoveOrder();
+            soldier.setTarget(null);
+            soldier.setLastHurtByMob(null);
+            soldier.clearPersonalHatred();
+            soldier.clearCommandedAttackTarget();
+            soldier.clearRoute();
+            soldier.clearMarchRoute();
+            soldier.clearReachProbeMemo();
         }
         orderMove(targetSquadId, dest, yaw, nowGT);
         rtsMoveMarker = dest;
         rtsMoveMarkerGT = nowGT;
-        return units.size();
+        return new RtsCommandResult(units.size(), null);
+    }
+
+    private static Component attackOrderFeedback(int count, LivingEntity target) {
+        return Component.translatable(
+                "msg.monster_conquest.control_tool.attack_ordered",
+                count, target.getName().getString());
     }
 
     /** 根据当前选中决定命令目标 squadId（部分抽取时新建队）。 */
@@ -1829,7 +2055,7 @@ public class PlayerCommandState {
      * 把士兵脱离原小队变成"无小队单兵"（个人命令用，不占用小队号）。
      *   若原小队是隐藏队且因此空了 → 释放队号。
      */
-    public void detachToLone(net.minecraft.world.entity.player.Player player,
+    public void detachToLone(Player player,
                              ServerLevel sl, AbstractArmySoldier soldier) {
         int old = soldier.getSquadId();
         if (old == 0) return;
@@ -1910,7 +2136,7 @@ public class PlayerCommandState {
     /** 从实体解析所属 squadId（战马 → 取骑手）。 */
     private static int resolveSquadIdFromEntity(Entity e) {
         if (e instanceof AbstractArmySoldier s) return s.getSquadId();
-        if (e instanceof com.ohhapple.monster_conquest.entity.WarHorseEntity horse) {
+        if (e instanceof WarHorseEntity horse) {
             Entity rider = horse.getFirstPassenger();
             if (rider instanceof AbstractArmySoldier rs) return rs.getSquadId();
         }

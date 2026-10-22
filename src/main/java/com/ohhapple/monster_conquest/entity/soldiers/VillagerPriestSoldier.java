@@ -23,14 +23,24 @@ import java.util.List;
 /**
  * 村民牧师士兵：AI 与女巫共用，效果不同 —— 治疗量更低、不带增益，
  * 治疗前先净化全部负面效果（含碎甲 / 重伤）并清空冻结 tick；
- * 对敌只投中毒药瓶（时长 / 等级同女巫），另附带一次低于女巫 HARM 的直伤。
+ * 对敌药水先传播威胁，再清除全部增益、造成直伤并施加中毒
+ * （中毒时长 / 等级同女巫，直伤低于女巫 HARM）。
  */
 public class VillagerPriestSoldier extends AbstractArmySoldier {
+
+    /** 每个牧师同时维持的悦灵上限。 */
+    private static final int MAX_SUMMONED_UNITS = 3;
+    /** 补足一只悦灵后的间隔，60 tick = 3 秒。 */
+    private static final int SUMMON_INTERVAL_TICKS = 60;
 
     public VillagerPriestSoldier(EntityType<? extends PathfinderMob> type, Level level) { super(type, level); }
 
     @Override public SoldierType getDefaultSoldierType() { return SoldierType.THROWER_INFANTRY; }
     @Override public int getRenderIndex() { return 17; }
+
+    /** 子类可覆盖这些 getter 建立不同等级的牧师召唤节奏。 */
+    public int getMaxSummonedUnits() { return MAX_SUMMONED_UNITS; }
+    public int getSummonIntervalTicks() { return SUMMON_INTERVAL_TICKS; }
 
     // ===================== 装备等级基础数值（与女巫一致） =====================
 
@@ -123,12 +133,15 @@ public class VillagerPriestSoldier extends AbstractArmySoldier {
                                     @Nullable Entity damageOwner) {
         if (kind == WitchPotionEntity.Kind.HEAL) return;
 
-        // 与女巫一致：对敌药水命中即视为"牧师发起了攻击"，传播威胁。
+        // 与女巫一致：药水命中即视为"牧师发起了攻击"，先让目标及其军队记住威胁。
         if (damageOwner instanceof LivingEntity priest
                 && !target.level().isClientSide
                 && target.isAlive()) {
             ThreatDispatcher.propagate(target, priest);
         }
+
+        // 威胁建立后再清除增益，抗性 / 吸收等 buff 不能保护本次直伤。
+        cleanseBeneficialEffects(target);
 
         if (kind != WitchPotionEntity.Kind.POISON) return;
 
@@ -143,6 +156,21 @@ public class VillagerPriestSoldier extends AbstractArmySoldier {
                             poisonDuration(tier),
                             poisonAmplifier(tier)),
                     effectSource);
+        }
+    }
+
+    /** 清除目标身上的全部增益效果，保留中性 / 负面效果。 */
+    public static void cleanseBeneficialEffects(LivingEntity target) {
+        if (target.level().isClientSide) return;
+
+        List<Holder<MobEffect>> beneficial = new ArrayList<>();
+        for (MobEffectInstance instance : target.getActiveEffects()) {
+            if (instance.getEffect().value().getCategory() == MobEffectCategory.BENEFICIAL) {
+                beneficial.add(instance.getEffect());
+            }
+        }
+        for (Holder<MobEffect> effect : beneficial) {
+            target.removeEffect(effect);
         }
     }
 

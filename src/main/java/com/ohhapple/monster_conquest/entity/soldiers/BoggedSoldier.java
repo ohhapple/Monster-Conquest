@@ -61,8 +61,6 @@ public class BoggedSoldier extends AbstractArmySoldier {
     @Override public double getCavalryHorseSpeed()   { return 0.42; }
     @Override public double getMovementSpeed()       { return 0.31; }
     @Override public double getCavalryChargeSpeed()  { return 0.45; }
-    @Override public double getRangedRetreatSpeedModifier() { return 1.0; }
-
     @Override
     protected void applyArrowEffects(ArmyArrow arrow) {
         int tierIdx = getTier().ordinal();

@@ -21,10 +21,12 @@ public final class NetherFaction implements Faction {
     @Override public ResourceLocation getId() { return ID; }
     @Override public String getDisplayName() { return "下界"; }
 
+    /** 下界首领与下界巡逻队长共用这一召唤池。 */
     @Override public List<EntityType<? extends AbstractArmySoldier>> getSoldierTypes() {
         return List.of(
                 ModEntities.WITHER_SKELETON_SOLDIER.get(),
-                ModEntities.SKELETON_SOLDIER.get()
+                ModEntities.SKELETON_SOLDIER.get(),
+                ModEntities.PIGLIN_SHIELD_SOLDIER.get()
         );
     }
 

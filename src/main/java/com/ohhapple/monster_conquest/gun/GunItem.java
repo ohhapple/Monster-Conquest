@@ -6,10 +6,10 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.InteractionResultHolder;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResultHolder;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
@@ -17,6 +17,7 @@ import net.minecraft.world.item.UseAnim;
 import net.minecraft.world.level.Level;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * 玩家可用的枪械。
@@ -112,7 +113,7 @@ public class GunItem extends Item {
         }
         if (spec.hasExplosion()) {
             tooltip.add(Component.translatable("item.monster_conquest.gun.explosion_line",
-                            String.format(java.util.Locale.ROOT, "%.1f", spec.explosionRadius()),
+                            String.format(Locale.ROOT, "%.1f", spec.explosionRadius()),
                             formatDamage())
                     .withStyle(ChatFormatting.GOLD));
         }
@@ -123,12 +124,12 @@ public class GunItem extends Item {
     private String formatDamage() {
         float damage = spec.damage();
         if (Math.abs(damage - Math.round(damage)) < 0.001f) return String.valueOf(Math.round(damage));
-        return String.format(java.util.Locale.ROOT, "%.1f", damage);
+        return String.format(Locale.ROOT, "%.1f", damage);
     }
 
     /** 倍率显示：2.0 → "2"，1.5 → "1.5"，1.75 → "1.75"。 */
     private static String formatMultiplier(float multiplier) {
-        String text = String.format(java.util.Locale.ROOT, "%.2f", multiplier);
+        String text = String.format(Locale.ROOT, "%.2f", multiplier);
         while (text.endsWith("0")) text = text.substring(0, text.length() - 1);
         if (text.endsWith(".")) text = text.substring(0, text.length() - 1);
         return text;

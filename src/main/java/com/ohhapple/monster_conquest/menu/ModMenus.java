@@ -30,4 +30,14 @@ public final class ModMenus {
     public static final DeferredHolder<MenuType<?>, MenuType<UnitMenu>> UNIT =
             MENUS.register("unit", () -> IMenuTypeExtension.create(
                     (id, inv, buf) -> new UnitMenu(id, inv, buf.readVarInt())));
+
+    public static final DeferredHolder<MenuType<?>, MenuType<SpawnPointMenu>> SPAWN_POINT =
+            MENUS.register("spawn_point", () -> IMenuTypeExtension.create(
+                    (id, inv, buf) -> {
+                        // 数据开头是来源：方块刷怪点（后跟坐标）或手持的刷怪点物品（后跟主 / 副手）
+                        int mode = buf.readVarInt();
+                        return mode == SpawnPointMenu.MODE_BLOCK
+                                ? new SpawnPointMenu(id, inv, buf.readBlockPos())
+                                : new SpawnPointMenu(id, inv, mode);
+                    }));
 }

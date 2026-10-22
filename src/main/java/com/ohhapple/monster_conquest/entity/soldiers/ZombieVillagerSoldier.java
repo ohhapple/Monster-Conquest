@@ -19,7 +19,7 @@ public class ZombieVillagerSoldier extends AbstractArmySoldier {
             case TIER_1 -> 36.0;
             case TIER_2 -> 48.0;
             case TIER_3 -> 66.0;
-            case TIER_4 -> 92.0;
+            case TIER_4 -> 85.0;
         };
     }
 

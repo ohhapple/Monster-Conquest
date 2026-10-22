@@ -1,0 +1,8 @@
+{
+  "replace": false,
+  "values": [
+    "monster_conquest:recruitment_station",
+    "monster_conquest:trade_station",
+    "monster_conquest:spawn_point"
+  ]
+}

@@ -1,14 +1,15 @@
 package com.ohhapple.monster_conquest.gun;
 
 import com.ohhapple.monster_conquest.config.CombatConfig;
-import com.ohhapple.monster_conquest.ModSounds;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.ModEntities;
 import com.ohhapple.monster_conquest.entity.projectile.ArmyBullet;
 import com.ohhapple.monster_conquest.entity.projectile.ArmyGunProjectile;
 import com.ohhapple.monster_conquest.entity.projectile.ArmyRocket;
 import com.ohhapple.monster_conquest.equipment.TacticalEquipmentSlotsData;
+import com.ohhapple.monster_conquest.ModSounds;
 import com.ohhapple.monster_conquest.network.clientbound.gun.GunStatusPayload;
+
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
@@ -17,10 +18,12 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.component.CustomModelData;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
+
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.HashMap;
@@ -46,7 +49,7 @@ public final class GunCombat {
     private static final int MODEL_RELOAD = 1;
     private static final int MODEL_FIRE = 2;
 
-    private record ReloadState(net.minecraft.world.item.Item gun, int total, int left) {}
+    private record ReloadState(Item gun, int total, int left) {}
 
     /** 停火多久后"快速补弹"（无换弹时间、无动画，只有音效）。 */
     private static final int TOP_UP_IDLE_TICKS = 25;

@@ -1,16 +1,17 @@
 package com.ohhapple.monster_conquest.menu;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.ManagedUnit;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import com.ohhapple.monster_conquest.player.PlayerCommandState;
 import com.ohhapple.monster_conquest.util.UnitGearRules;
+
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
-import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Inventory;
@@ -19,6 +20,8 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.ContainerData;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.SimpleContainer;
+
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -104,8 +107,12 @@ public class UnitMenu extends AbstractContainerMenu {
             addSlot(new Slot(equip, index, pos[0], pos[1]) {
                 @Override
                 public boolean mayPlace(ItemStack stack) {
-                    if (index <= 3) return UnitGearRules.fitsArmorSlot(owner, stack, target);
                     Entity bound = owner.level().getEntity(UnitMenu.this.unitId);
+                    if (bound instanceof AbstractArmySoldier soldier
+                            && !soldier.acceptsManualEquipment()) {
+                        return false;
+                    }
+                    if (index <= 3) return UnitGearRules.fitsArmorSlot(owner, stack, target);
                     if (bound instanceof AbstractArmySoldier soldier) {
                         return index == 4
                                 ? UnitGearRules.mayPlaceMainHand(soldier, stack)
@@ -127,6 +134,11 @@ public class UnitMenu extends AbstractContainerMenu {
             addSlot(new Slot(equip, index, pos[0], pos[1]) {
                 @Override
                 public boolean mayPlace(ItemStack stack) {
+                    Entity bound = owner.level().getEntity(UnitMenu.this.unitId);
+                    if (bound instanceof AbstractArmySoldier soldier
+                            && !soldier.acceptsManualEquipment()) {
+                        return false;
+                    }
                     if (!stack.is(Monster_conquest.WARM_CLOTHES.get())
                             && !stack.is(Monster_conquest.BULLETPROOF_VEST.get())) {
                         return false;
@@ -205,7 +217,7 @@ public class UnitMenu extends AbstractContainerMenu {
             total = effects.size();
             for (var effect : effects) {
                 if (shown >= EFFECT_SHOWN) break;
-                int id = net.minecraft.core.registries.BuiltInRegistries.MOB_EFFECT
+                int id = BuiltInRegistries.MOB_EFFECT
                         .getId(effect.getEffect().value());
                 if (id < 0) continue;
                 sync[DATA_EFFECTS + shown] = ((id + 1) << 8) | (effect.getAmplifier() & 0xFF);

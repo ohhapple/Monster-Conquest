@@ -1,12 +1,21 @@
 package com.ohhapple.monster_conquest.client;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.client.renderer.*;
 import com.ohhapple.monster_conquest.entity.ModEntities;
+import com.ohhapple.monster_conquest.item.FactionBannerClientExtensions;
+import com.ohhapple.monster_conquest.Monster_conquest;
+
+import net.minecraft.client.renderer.entity.NoopRenderer;
+import net.minecraft.client.renderer.entity.ThrownItemRenderer;
+import net.minecraft.client.renderer.entity.ThrownTridentRenderer;
+import net.minecraft.client.renderer.entity.TippableArrowRenderer;
+
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
+import net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent;
+import net.neoforged.neoforge.client.extensions.common.RegisterClientExtensionsEvent;
 
 @EventBusSubscriber(modid = Monster_conquest.MODID, value = Dist.CLIENT)
 public class ModClientEvents {
@@ -52,17 +61,20 @@ public class ModClientEvents {
         event.registerEntityRenderer(ModEntities.VILLAGER_MACE_SOLDIER.get(), ArmySoldierRenderer::new);
         event.registerEntityRenderer(ModEntities.VILLAGER_ARCHER_SOLDIER.get(), ArmySoldierRenderer::new);
         event.registerEntityRenderer(ModEntities.VILLAGER_PRIEST_SOLDIER.get(), ArmySoldierRenderer::new);
+        event.registerEntityRenderer(ModEntities.PIGLIN_SHIELD_SOLDIER.get(), ArmySoldierRenderer::new);
+        event.registerEntityRenderer(ModEntities.VEX_FLYING.get(), VexFlyingRenderer::new);
+        event.registerEntityRenderer(ModEntities.ALLAY_FLYING.get(), AllayFlyingRenderer::new);
 
         event.registerEntityRenderer(ModEntities.WAR_HORSE.get(), WarHorseRenderer::new);
         // 袭击锚点：永远不渲染（袭击进度条 / 敲钟高亮的载体）
         event.registerEntityRenderer(ModEntities.RAID_ANCHOR.get(),
-                net.minecraft.client.renderer.entity.NoopRenderer::new);
+                NoopRenderer::new);
         event.registerEntityRenderer(ModEntities.ARMY_TRIDENT.get(),
-                net.minecraft.client.renderer.entity.ThrownTridentRenderer::new);
+                ThrownTridentRenderer::new);
         event.registerEntityRenderer(ModEntities.ARMY_ARROW.get(),
-                net.minecraft.client.renderer.entity.TippableArrowRenderer::new);
+                TippableArrowRenderer::new);
         event.registerEntityRenderer(ModEntities.WITCH_POTION.get(),
-                ctx -> new net.minecraft.client.renderer.entity.ThrownItemRenderer<>(ctx, 1.0f, true));
+                ctx -> new ThrownItemRenderer<>(ctx, 1.0f, true));
         event.registerEntityRenderer(ModEntities.ARMY_BULLET.get(),
                 ArmyBulletRenderer::new);
         event.registerEntityRenderer(ModEntities.ARMY_ROCKET.get(),
@@ -74,17 +86,17 @@ public class ModClientEvents {
      */
     @SubscribeEvent
     public static void registerClientExtensions(
-            net.neoforged.neoforge.client.extensions.common.RegisterClientExtensionsEvent event) {
+            RegisterClientExtensionsEvent event) {
         event.registerItem(
-                com.ohhapple.monster_conquest.item.FactionBannerClientExtensions.INSTANCE,
+                FactionBannerClientExtensions.INSTANCE,
                 Monster_conquest.FACTION_BANNER);
     }
 
     /** 阵营长杆旗帜：资源重载后让渲染器重新读取形状文件。 */
     @SubscribeEvent
     public static void registerClientReloadListeners(
-            net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent event) {
+            RegisterClientReloadListenersEvent event) {
         event.registerReloadListener(
-                com.ohhapple.monster_conquest.client.renderer.FactionBannerRenderer.reloadListener());
+                FactionBannerRenderer.reloadListener());
     }
 }

@@ -5,6 +5,7 @@ import com.ohhapple.monster_conquest.config.FactionConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.util.PeacefulUtil;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.LivingEntity;
@@ -13,10 +14,13 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.raid.Raid;
 import net.minecraft.world.entity.raid.Raider;
 import net.minecraft.world.phys.AABB;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 村庄防御：村庄巡逻队像铁傀儡一样保护村民。
@@ -71,7 +75,7 @@ public final class VillageDefense {
         AABB box = player.getBoundingBox().inflate(128.0);
 
         // 同一场袭击的本模组参战部队只统计一次（避免每个村庄首领各查一遍实体，降低服务器开销）
-        java.util.Map<Integer, List<LivingEntity>> raidUnitsCache = new java.util.HashMap<>();
+        Map<Integer, List<LivingEntity>> raidUnitsCache = new HashMap<>();
 
         for (AbstractArmyCommander commander : level.getEntitiesOfClass(
                 AbstractArmyCommander.class, box,

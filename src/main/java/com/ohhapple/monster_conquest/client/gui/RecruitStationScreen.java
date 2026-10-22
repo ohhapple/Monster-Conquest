@@ -1,24 +1,28 @@
 package com.ohhapple.monster_conquest.client.gui;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.army.RecruitableSoldiers;
 import com.ohhapple.monster_conquest.config.RecruitConfig;
+import com.ohhapple.monster_conquest.item.BackpackItem;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.network.serverbound.recruit.RecruitSoldierPayload;
 import com.ohhapple.monster_conquest.network.serverbound.recruit.UpgradeSoldierPayload;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
+
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.ItemStack;
+
 import net.neoforged.neoforge.network.PacketDistributor;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -51,10 +55,14 @@ public class RecruitStationScreen extends Screen {
 
     private int selected = 0;
     private int listScroll = 0;
+    /** 是否正在拖列表滚动条；拖动时鼠标与滑块顶部的偏移。 */
+    private boolean draggingBar = false;
+    private double barDragOffset = 0.0;
 
     private int panelX, panelY;
     private int listX, listY, listH;
     private int rightX, rightY, rightW;
+    private GuiViewport viewport = new GuiViewport(1.0f, 0, 0);
 
     public RecruitStationScreen(BlockPos pos) {
         super(Component.translatable("gui.monster_conquest.recruit.title"));
@@ -63,8 +71,9 @@ public class RecruitStationScreen extends Screen {
 
     @Override
     protected void init() {
-        panelX = (this.width - PANEL_W) / 2;
-        panelY = (this.height - PANEL_H) / 2;
+        viewport = GuiViewport.fit(width, height, PANEL_W, PANEL_H, 8);
+        panelX = 0;
+        panelY = 0;
         listX = panelX + 8;
         listY = panelY + 30;
         listH = PANEL_H - 30 - 22;
@@ -115,12 +124,46 @@ public class RecruitStationScreen extends Screen {
     }
 
     private void clampScroll() {
-        int max = Math.max(0, listContentHeight() - listH);
-        listScroll = Mth.clamp(listScroll, 0, max);
+        listScroll = Mth.clamp(listScroll, 0, maxScroll());
+    }
+
+    private int maxScroll() {
+        return Math.max(0, listContentHeight() - listH);
+    }
+
+    private int barHeight() {
+        int content = listContentHeight();
+        return content <= 0 ? listH : Math.max(10, listH * listH / content);
+    }
+
+    private int barY() {
+        int max = maxScroll();
+        if (max <= 0) return listY;
+        return listY + (listH - barHeight()) * listScroll / max;
+    }
+
+    /** 鼠标是否落在列表滚动条上（判定区比画出来的滑块宽一些，方便按住）。 */
+    private boolean inScrollbar(double mouseX, double mouseY) {
+        int barX = listX + LIST_W - 3;
+        return maxScroll() > 0
+                && mouseX >= barX - 3 && mouseX <= barX + 5
+                && mouseY >= listY && mouseY <= listY + listH;
+    }
+
+    /** 把滚动条拖到鼠标所在的纵向位置。 */
+    private void applyBarDrag(double mouseY) {
+        int max = maxScroll();
+        if (max <= 0) return;
+        int barHeight = barHeight();
+        int track = Math.max(1, listH - barHeight);
+        double y = Mth.clamp(mouseY - barDragOffset, listY, listY + track);
+        listScroll = Mth.clamp((int) Math.round((y - listY) * max / (double) track), 0, max);
     }
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        mouseX = viewport.localX(mouseX);
+        mouseY = viewport.localY(mouseY);
         if (mouseX >= listX && mouseX <= listX + LIST_W && mouseY >= listY && mouseY <= listY + listH) {
             listScroll -= (int) Math.round(scrollY * ROW_H * 2);
             clampScroll();
@@ -131,7 +174,22 @@ public class RecruitStationScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        mouseX = viewport.localX(mouseX);
+        mouseY = viewport.localY(mouseY);
         if (super.mouseClicked(mouseX, mouseY, button)) return true;
+        // 滚动条：点滑块直接拖，点轨道跳到该位置
+        if (button == 0 && inScrollbar(mouseX, mouseY)) {
+            int barHeight = barHeight();
+            int barY = barY();
+            if (mouseY >= barY && mouseY <= barY + barHeight) {
+                barDragOffset = mouseY - barY;
+            } else {
+                barDragOffset = barHeight / 2.0;
+                applyBarDrag(mouseY);
+            }
+            draggingBar = true;
+            return true;
+        }
         if (button == 0
                 && mouseX >= listX && mouseX <= listX + LIST_W
                 && mouseY >= listY && mouseY <= listY + listH) {
@@ -145,8 +203,47 @@ public class RecruitStationScreen extends Screen {
     }
 
     @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        mouseX = viewport.localX(mouseX);
+        mouseY = viewport.localY(mouseY);
+        dragX = viewport.localDelta(dragX);
+        dragY = viewport.localDelta(dragY);
+        if (draggingBar) {
+            applyBarDrag(mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        mouseX = viewport.localX(mouseX);
+        mouseY = viewport.localY(mouseY);
+        if (button == 0 && draggingBar) {
+            draggingBar = false;
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
+    public void mouseMoved(double mouseX, double mouseY) {
+        super.mouseMoved(viewport.localX(mouseX), viewport.localY(mouseY));
+    }
+
+    @Override
+    public void renderBackground(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
+        // 全屏遮罩由 render() 自己绘制，避免缩放后的原版背景越出面板。
+    }
+
+    @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-        super.render(g, mouseX, mouseY, partialTick);
+        int localMouseX = viewport.localX(mouseX);
+        int localMouseY = viewport.localY(mouseY);
+        g.fill(0, 0, width, height, 0xB0000000);
+        viewport.push(g);
+        syncTierWidgets(entries.get(selected));
+        super.render(g, localMouseX, localMouseY, partialTick);
 
         g.fill(panelX - 1, panelY - 1, panelX + PANEL_W + 1, panelY + PANEL_H + 1, COL_BORDER);
         g.fill(panelX, panelY, panelX + PANEL_W, panelY + PANEL_H, COL_BG);
@@ -155,12 +252,13 @@ public class RecruitStationScreen extends Screen {
                 Component.translatable("gui.monster_conquest.recruit.list_title"),
                 listX, panelY + 19, COL_TEXT_DIM);
 
-        renderSpeciesList(g, mouseX, mouseY);
+        renderSpeciesList(g, localMouseX, localMouseY);
         renderTierRows(g);
 
         g.drawString(this.font,
                 Component.translatable("gui.monster_conquest.recruit.hint"),
                 panelX + 8, panelY + PANEL_H - 14, COL_TEXT_DIM);
+        viewport.pop(g);
     }
 
     private void renderSpeciesList(GuiGraphics g, int mouseX, int mouseY) {
@@ -178,12 +276,11 @@ public class RecruitStationScreen extends Screen {
             Component name = Component.translatable("entity.monster_conquest." + entries.get(i).id());
             g.drawString(this.font, name, listX + 4, rowY + 2, COL_TEXT);
         }
-        if (listContentHeight() > listH) {
+        if (maxScroll() > 0) {
             int barX = listX + LIST_W - 3;
-            int barH = Math.max(10, listH * listH / listContentHeight());
-            int barY = listY + (listH - barH) * listScroll / Math.max(1, listContentHeight() - listH);
             g.fill(barX, listY, barX + 3, listY + listH, 0x40000000);
-            g.fill(barX, barY, barX + 3, barY + barH, COL_TEXT_DIM);
+            g.fill(barX, barY(), barX + 3, barY() + barHeight(),
+                    draggingBar ? COL_TEXT : COL_TEXT_DIM);
         }
     }
 
@@ -193,16 +290,22 @@ public class RecruitStationScreen extends Screen {
                 Component.translatable("entity.monster_conquest." + entry.id()),
                 rightX + rightW / 2, panelY + 19, COL_TEXT);
 
-        for (int t = 0; t < 5; t++) {
+        int rows = tierRows(entry);
+        for (int t = 0; t < rows; t++) {
             int rowY = rightY + t * TIER_ROW_H;
             g.fill(rightX, rowY, rightX + rightW, rowY + TIER_ROW_H - 2, 0x30000000);
 
             ResourceLocation icon = ResourceLocation.fromNamespaceAndPath(
                     Monster_conquest.MODID,
-                    "textures/item/egg/soldier/" + entry.id() + "_tier_" + t + ".png");
+                    "textures/item/egg/soldier/" + entry.id()
+                            + (entry.fixedTier() ? "" : "_tier_" + t) + ".png");
             g.blit(icon, rightX + 3, rowY + 3, 0, 0, 16, 16, 16, 16);
 
-            g.drawString(this.font, "T" + t, rightX + 21, rowY + 7, COL_TEXT);
+            g.drawString(this.font,
+                    entry.fixedTier()
+                            ? Component.translatable("tooltip.monster_conquest.single_level")
+                            : Component.literal("T" + t),
+                    rightX + 21, rowY + 7, COL_TEXT);
 
             // 军费 = 绿宝石 × e + 该等级金属 × m（每个兵种单独定价）
             int eNeed = RecruitConfig.emeraldCost(entry.id(), t);
@@ -223,7 +326,7 @@ public class RecruitStationScreen extends Screen {
                     iconX + 34, rowY + 7, enough ? COL_OK : COL_BAD);
 
             // 升级：蛋（低一档）+ 目标档半价
-            Item egg = t >= 1 ? eggItem(entry.id(), t - 1) : null;
+            Item egg = !entry.fixedTier() && t >= 1 ? eggItem(entry.id(), t - 1) : null;
             boolean upgradeEnough = false;
             if (egg != null) {
                 int ue = halfUp(eNeed);
@@ -264,6 +367,20 @@ public class RecruitStationScreen extends Screen {
         return Math.max(1, (value + 1) / 2);
     }
 
+    private static int tierRows(RecruitableSoldiers.Entry entry) {
+        return entry.fixedTier() ? 1 : 5;
+    }
+
+    private void syncTierWidgets(RecruitableSoldiers.Entry entry) {
+        int rows = tierRows(entry);
+        for (int t = 0; t < recruitButtons.size(); t++) {
+            boolean visible = t < rows;
+            recruitButtons.get(t).visible = visible;
+            Button upgrade = upgradeButtons.get(t);
+            if (upgrade != null) upgrade.visible = visible;
+        }
+    }
+
     /** 士兵刷怪蛋物品（soldier_<兵种>_tier_<n>）。 */
     @Nullable
     private static Item eggItem(String speciesId, int tier) {
@@ -286,7 +403,7 @@ public class RecruitStationScreen extends Screen {
             if (!s.isEmpty() && s.is(item)) n += s.getCount();
         }
         // 背包（物品）里的物品也算
-        n += com.ohhapple.monster_conquest.item.BackpackItem.countItem(mc.player, item);
+        n += BackpackItem.countItem(mc.player, item);
         return n;
     }
 }

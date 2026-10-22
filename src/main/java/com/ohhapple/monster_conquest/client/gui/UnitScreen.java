@@ -2,22 +2,25 @@ package com.ohhapple.monster_conquest.client.gui;
 
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
-import com.ohhapple.monster_conquest.entity.ManagedUnit;
 import com.ohhapple.monster_conquest.entity.commanders.patrol.AbstractPatrolCaptain;
+import com.ohhapple.monster_conquest.entity.ManagedUnit;
 import com.ohhapple.monster_conquest.menu.UnitMenu;
 import com.ohhapple.monster_conquest.network.serverbound.unit.UnitControlPayload;
 import com.ohhapple.monster_conquest.network.serverbound.unit.UnitRetrievePayload;
 import com.ohhapple.monster_conquest.player.PlayerCommandState;
 import com.ohhapple.monster_conquest.util.FactionDisplay;
-import net.minecraft.core.registries.BuiltInRegistries;
+
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Inventory;
+
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.ArrayList;
@@ -44,6 +47,7 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
     private Button retrieveButton;
     /** 效果行文字的屏幕 y（绝对坐标；-1 = 这一帧没画）。 */
     private int effectLineY = -1;
+    private GuiViewport viewport = new GuiViewport(1.0f, 0, 0);
 
     public UnitScreen(UnitMenu menu, Inventory inventory, Component title) {
         super(menu, inventory, title);
@@ -54,6 +58,9 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
     @Override
     protected void init() {
         super.init();
+        viewport = GuiViewport.fit(width, height, PANEL_W, PANEL_H, 8);
+        leftPos = 0;
+        topPos = 0;
         dropdowns.clear();
 
         dropdowns.add(new Dropdown(8, 110, DROPDOWN_W, UnitMenu.DATA_MOVEMENT,
@@ -115,7 +122,7 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
                         Component.translatable("gui.monster_conquest.unit.follow_army"),
                         b -> PacketDistributor.sendToServer(new UnitControlPayload(
                                 menu.getUnitId(), UnitControlPayload.ACTION_FOLLOW_ARMY, 0)))
-                .tooltip(net.minecraft.client.gui.components.Tooltip.create(
+                .tooltip(Tooltip.create(
                         Component.translatable("gui.monster_conquest.unit.follow_army.tip")))
                 .bounds(leftPos + 8, topPos + 170, 84, 18).build());
 
@@ -123,36 +130,45 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
         retrieveButton = addRenderableWidget(Button.builder(
                         Component.translatable("gui.monster_conquest.unit.retrieve"),
                         b -> PacketDistributor.sendToServer(new UnitRetrievePayload(menu.getUnitId())))
-                .tooltip(net.minecraft.client.gui.components.Tooltip.create(
+                .tooltip(Tooltip.create(
                         Component.translatable("gui.monster_conquest.unit.retrieve.tip")))
                 .bounds(leftPos + 100, topPos + 170, 84, 18).build());
     }
 
     @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
+        int localMouseX = viewport.localX(mouseX);
+        int localMouseY = viewport.localY(mouseY);
+        g.fill(0, 0, width, height, 0xB0000000);
+        viewport.push(g);
         boolean strategy = menu.canConfigureStrategy();
         followArmyButton.visible = strategy;
         followArmyButton.active = menu.getSync(UnitMenu.DATA_OVERRIDE) == 1;
         // 没有策略按钮的单位（首领等）把"收纳"挪到左半边，避免留下大片空白
         retrieveButton.setPosition(leftPos + (strategy ? 100 : 8), topPos + 170);
-        super.render(g, mouseX, mouseY, partialTick);
+        super.render(g, localMouseX, localMouseY, partialTick);
         Dropdown hovering = null;
         for (Dropdown dropdown : dropdowns) {
-            dropdown.renderPopup(g, this.font, mouseX, mouseY);
+            dropdown.renderPopup(g, this.font, localMouseX, localMouseY);
         }
         for (Dropdown dropdown : dropdowns) {
-            if (dropdown.isMouseOverPopup(mouseX, mouseY)) hovering = dropdown;
+            if (dropdown.isMouseOverPopup(localMouseX, localMouseY)) hovering = dropdown;
         }
         // 鼠标在展开的选项列表上时不显示物品提示，避免提示盖住下拉框
-        if (hovering != null) return;
-        if (isHoveringEffectLine(mouseX, mouseY)) {
+        if (hovering != null) {
+            viewport.pop(g);
+            return;
+        }
+        if (isHoveringEffectLine(localMouseX, localMouseY)) {
             List<Component> lines = effectTooltipLines();
             if (!lines.isEmpty()) {
-                g.renderComponentTooltip(this.font, lines, mouseX, mouseY);
+                g.renderComponentTooltip(this.font, lines, localMouseX, localMouseY);
+                viewport.pop(g);
                 return;
             }
         }
-        this.renderTooltip(g, mouseX, mouseY);
+        this.renderTooltip(g, localMouseX, localMouseY);
+        viewport.pop(g);
     }
 
     @Override
@@ -162,6 +178,8 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        mouseX = viewport.localX(mouseX);
+        mouseY = viewport.localY(mouseY);
         if (menu.canConfigureStrategy()) {
             for (Dropdown dropdown : dropdowns) {
                 if (dropdown.mouseClicked(mouseX, mouseY, button)) return true;
@@ -170,6 +188,36 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
             for (Dropdown dropdown : dropdowns) dropdown.close();
         }
         return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        return super.mouseReleased(viewport.localX(mouseX), viewport.localY(mouseY), button);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button,
+                                double dragX, double dragY) {
+        return super.mouseDragged(viewport.localX(mouseX), viewport.localY(mouseY), button,
+                viewport.localDelta(dragX), viewport.localDelta(dragY));
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY,
+                                 double scrollX, double scrollY) {
+        return super.mouseScrolled(viewport.localX(mouseX), viewport.localY(mouseY),
+                scrollX, scrollY);
+    }
+
+    @Override
+    public void mouseMoved(double mouseX, double mouseY) {
+        super.mouseMoved(viewport.localX(mouseX), viewport.localY(mouseY));
+    }
+
+    @Override
+    public void renderBackground(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
+        // 跳过原版全屏背景，但仍绘制自定义面板和全部装备槽。
+        renderBg(g, partialTick, mouseX, mouseY);
     }
 
     @Override
@@ -273,6 +321,12 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
     }
 
     private int drawSoldierStatus(GuiGraphics g, int x, int y, AbstractArmySoldier soldier) {
+        if (soldier.getRole().isFlying()) {
+            statusLine(g, x, y, Component.translatable("gui.monster_conquest.unit.role",
+                    Component.translatable("tooltip.monster_conquest.role.flying")),
+                    0xFF606060);
+            y += 10;
+        }
         statusLine(g, x, y, Component.translatable("gui.monster_conquest.unit.health",
                 String.format("%.0f/%.0f", soldier.getHealth(), soldier.getMaxHealth())),
                 0xFF902020);
@@ -280,9 +334,12 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
         statusLine(g, x, y, Component.translatable("gui.monster_conquest.unit.armor",
                 soldier.getArmorValue()), 0xFF205090);
         y += 10;
-        statusLine(g, x, y, Component.translatable("tooltip.monster_conquest.tier",
-                Component.translatable("tooltip.monster_conquest.tier_name."
-                        + soldier.getTier().name().toLowerCase())), 0xFF705010);
+        Component tier = soldier.hasFixedTier()
+                ? Component.translatable("tooltip.monster_conquest.single_level")
+                : Component.translatable("tooltip.monster_conquest.tier",
+                        Component.translatable("tooltip.monster_conquest.tier_name."
+                                + soldier.getTier().name().toLowerCase()));
+        statusLine(g, x, y, tier, 0xFF705010);
         y += 10;
         statusLine(g, x, y, Component.translatable("gui.monster_conquest.unit.faction",
                 FactionDisplay.displayName(soldier.getFactionId())), 0xFF205020);
@@ -293,9 +350,11 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
                         : Component.translatable("gui.monster_conquest.unit.squad.none").getString()),
                 0xFF303080);
         y += 10;
-        Component form = Component.translatable(soldier.getSoldierType().isCavalry()
-                ? "tooltip.monster_conquest.form.cavalry"
-                : "tooltip.monster_conquest.form.infantry");
+        Component form = soldier.getRole().isFlying()
+                ? Component.translatable("tooltip.monster_conquest.form.flying")
+                : Component.translatable(soldier.getSoldierType().isCavalry()
+                        ? "tooltip.monster_conquest.form.cavalry"
+                        : "tooltip.monster_conquest.form.infantry");
         if (soldier.isPassenger()) {
             form = form.copy().append(
                     Component.translatable("gui.monster_conquest.unit.mounted"));

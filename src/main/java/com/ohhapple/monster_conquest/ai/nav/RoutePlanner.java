@@ -1,19 +1,27 @@
 package com.ohhapple.monster_conquest.ai.nav;
 
+import com.ohhapple.monster_conquest.config.GeneralConfig;
+import com.ohhapple.monster_conquest.Monster_conquest;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.util.Mth;
-import net.minecraft.tags.BlockTags;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.FenceGateBlock;
-import net.minecraft.world.level.block.TrapDoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
+import net.minecraft.world.level.block.TrapDoorBlock;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.shapes.BooleanOp;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -22,24 +30,39 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
 
 /**
- * 方块级 A* 绕路规划：目标只要求到达目标附近，搜索失败时按多个"目标偏好系数"
- * 取最接近目标且已走出足够距离的部分路线。邻居为 8 方向 × 台阶高度
+ * 方块级 A* 绕路规划：目标只要求到达目标附近；目标够不到时取"离目标最近的可达节点"，
+ * 让单位尽量走到能到的最近位置（而不是守在起点附近的墙边）。邻居为 8 方向 × 台阶高度
  * （上 1 格、下最多 3 格，不切角），木门 / 栅栏门可通行、危险方块不可通行，
  * 支持半砖 / 雪层 / 地毯等部分方块的站立面；受节点数与时间预算限制。
  *
  * 支持传入"上一次的路线"作为代价偏好：靠近旧路线的节点更便宜，
  * 重规划时会优先沿原路线走，避免在两条绕路之间来回切换。
+ * 完整路线还会建立全局节点索引，后续单位可从路线中段接入，并用短连接路径补到真实位置。
  */
 public final class RoutePlanner {
 
-    /** 规划结果：路径点（含起点）与是否真正到达目标附近。 */
-    public record Result(List<BlockPos> points, boolean reachedGoal) {}
+    /** 规划的结束原因，供上层决定是继续推进、换目标还是延长退避。 */
+    public enum Outcome {
+        REACHED,
+        PARTIAL_NODE_LIMIT,
+        PARTIAL_TIME_LIMIT,
+        PARTIAL_FRONTIER_EMPTY,
+        PARTIAL_RADIUS_LIMIT,
+        NO_START,
+        NO_ROUTE
+    }
+
+    /** 规划结果：路径点（含起点）、是否真正到达目标附近，以及结束原因。 */
+    public record Result(List<BlockPos> points, boolean reachedGoal,
+                         Outcome outcome, int visitedNodes) {}
 
     /**
      * 通行净空：宽度取移动实体（骑乘时为坐骑），高度再加上骑手。
@@ -53,10 +76,28 @@ public final class RoutePlanner {
             {1, 0}, {-1, 0}, {0, 1}, {0, -1},
             {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
     };
-    private static final int[] STEP_LEVELS = {1, 0, -1, -2, -3};
+    private static final int[] STEP_LEVELS = {0, 1, -1, -2, -3};
+    /** 一次最多顺着梯子滑多少格（再长就逐节走，避免路径节点跨度过大）。 */
+    private static final int SLIDE_LIMIT = 24;
 
     private static final int MAX_NODES = 12000;
     private static final long TIME_BUDGET_NANOS = 4_000_000L;
+    /** 跨 tick 搜索的单 tick 切片；预算仍受全局规划额度限制。 */
+    private static final long SEARCH_SLICE_NANOS = 5_000_000L;
+    /** 复杂迷宫的单次持久搜索上限。 */
+    private static final int SEARCH_NODE_LIMIT = 24000;
+    /** 略微加权，减少在迷宫死路和外墙附近展开的节点数。 */
+    private static final double SEARCH_HEURISTIC_WEIGHT = 1.15;
+    /** 同队单位共享路线的最长复用时间；超过后重新验证 / 规划。 */
+    private static final int PATH_CACHE_TICKS = 80;
+    private static final int PATH_CACHE_MAX_ENTRIES = 256;
+    /** 已完整到达路线的中段接入索引上限，避免长路线把缓存撑大。 */
+    private static final int ROUTE_REUSE_MAX_ANCHORS = 32_768;
+    private static final int ROUTE_REUSE_ANCHORS_PER_PATH = 1_024;
+    private static final int ROUTE_REUSE_SCAN_RADIUS = 5;
+    private static final int ROUTE_REUSE_SCAN_DY = 2;
+    private static final int ROUTE_REUSE_CONNECTOR_NODES = 512;
+    private static final long ROUTE_REUSE_CONNECTOR_BUDGET_NANOS = 2_000_000L;
     private static final double MIN_PARTIAL_DISTANCE = 5.0;
     /** 最优努力系数：先取路径较"合理"的解，不行再取更贴近目标的解。 */
     private static final double[] BEST_COEFFICIENTS = {1.5, 4.0};
@@ -108,6 +149,12 @@ public final class RoutePlanner {
             nanosUsed = Math.max(0L, nanosUsed - elapsedTicks * NANOS_PER_TICK);
             budgetTick = nowTick;
         }
+        Result cached = findCachedPath(level, entity, goal, goalRadius, maxRadius,
+                maxNodes, extraHeight, favored, smooth);
+        if (cached != null) {
+            lastCallDeferred = false;
+            return cached;
+        }
         if (nanosUsed >= NANOS_PER_TICK) {
             lastCallDeferred = true;
             return null;
@@ -116,20 +163,27 @@ public final class RoutePlanner {
         long budgetStartNanos = System.nanoTime();
         // 单次规划期间缓存"格子能不能走"：同一条走廊相邻节点会重复查询，
         //   迷宫搜索能因此快好几倍（服务端单线程，静态缓存安全）。
-        WALK_CACHE.clear();
-        CACHE_ACTIVE = true;
+        Map<Long, Boolean> localWalkCache = new HashMap<>();
+        Map<Long, Boolean> previousWalkCache = activeWalkCache;
+        activeWalkCache = localWalkCache;
         try {
-            return planInternal(level, entity, goal, goalRadius, maxRadius, maxNodes,
+            Result result = planInternal(level, entity, goal, goalRadius, maxRadius, maxNodes,
                     extraHeight, favored, smooth, timeBudgetNanos);
+            storeCachedPath(level, entity, goal, goalRadius, maxRadius, maxNodes,
+                    extraHeight, favored, smooth, result);
+            return result;
         } finally {
-            CACHE_ACTIVE = false;
-            WALK_CACHE.clear();
+            activeWalkCache = previousWalkCache;
             nanosUsed += System.nanoTime() - budgetStartNanos;
         }
     }
 
-    private static boolean CACHE_ACTIVE = false;
-    private static final Map<Long, Boolean> WALK_CACHE = new HashMap<>();
+    /** 当前规划自己的通行缓存；跨 tick 的搜索会保留整份缓存。 */
+    @Nullable private static Map<Long, Boolean> activeWalkCache = null;
+    private static final Map<CacheKey, CachedPath> PATH_CACHE = new HashMap<>();
+    private static final RouteReuseIndex ROUTE_REUSE_INDEX = new RouteReuseIndex();
+    private static final Map<ResourceLocation, Long> WORLD_VERSIONS = new HashMap<>();
+    private static long pathCacheTick = Long.MIN_VALUE;
 
     /** 全局每 tick 规划预算（纳秒）：所有调用点合计，防止战斗中大量单位同时跑 A* 造成掉刻。 */
     private static final long NANOS_PER_TICK = 5_000_000L;
@@ -137,9 +191,325 @@ public final class RoutePlanner {
     private static long nanosUsed = 0L;
     private static boolean lastCallDeferred = false;
 
+    /**
+     * 共享路线缓存键：只复用几何条件完全相同的路线。
+     *   起点是精确格；目标、净空、平滑方式和方块变化版本参与比较。
+     *   搜索半径 / 节点上限只影响单次查询，不阻止同几何路线复用。
+     *   旧路线偏好只影响本次选路，不阻止其他单位复用同一条几何路线。
+     */
+    private record CacheKey(ResourceLocation dimension, long worldVersion, long start, long goal,
+                            long widthBits, long heightBits, long centerBits,
+                            double goalRadius, double maxRadius, int maxNodes,
+                            boolean smooth) {}
+
+    private record CachedPath(CacheKey key, Result result, long createdTick) {}
+
+    private record RouteAnchor(CachedPath path, int nodeIndex) {}
+
+    private record ReuseChoice(CachedPath path, int nodeIndex, double distanceSq) {}
+
+    /**
+     * 完整路线的中段接入索引。
+     *
+     * <p>路线可能被多个单位从不同位置接入。索引只保存少量采样节点，
+     * 命中后再用短连接路径接到真实单位位置；未到达目标的半路结果不会进入索引。</p>
+     */
+    private static final class RouteReuseIndex {
+        private final Map<Long, List<RouteAnchor>> anchorsByNode = new HashMap<>();
+        private final Map<CachedPath, List<Long>> keysByPath = new IdentityHashMap<>();
+        private int anchorCount;
+
+        private void clear() {
+            anchorsByNode.clear();
+            keysByPath.clear();
+            anchorCount = 0;
+        }
+
+        private void add(CachedPath path) {
+            if (path == null || !path.result().reachedGoal()) return;
+
+            List<BlockPos> points = path.result().points();
+            if (points.size() < 2 || keysByPath.containsKey(path)) return;
+
+            int stride = Math.max(1,
+                    (points.size() + ROUTE_REUSE_ANCHORS_PER_PATH - 1)
+                            / ROUTE_REUSE_ANCHORS_PER_PATH);
+            List<Long> indexedKeys = new ArrayList<>();
+            for (int i = 0; i < points.size() && anchorCount < ROUTE_REUSE_MAX_ANCHORS; i += stride) {
+                long key = points.get(i).asLong();
+                anchorsByNode.computeIfAbsent(key, ignored -> new ArrayList<>(2))
+                        .add(new RouteAnchor(path, i));
+                indexedKeys.add(key);
+                anchorCount++;
+            }
+            if (!indexedKeys.isEmpty()) {
+                keysByPath.put(path, indexedKeys);
+            }
+        }
+
+        private void remove(CachedPath path) {
+            List<Long> indexedKeys = keysByPath.remove(path);
+            if (indexedKeys == null) return;
+
+            for (long key : indexedKeys) {
+                List<RouteAnchor> anchors = anchorsByNode.get(key);
+                if (anchors == null) continue;
+                int before = anchors.size();
+                anchors.removeIf(anchor -> anchor.path() == path);
+                anchorCount -= before - anchors.size();
+                if (anchors.isEmpty()) anchorsByNode.remove(key);
+            }
+        }
+
+        @Nullable
+        private ReuseChoice find(CacheKey lookup, BlockPos start) {
+            BlockPos target = BlockPos.of(lookup.goal());
+            double startToTarget = start.distSqr(target);
+            ReuseChoice best = null;
+
+            int baseX = start.getX();
+            int baseY = start.getY();
+            int baseZ = start.getZ();
+            for (int dx = -ROUTE_REUSE_SCAN_RADIUS; dx <= ROUTE_REUSE_SCAN_RADIUS; dx++) {
+                for (int dz = -ROUTE_REUSE_SCAN_RADIUS; dz <= ROUTE_REUSE_SCAN_RADIUS; dz++) {
+                    for (int dy = -ROUTE_REUSE_SCAN_DY; dy <= ROUTE_REUSE_SCAN_DY; dy++) {
+                        long key = BlockPos.asLong(baseX + dx, baseY + dy, baseZ + dz);
+                        List<RouteAnchor> anchors = anchorsByNode.get(key);
+                        if (anchors == null || anchors.isEmpty()) continue;
+
+                        for (RouteAnchor anchor : anchors) {
+                            CachedPath path = anchor.path();
+                            if (!sameRoute(path.key(), lookup)) continue;
+                            List<BlockPos> points = path.result().points();
+                            if (anchor.nodeIndex() < 0 || anchor.nodeIndex() >= points.size()) continue;
+
+                            BlockPos node = points.get(anchor.nodeIndex());
+                            // 只允许向前接入；接到更远离目标的节点会让单位无谓折返。
+                            if (node.distSqr(target) > startToTarget + 1.0D) continue;
+
+                            double distanceSq = node.distSqr(start);
+                            if (best == null
+                                    || distanceSq < best.distanceSq()
+                                    || (distanceSq == best.distanceSq()
+                                            && anchor.nodeIndex() > best.nodeIndex())) {
+                                best = new ReuseChoice(path, anchor.nodeIndex(), distanceSq);
+                            }
+                        }
+                    }
+                }
+            }
+            return best;
+        }
+    }
+
     /** 上一次 plan() 返回 null 是否只是"本 tick 预算被占满"（不是真的没有路）。 */
     public static boolean wasLastCallDeferred() {
         return lastCallDeferred;
+    }
+
+    /**
+     * 可跨 tick 继续的 A* 搜索。MarchRouteFollower 用它处理"时间片用完但目标
+     * 仍可能可达"的复杂迷宫，避免把外墙边的一小段半路路线交给单位执行。
+     */
+    public static final class SearchState {
+        private final BlockPos start;
+        private final Vec3 goal;
+        private final double goalRadiusSq;
+        private final double maxRadiusSq;
+        private final int nodeBudget;
+        private final Clearance clearance;
+        private final Map<BlockPos, Double> favor;
+        private final boolean smooth;
+        @Nullable private final CacheKey cacheKey;
+        private final Map<BlockPos, Node> nodes = new HashMap<>();
+        private final Set<BlockPos> closed = new HashSet<>();
+        private final PriorityQueue<Node> open = new PriorityQueue<>(
+                Comparator.comparingDouble(n -> n.f(SEARCH_HEURISTIC_WEIGHT)));
+        private final Map<Long, Boolean> walkCache = new HashMap<>();
+
+        @Nullable private Node reached;
+        @Nullable private Node closest;
+        private double closestH = Double.MAX_VALUE;
+        private final Node[] bests = new Node[BEST_COEFFICIENTS.length];
+        private final double[] bestScores = new double[BEST_COEFFICIENTS.length];
+        private int visited;
+        private boolean finished;
+        @Nullable private Result result;
+
+        private SearchState(BlockPos start, Vec3 goal, double goalRadius, double maxRadius,
+                            int nodeBudget, Clearance clearance,
+                            Map<BlockPos, Double> favor, boolean smooth,
+                            @Nullable CacheKey cacheKey) {
+            this.start = start;
+            this.goal = goal;
+            this.goalRadiusSq = goalRadius * goalRadius;
+            this.maxRadiusSq = maxRadius * maxRadius;
+            this.nodeBudget = Math.max(256, Math.min(nodeBudget, SEARCH_NODE_LIMIT));
+            this.clearance = clearance;
+            this.favor = favor;
+            this.smooth = smooth;
+            this.cacheKey = cacheKey;
+            Arrays.fill(this.bestScores, Double.MAX_VALUE);
+            Node startNode = new Node(start, 0.0, center(start).distanceTo(goal), null);
+            nodes.put(start, startNode);
+            open.add(startNode);
+        }
+
+        public boolean isFinished() { return finished; }
+        @Nullable public Result result() { return result; }
+    }
+
+    /**
+     * 新建持久搜索；若共享缓存里已有同起点路线则直接返回完成状态。
+     * 返回 null 表示起点附近找不到可通行格。
+     */
+    @Nullable
+    public static SearchState beginSearch(Level level, LivingEntity entity, Vec3 goal,
+                                          double goalRadius, double maxRadius, int maxNodes,
+                                          double extraHeight, @Nullable List<BlockPos> favored,
+                                          boolean smooth) {
+        Result cached = findCachedPath(level, entity, goal, goalRadius, maxRadius,
+                maxNodes, extraHeight, favored, smooth);
+        Clearance clearance = clearanceOf(entity, extraHeight);
+        BlockPos start = entity.blockPosition();
+        if (!walkableUncached(level, entity, clearance, start)) {
+            start = findStartNear(level, entity, clearance, start);
+            if (start == null) return null;
+        }
+        CacheKey key = cacheKey(level, entity, goal, goalRadius, maxRadius, maxNodes,
+                extraHeight, favored, smooth);
+        SearchState state = new SearchState(start, goal, goalRadius, maxRadius,
+                Math.min(maxNodes, SEARCH_NODE_LIMIT), clearance,
+                buildFavor(favored), smooth, key);
+        if (cached != null) {
+            state.finished = true;
+            state.result = cached;
+        }
+        return state;
+    }
+
+    /**
+     * 推进一个持久搜索的时间片。
+     *
+     * @return true = 已结束（结果可能为 null）；false = 本 tick 预算用完，仍可继续
+     */
+    public static boolean advanceSearch(SearchState state, Level level, LivingEntity entity) {
+        if (state.finished) return true;
+        if (state.cacheKey == null
+                || state.cacheKey.worldVersion()
+                        != WORLD_VERSIONS.getOrDefault(level.dimension().location(), 0L)) {
+            state.finished = true;
+            state.result = null;
+            return true;
+        }
+
+        long nowTick = level.getGameTime();
+        if (nowTick != budgetTick) {
+            long elapsedTicks = Math.max(1L, nowTick - budgetTick);
+            nanosUsed = Math.max(0L, nanosUsed - elapsedTicks * NANOS_PER_TICK);
+            budgetTick = nowTick;
+        }
+        long available = NANOS_PER_TICK - nanosUsed;
+        if (available <= 0L) return false;
+
+        long budgetStartNanos = System.nanoTime();
+        long deadline = budgetStartNanos + Math.min(SEARCH_SLICE_NANOS, available);
+        Map<Long, Boolean> previousWalkCache = activeWalkCache;
+        activeWalkCache = state.walkCache;
+        try {
+            while (!state.open.isEmpty() && state.visited < state.nodeBudget) {
+                if ((state.visited & 31) == 0 && System.nanoTime() > deadline) {
+                    return false;
+                }
+
+                Node current = state.open.poll();
+                Node known = state.nodes.get(current.pos);
+                if (known == null || current.g > known.g + 1.0E-6) continue;
+                if (!state.closed.add(current.pos)) continue;
+                state.visited++;
+
+                if (center(current.pos).distanceToSqr(state.goal) <= state.goalRadiusSq) {
+                    state.reached = current;
+                    break;
+                }
+
+                double distFromStart = center(current.pos).distanceTo(center(state.start));
+                if (distFromStart >= MIN_PARTIAL_DISTANCE) {
+                    if (current.h < state.closestH) {
+                        state.closestH = current.h;
+                        state.closest = current;
+                    }
+                    for (int i = 0; i < BEST_COEFFICIENTS.length; i++) {
+                        double score = current.h + current.g / BEST_COEFFICIENTS[i];
+                        if (score < state.bestScores[i]) {
+                            state.bestScores[i] = score;
+                            state.bests[i] = current;
+                        }
+                    }
+                }
+
+                expand(level, entity, state.clearance, current, state.goal, state.start,
+                        state.maxRadiusSq, state.favor, state.nodes, state.closed, state.open);
+            }
+
+            Node end = state.reached;
+            Outcome outcome;
+            if (end != null) {
+                outcome = Outcome.REACHED;
+            } else {
+                end = state.closest;
+                if (end == null) {
+                    for (Node best : state.bests) {
+                        if (best != null) {
+                            end = best;
+                            break;
+                        }
+                    }
+                }
+                outcome = state.open.isEmpty()
+                        ? Outcome.PARTIAL_FRONTIER_EMPTY : Outcome.PARTIAL_NODE_LIMIT;
+            }
+            state.finished = true;
+            if (end == null) {
+                state.result = null;
+                return true;
+            }
+            List<BlockPos> raw = reconstruct(end);
+            if (raw.size() < 2) {
+                state.result = null;
+                return true;
+            }
+            state.result = new Result(state.smooth
+                    ? smooth(level, entity, state.clearance, raw) : raw,
+                    outcome == Outcome.REACHED, outcome, state.visited);
+            cacheResult(level, state.cacheKey, state.result);
+            return true;
+        } finally {
+            activeWalkCache = previousWalkCache;
+            nanosUsed += System.nanoTime() - budgetStartNanos;
+        }
+    }
+
+    /** 方块发生变化后让该维度的旧路线缓存失配。 */
+    public static void noteWorldChanged(ResourceLocation dimension) {
+        if (dimension == null) return;
+        WORLD_VERSIONS.merge(dimension, 1L, Long::sum);
+    }
+
+    public static long worldVersion(Level level) {
+        return WORLD_VERSIONS.getOrDefault(level.dimension().location(), 0L);
+    }
+
+    /** 服务端停止时释放跨存档缓存。 */
+    public static void clearCaches() {
+        PATH_CACHE.clear();
+        ROUTE_REUSE_INDEX.clear();
+        activeWalkCache = null;
+        WORLD_VERSIONS.clear();
+        pathCacheTick = Long.MIN_VALUE;
+        budgetTick = Long.MIN_VALUE;
+        nanosUsed = 0L;
+        lastCallDeferred = false;
     }
 
     /** 移动实体 + 额外高度（骑乘时传骑手高度）对应的通行净空。 */
@@ -150,6 +520,214 @@ public final class RoutePlanner {
                 ((int) (entity.getBbWidth() + 1.0F)) * 0.5);
     }
 
+    private static CacheKey cacheKey(Level level, LivingEntity entity, Vec3 goal,
+                                     double goalRadius, double maxRadius, int maxNodes,
+                                     double extraHeight, @Nullable List<BlockPos> favored,
+                                     boolean smooth) {
+        Clearance clearance = clearanceOf(entity, extraHeight);
+        BlockPos start = entity.blockPosition();
+        BlockPos target = BlockPos.containing(goal.x, goal.y, goal.z);
+        ResourceLocation dimension = level.dimension().location();
+        return new CacheKey(dimension, WORLD_VERSIONS.getOrDefault(dimension, 0L),
+                start.asLong(), target.asLong(),
+                Double.doubleToLongBits(clearance.halfWidth()),
+                Double.doubleToLongBits(clearance.height()),
+                Double.doubleToLongBits(clearance.centerOffset()),
+                goalRadius, maxRadius, maxNodes, smooth);
+    }
+
+    private static boolean sameRoute(CacheKey a, CacheKey b) {
+        return a.dimension().equals(b.dimension())
+                && a.worldVersion() == b.worldVersion()
+                && a.goal() == b.goal()
+                && a.widthBits() == b.widthBits()
+                && a.heightBits() == b.heightBits()
+                && a.centerBits() == b.centerBits()
+                && Double.compare(a.goalRadius(), b.goalRadius()) == 0
+                && a.smooth() == b.smooth();
+    }
+
+    @Nullable
+    private static Result findCachedPath(Level level, LivingEntity entity, Vec3 goal,
+                                         double goalRadius, double maxRadius, int maxNodes,
+                                         double extraHeight, @Nullable List<BlockPos> favored,
+                                         boolean smooth) {
+        long now = level.getGameTime();
+        if (now < pathCacheTick) {
+            PATH_CACHE.clear();
+            ROUTE_REUSE_INDEX.clear();
+        }
+        pathCacheTick = now;
+        prunePathCache(now);
+        if (PATH_CACHE.isEmpty()) return null;
+
+        BlockPos start = entity.blockPosition();
+        if (!walkableFor(level, entity, extraHeight, start)) return null;
+        CacheKey lookup = cacheKey(level, entity, goal, goalRadius, maxRadius, maxNodes,
+                extraHeight, favored, smooth);
+        CachedPath exact = PATH_CACHE.get(lookup);
+        if (exact != null && exact.result().points().size() >= 2
+                && exact.result().points().get(0).equals(start)) {
+            logCacheHit("exact", start, lookup.goal(), exact.result().points().size());
+            return exact.result();
+        }
+
+        for (CachedPath cached : PATH_CACHE.values()) {
+            if (!sameRoute(cached.key(), lookup)) continue;
+            Result attached = attachToCachedPath(level, entity, extraHeight, start, cached.result());
+            if (attached != null) {
+                logCacheHit("attach", start, lookup.goal(), attached.points().size());
+                return attached;
+            }
+        }
+
+        Result joined = reuseIndexedPath(level, entity, lookup, start, extraHeight);
+        if (joined != null) {
+            logCacheHit("join", start, lookup.goal(), joined.points().size());
+            return joined;
+        }
+        return null;
+    }
+
+    @Nullable
+    private static Result attachToCachedPath(Level level, LivingEntity entity,
+                                             double extraHeight, BlockPos start,
+                                             Result cached) {
+        List<BlockPos> points = cached.points();
+        int attachIndex = -1;
+        for (int i = 0; i < points.size(); i++) {
+            BlockPos node = points.get(i);
+            if (node.equals(start)) {
+                attachIndex = i;
+                break;
+            }
+            int dx = Math.abs(node.getX() - start.getX());
+            int dz = Math.abs(node.getZ() - start.getZ());
+            int dy = Math.abs(node.getY() - start.getY());
+            if (dx + dz == 1 && dy <= 1
+                    && walkableFor(level, entity, extraHeight, node)) {
+                attachIndex = i;
+                break;
+            }
+        }
+        if (attachIndex < 0) return null;
+        if (attachIndex == 0 && points.get(0).equals(start)) return cached;
+
+        List<BlockPos> attached = new ArrayList<>(points.size() - attachIndex + 1);
+        attached.add(start);
+        for (int i = attachIndex; i < points.size(); i++) attached.add(points.get(i));
+        return new Result(attached, cached.reachedGoal(), cached.outcome(), cached.visitedNodes());
+    }
+
+    /**
+     * 从已完整到达的旧路线中段接入。
+     *   先用可见直线接到索引节点；线路被墙挡住时，再用一个小范围、低节点上限的
+     *   连接搜索补出接头。连接搜索未真正到达节点时直接放弃，不把半路连接交给单位。
+     */
+    @Nullable
+    private static Result reuseIndexedPath(Level level, LivingEntity entity, CacheKey lookup,
+                                           BlockPos start, double extraHeight) {
+        ReuseChoice choice = ROUTE_REUSE_INDEX.find(lookup, start);
+        if (choice == null) return null;
+
+        List<BlockPos> route = choice.path().result().points();
+        if (choice.nodeIndex() < 0 || choice.nodeIndex() >= route.size()) return null;
+        BlockPos joinNode = route.get(choice.nodeIndex());
+        if (!walkableFor(level, entity, extraHeight, joinNode)) return null;
+
+        List<BlockPos> prefix;
+        int connectorVisited = 0;
+        long started = System.nanoTime();
+
+        if (start.equals(joinNode)) {
+            prefix = List.of(start);
+        } else if (straightWalkable(level, entity, clearanceOf(entity, extraHeight),
+                start, joinNode)) {
+            prefix = List.of(start, joinNode);
+        } else {
+            if (nanosUsed >= NANOS_PER_TICK) return null;
+            double distance = Math.sqrt(start.distSqr(joinNode));
+            double connectorRadius = Math.min(24.0, Math.max(8.0, distance + 4.0));
+            Result connector = planInternal(level, entity, center(joinNode), 0.35,
+                    connectorRadius, ROUTE_REUSE_CONNECTOR_NODES, extraHeight,
+                    null, false, ROUTE_REUSE_CONNECTOR_BUDGET_NANOS);
+            if (connector == null || !connector.reachedGoal() || connector.points().isEmpty()) {
+                return null;
+            }
+            prefix = connector.points();
+            connectorVisited = connector.visitedNodes();
+        }
+        nanosUsed += System.nanoTime() - started;
+
+        if (prefix.isEmpty() || !prefix.get(prefix.size() - 1).equals(joinNode)) return null;
+
+        int tailStart = choice.nodeIndex() + 1;
+        List<BlockPos> joined = new ArrayList<>(prefix.size() + route.size() - tailStart);
+        joined.addAll(prefix);
+        for (int i = tailStart; i < route.size(); i++) {
+            joined.add(route.get(i));
+        }
+        if (joined.size() < 2) return null;
+
+        Result base = choice.path().result();
+        return new Result(joined, base.reachedGoal(), base.outcome(),
+                base.visitedNodes() + connectorVisited);
+    }
+
+    private static void storeCachedPath(Level level, LivingEntity entity, Vec3 goal,
+                                        double goalRadius, double maxRadius, int maxNodes,
+                                        double extraHeight, @Nullable List<BlockPos> favored,
+                                        boolean smooth, @Nullable Result result) {
+        if (result == null || result.points().size() < 2) return;
+        CacheKey key = cacheKey(level, entity, goal, goalRadius, maxRadius, maxNodes,
+                extraHeight, favored, smooth);
+        cacheResult(level, key, result);
+    }
+
+    /** 写入共享路线缓存。 */
+    private static void cacheResult(Level level, @Nullable CacheKey key, @Nullable Result result) {
+        if (key == null || result == null || result.points().size() < 2) return;
+        long now = level.getGameTime();
+        if (now < pathCacheTick) {
+            PATH_CACHE.clear();
+            ROUTE_REUSE_INDEX.clear();
+        }
+        pathCacheTick = now;
+        CachedPath path = new CachedPath(key, result, now);
+        CachedPath previous = PATH_CACHE.put(key, path);
+        if (previous != null) {
+            ROUTE_REUSE_INDEX.remove(previous);
+        }
+        ROUTE_REUSE_INDEX.add(path);
+        prunePathCache(now);
+    }
+
+    private static void prunePathCache(long now) {
+        Iterator<Map.Entry<CacheKey, CachedPath>> iterator = PATH_CACHE.entrySet().iterator();
+        while (iterator.hasNext()) {
+            CachedPath path = iterator.next().getValue();
+            if (now - path.createdTick() > PATH_CACHE_TICKS || now < path.createdTick()) {
+                iterator.remove();
+                ROUTE_REUSE_INDEX.remove(path);
+            }
+        }
+        if (PATH_CACHE.size() <= PATH_CACHE_MAX_ENTRIES) return;
+        List<CacheKey> keys = new ArrayList<>(PATH_CACHE.keySet());
+        keys.sort(Comparator.comparingLong(key -> PATH_CACHE.get(key).createdTick()));
+        int remove = PATH_CACHE.size() - PATH_CACHE_MAX_ENTRIES;
+        for (int i = 0; i < remove; i++) {
+            CachedPath removed = PATH_CACHE.remove(keys.get(i));
+            if (removed != null) ROUTE_REUSE_INDEX.remove(removed);
+        }
+    }
+
+    private static void logCacheHit(String type, BlockPos start, long goal, int points) {
+        if (!GeneralConfig.debugMovementLog) return;
+        Monster_conquest.LOGGER.info(
+                "[ROUTE-CACHE] type={} start={} goal={} points={}",
+                type, start.toShortString(), BlockPos.of(goal).toShortString(), points);
+    }
+
     /**
      * 供"可达性搜索"复用：指定移动实体（骑乘时传坐骑 + 骑手高度）能不能站 / 通过这一格。
      *   与 {@link #plan} 内部用的是同一套判定，保证"可达性"和"能规划出路线"不打架。
@@ -157,6 +735,18 @@ public final class RoutePlanner {
     public static boolean walkableFor(Level level, LivingEntity mover, double extraHeight,
                                       BlockPos pos) {
         return walkableUncached(level, mover, clearanceOf(mover, extraHeight), pos);
+    }
+
+    /**
+     * 把已经算好的路线接到实体当前位置。规划跨 tick 时单位会继续沿原版路径移动，
+     * 完成时只要它仍在路线节点上或紧邻节点，就从当前位置继续，不必回退到旧起点。
+     */
+    @Nullable
+    public static Result attachToResult(Level level, LivingEntity entity, double extraHeight,
+                                        Result result) {
+        if (result == null || result.points().isEmpty()) return null;
+        return attachToCachedPath(level, entity, extraHeight,
+                entity.blockPosition(), result);
     }
 
     @Nullable
@@ -180,20 +770,28 @@ public final class RoutePlanner {
 
         Map<BlockPos, Node> nodes = new HashMap<>();
         Set<BlockPos> closed = new HashSet<>();
-        PriorityQueue<Node> open = new PriorityQueue<>(Comparator.comparingDouble(Node::f));
+        PriorityQueue<Node> open = new PriorityQueue<>(
+                Comparator.comparingDouble(node -> node.f(1.0)));
 
         Node startNode = new Node(start, 0.0, center(start).distanceTo(goal), null);
         nodes.put(start, startNode);
         open.add(startNode);
 
         Node reached = null;
+        // 目标够不到时用的"离目标最近的可达节点"。
+        Node closest = null;
+        double closestH = Double.MAX_VALUE;
         Node[] bests = new Node[BEST_COEFFICIENTS.length];
         double[] bestScores = new double[BEST_COEFFICIENTS.length];
         Arrays.fill(bestScores, Double.MAX_VALUE);
         int visited = 0;
+        boolean timeLimitHit = false;
 
         while (!open.isEmpty() && visited < nodeBudget) {
-            if ((visited & 63) == 0 && System.nanoTime() > deadline) break;
+            if ((visited & 63) == 0 && System.nanoTime() > deadline) {
+                timeLimitHit = true;
+                break;
+            }
 
             Node current = open.poll();
             Node known = nodes.get(current.pos);
@@ -208,6 +806,10 @@ public final class RoutePlanner {
 
             double distFromStart = center(current.pos).distanceTo(center(start));
             if (distFromStart >= MIN_PARTIAL_DISTANCE) {
+                if (current.h < closestH) {
+                    closestH = current.h;
+                    closest = current;
+                }
                 for (int i = 0; i < BEST_COEFFICIENTS.length; i++) {
                     double score = current.h + current.g / BEST_COEFFICIENTS[i];
                     if (score < bestScores[i]) {
@@ -223,8 +825,14 @@ public final class RoutePlanner {
 
         Node end = reached;
         if (end == null) {
-            for (Node best : bests) {
-                if (best != null) { end = best; break; }
+            // 目标够不到：取"离目标最近的可达节点"，让单位走到能到的最近位置
+            //   （封闭中心的迷宫会走到中心外圈、封闭房间会走到房间墙边），
+            //   而不是挑一个"离起点近、少绕路"的折中节点 —— 那样单位会守着附近的墙不动。
+            end = closest;
+            if (end == null) {
+                for (Node best : bests) {
+                    if (best != null) { end = best; break; }
+                }
             }
         }
         if (end == null) {
@@ -233,8 +841,18 @@ public final class RoutePlanner {
 
         List<BlockPos> raw = reconstruct(end);
         if (raw.size() < 2) return null;
+        Outcome outcome;
+        if (reached != null) {
+            outcome = Outcome.REACHED;
+        } else if (timeLimitHit) {
+            outcome = Outcome.PARTIAL_TIME_LIMIT;
+        } else if (visited >= nodeBudget) {
+            outcome = Outcome.PARTIAL_NODE_LIMIT;
+        } else {
+            outcome = Outcome.PARTIAL_FRONTIER_EMPTY;
+        }
         return new Result(smooth ? smooth(level, entity, clearance, raw) : raw,
-                reached != null);
+                reached != null, outcome, visited);
     }
 
     /** 旧路线节点及相邻节点的代价偏好。 */
@@ -256,28 +874,22 @@ public final class RoutePlanner {
                                Map<BlockPos, Double> favor,
                                Map<BlockPos, Node> nodes, Set<BlockPos> closed,
                                PriorityQueue<Node> open) {
-        // 梯子 / 脚手架 / 藤蔓允许"垂直向上"：原版寻路不会走梯子，
-        //   这里必须自己支持，否则"只能通过梯子上去的点"永远规划不出路线。
-        //   但只允许"目标确实在上一层"时向上爬：否则地面上的目标（例如墙后）也会被规划出
-        //   "顺着墙上的梯子翻过墙顶、再下到墙后"的路线 —— 单位不会跟着爬（爬梯辅助只在
-        //   目标明显在上方时才启动），只会顶着梯子 / 墙角原地不动（就是"卡在梯子/墙角"）。
-        BlockState curFeet = level.getBlockState(current.pos);
-        boolean onClimbable = curFeet.is(BlockTags.CLIMBABLE)
-                || level.getBlockState(current.pos.above()).is(BlockTags.CLIMBABLE);
-        if (onClimbable && goal.y > current.pos.getY() + 1.0) {
-            for (int dy = 1; dy <= 2; dy++) {
-                BlockPos up = current.pos.above(dy);
-                if (!walkable(level, entity, clearance, up)) break;
-                double cost = dy * 0.8;
-                Double fav = favor.get(up);
-                if (fav != null) cost *= fav;
-                double g = current.g + cost;
-                Node known = nodes.get(up);
-                if (known == null || g < known.g - 1.0E-6) {
-                    Node node = new Node(up, g, center(up).distanceTo(goal), current);
-                    nodes.put(up, node);
-                    open.add(node);
-                }
+        // 梯子列：梯子不是"可站立面"，原版的水平 / 台阶扩展走不出"沿梯子上下"，
+        //   这里显式连上：逐节上下 + 顺着列直接滑到下方第一个落点，上下都要连
+        //   （上塔、下塔、借梯子翻墙绕路都靠它）。单位会照着路线上的梯子节点真的爬 /
+        //   滑下去，动作由梯子感知移动控制器执行，不再要求"目标恰好在上方"。
+        if (ClimbColumns.isClimbCell(level, current.pos)) {
+            int clearanceHeight = Mth.ceil(clearance.height());
+            for (int dy : new int[] { 1, -1 }) {
+                BlockPos next = current.pos.above(dy);
+                if (!ClimbColumns.isClimbCell(level, next)) continue;
+                if (!walkable(level, entity, clearance, next)) continue;
+                relaxNext(next, current, dy > 0 ? 1.0 : 0.9, goal, favor, start, maxRadiusSq, nodes, open);
+            }
+            BlockPos landing = ClimbColumns.findSlideLanding(
+                    level, current.pos, clearanceHeight, SLIDE_LIMIT);
+            if (landing != null && walkable(level, entity, clearance, landing)) {
+                relaxNext(landing, current, 1.2, goal, favor, start, maxRadiusSq, nodes, open);
             }
         }
 
@@ -285,15 +897,6 @@ public final class RoutePlanner {
             int nx = current.pos.getX() + dir[0];
             int nz = current.pos.getZ() + dir[1];
             boolean diagonal = dir[0] != 0 && dir[1] != 0;
-
-            if (diagonal
-                    && (!walkable(level, entity, clearance,
-                    new BlockPos(current.pos.getX() + dir[0], current.pos.getY(), current.pos.getZ()))
-                    || !walkable(level, entity, clearance,
-                    new BlockPos(current.pos.getX(), current.pos.getY(), current.pos.getZ() + dir[1])))) {
-                continue;
-            }
-
             for (int dy : STEP_LEVELS) {
                 BlockPos next = new BlockPos(nx, current.pos.getY() + dy, nz);
                 if (!walkable(level, entity, clearance, next)) continue;
@@ -301,7 +904,18 @@ public final class RoutePlanner {
 
                 double dx = next.getX() - start.getX();
                 double dz = next.getZ() - start.getZ();
-                if (dx * dx + dz * dz > maxRadiusSq) break;
+                if (dx * dx + dz * dz > maxRadiusSq) continue;
+
+                // 斜向必须检查候选节点所在高度的两个侧格；只看当前层会允许
+                // 跨台阶时从墙角斜穿过去。
+                if (diagonal) {
+                    BlockPos sideX = new BlockPos(nx, next.getY(), current.pos.getZ());
+                    BlockPos sideZ = new BlockPos(current.pos.getX(), next.getY(), nz);
+                    if (!walkable(level, entity, clearance, sideX)
+                            || !walkable(level, entity, clearance, sideZ)) {
+                        continue;
+                    }
+                }
 
                 double cost = diagonal ? 1.414 : 1.0;
                 cost += dy > 0 ? dy * 0.8 : -dy * 0.25;
@@ -311,14 +925,32 @@ public final class RoutePlanner {
 
                 double g = current.g + cost;
                 Node known = nodes.get(next);
-                if (known != null && g >= known.g - 1.0E-6) break;
-
-                Node node = new Node(next, g, center(next).distanceTo(goal), current);
+                if (known != null && g >= known.g - 1.0E-6) continue;
+                double h = center(next).distanceTo(goal);
+                Node node = new Node(next, g, h, current);
                 nodes.put(next, node);
                 open.add(node);
                 break;
             }
         }
+    }
+
+    /** 登记一条到 next 的边：比已知代价更低才更新（梯子列的上下 / 下滑用）。 */
+    private static void relaxNext(BlockPos next, Node current, double baseCost, Vec3 goal,
+                                  Map<BlockPos, Double> favor, BlockPos start, double maxRadiusSq,
+                                  Map<BlockPos, Node> nodes, PriorityQueue<Node> open) {
+        double dx = next.getX() - start.getX();
+        double dz = next.getZ() - start.getZ();
+        if (dx * dx + dz * dz > maxRadiusSq) return;
+        double cost = baseCost;
+        Double fav = favor.get(next);
+        if (fav != null) cost *= fav;
+        double g = current.g + cost;
+        Node known = nodes.get(next);
+        if (known != null && g >= known.g - 1.0E-6) return;
+        Node node = new Node(next, g, center(next).distanceTo(goal), current);
+        nodes.put(next, node);
+        open.add(node);
     }
 
     private static List<BlockPos> reconstruct(Node end) {
@@ -383,12 +1015,13 @@ public final class RoutePlanner {
      * 按净空无方块碰撞，不踩危险方块；木门与栅栏门可通行。
      */
     private static boolean walkable(Level level, LivingEntity entity, Clearance clearance, BlockPos pos) {
-        if (CACHE_ACTIVE) {
+        Map<Long, Boolean> walkCache = activeWalkCache;
+        if (walkCache != null) {
             Long key = pos.asLong();
-            Boolean cached = WALK_CACHE.get(key);
+            Boolean cached = walkCache.get(key);
             if (cached != null) return cached;
             boolean result = walkableUncached(level, entity, clearance, pos);
-            WALK_CACHE.put(key, result);
+            walkCache.put(key, result);
             return result;
         }
         return walkableUncached(level, entity, clearance, pos);
@@ -401,7 +1034,14 @@ public final class RoutePlanner {
         if (AiNavUtil.isDangerousBlock(feet) || AiNavUtil.isDangerousBlock(head)) return false;
         if (AiNavUtil.isDangerousBlock(level.getBlockState(pos.below()))) return false;
 
-        boolean door = openable(feet) || openable(head);
+        // 门的上半格不是落脚点：能走的是门下半格那一层。
+        //   把上半格也算可走会让 A* 从门外"斜着踩进门上半格"再下来（路线节点悬空一格），
+        //   看着像能穿门，实际跟随要靠原版重新寻路兜底，复杂门洞/骑乘时就会卡在门口。
+        boolean upperDoorHalf = feet.getBlock() instanceof DoorBlock
+                && feet.hasProperty(DoorBlock.HALF)
+                && feet.getValue(DoorBlock.HALF) == DoubleBlockHalf.UPPER;
+        if (upperDoorHalf) return false;
+        boolean door = !upperDoorHalf && (openable(feet) || openable(head));
         double stand = door ? 0.0 : partialTop(level, pos, feet);
         boolean water = isWater(level, pos);
 
@@ -431,8 +1071,7 @@ public final class RoutePlanner {
                     centerX + halfW,
                     baseY + clearance.height(),
                     centerZ + halfW);
-            if (collidesOpened(level, pos, feet, box)) return false;
-            if (collidesOpened(level, pos.above(), head, box)) return false;
+            if (blockedInDoorway(level, box)) return false;
         } else {
             double baseY = pos.getY() + stand;
             // 便宜够用的净空判定：只查盒子覆盖到的方块是不是实心（可开的门除外）。
@@ -478,12 +1117,41 @@ public final class RoutePlanner {
     private static boolean collidesOpened(Level level, BlockPos pos, BlockState state, AABB box) {
         BlockState opened = openedStateOf(state);
         if (opened == null || opened.isAir()) return false;
-        net.minecraft.world.phys.shapes.VoxelShape shape = opened.getCollisionShape(level, pos);
+        VoxelShape shape = opened.getCollisionShape(level, pos);
         if (shape.isEmpty()) return false;
-        return net.minecraft.world.phys.shapes.Shapes.joinIsNotEmpty(
+        return Shapes.joinIsNotEmpty(
                 shape.move(pos.getX(), pos.getY(), pos.getZ()),
-                net.minecraft.world.phys.shapes.Shapes.create(box),
-                net.minecraft.world.phys.shapes.BooleanOp.AND);
+                Shapes.create(box),
+                BooleanOp.AND);
+    }
+
+    /**
+     * 门洞净空：把门按"打开后的门板"算，其余方块按原样算。
+     *   只检查门方块本身会漏掉门洞上方 / 门框的实心方块 ——
+     *   两格高的门洞对"马 + 骑手"（约 2.75 格高）其实过不去，必须挡掉；
+     *   否则规划会把骑兵路线引到门口，跟随时被门楣顶住。
+     */
+    private static boolean blockedInDoorway(Level level, AABB box) {
+        int x0 = Mth.floor(box.minX);
+        int x1 = Mth.floor(box.maxX - 1.0E-4);
+        int y0 = Mth.floor(box.minY);
+        int y1 = Mth.floor(box.maxY - 1.0E-4);
+        int z0 = Mth.floor(box.minZ);
+        int z1 = Mth.floor(box.maxZ - 1.0E-4);
+        for (int x = x0; x <= x1; x++) {
+            for (int y = y0; y <= y1; y++) {
+                for (int z = z0; z <= z1; z++) {
+                    BlockPos p = new BlockPos(x, y, z);
+                    BlockState state = level.getBlockState(p);
+                    if (openable(state)) {
+                        if (collidesOpened(level, p, state, box)) return true;
+                    } else if (state.isSolid()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -558,6 +1226,6 @@ public final class RoutePlanner {
             this.parent = parent;
         }
 
-        double f() { return g + h; }
+        double f(double weight) { return g + h * weight; }
     }
 }

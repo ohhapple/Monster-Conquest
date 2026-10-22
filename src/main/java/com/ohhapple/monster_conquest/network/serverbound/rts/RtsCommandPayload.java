@@ -64,12 +64,13 @@ public record RtsCommandPayload(double x, double y, double z,
             }
 
             Vec3 dest = new Vec3(payload.x(), payload.y(), payload.z());
-            state.applyRtsCommand(player, target, dest);
+            var result = state.applyRtsCommand(player, target, dest);
 
             // 回发最新选中 + marker
             PacketDistributor.sendToPlayer(player, new SyncRtsSelectionPayload(
                     state.collectRtsSelectedSoldierUuids(player),
-                    state.getRtsMoveMarker()));
+                    state.getRtsMoveMarker(),
+                    result.feedback()));
         });
     }
 }

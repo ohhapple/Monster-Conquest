@@ -176,6 +176,7 @@ public class CommandWheelScreen extends Screen {
     private boolean clickedThisRound = false;
     private int hoveredCategoryButton = -1;
     private int hoveredSquadButton = -1;
+    private float layoutScale = 1.0f;
 
     // ==================== 构造 ====================
 
@@ -213,6 +214,10 @@ public class CommandWheelScreen extends Screen {
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
         if (button != 0) return true;
+        float cx = this.width / 2f;
+        float cy = this.height / 2f;
+        mx = cx + (mx - cx) / layoutScale;
+        my = cy + (my - cy) / layoutScale;
 
         int catHit = hitCategoryButton(mx, my);
         if (catHit >= 0) {
@@ -227,8 +232,6 @@ public class CommandWheelScreen extends Screen {
             return true;
         }
 
-        float cx = this.width / 2f;
-        float cy = this.height / 2f;
         updateHovered(mx, my, cx, cy);
         if (isValidSector(hoveredSector)) {
             sendOption(currentOptions()[hoveredSector]);
@@ -336,10 +339,22 @@ public class CommandWheelScreen extends Screen {
 
         float cx = this.width / 2f;
         float cy = this.height / 2f;
-        updateHovered(mouseX, mouseY, cx, cy);
+        layoutScale = Math.min(1.0f,
+                Math.min((this.height - 16.0f) / (OUTER_R * 2.0f),
+                        (this.width - 16.0f) / (OUTER_R * 2.0f + CATEGORY_BUTTON_W)));
+        layoutScale = Math.max(0.45f, layoutScale);
+        float logicalMouseX = cx + (mouseX - cx) / layoutScale;
+        float logicalMouseY = cy + (mouseY - cy) / layoutScale;
 
-        hoveredCategoryButton = hitCategoryButton(mouseX, mouseY);
-        hoveredSquadButton = hitSquadButton(mouseX, mouseY);
+        g.pose().pushPose();
+        g.pose().translate(cx, cy, 0.0f);
+        g.pose().scale(layoutScale, layoutScale, 1.0f);
+        g.pose().translate(-cx, -cy, 0.0f);
+
+        updateHovered(logicalMouseX, logicalMouseY, cx, cy);
+
+        hoveredCategoryButton = hitCategoryButton(logicalMouseX, logicalMouseY);
+        hoveredSquadButton = hitSquadButton(logicalMouseX, logicalMouseY);
 
         // 所有扇区几何合并到一次 BufferBuilder / drawWithShader，避免大量 draw call
         final int n = currentOptions().length;
@@ -431,6 +446,7 @@ public class CommandWheelScreen extends Screen {
 
         // 7) 小分队按钮
         drawSquadButtons(g);
+        g.pose().popPose();
     }
 
     /** 返回"当前：全选所有小分队"或"当前：小分队 N"的显示文本。 */

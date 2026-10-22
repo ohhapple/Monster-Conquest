@@ -5,12 +5,14 @@ import com.ohhapple.monster_conquest.army.SoldierType;
 import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.gun.GunSpec;
+
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * 枪兵基类。
@@ -95,7 +97,7 @@ public abstract class AbstractGunnerSoldier extends AbstractArmySoldier {
 
     /** 齐射同样走弹匣：打空后需要换弹。 */
     @Override
-    public void performVolleyShot(net.minecraft.world.phys.Vec3 targetPos) {
+    public void performVolleyShot(Vec3 targetPos) {
         if (reloadTicks > 0) return;
         if (magazine < 0) magazine = magazineSize();
         if (magazine <= 0) {

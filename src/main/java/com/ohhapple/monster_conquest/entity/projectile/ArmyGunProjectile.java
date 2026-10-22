@@ -2,28 +2,32 @@ package com.ohhapple.monster_conquest.entity.projectile;
 
 import com.ohhapple.monster_conquest.army.FactionIds;
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
-import com.ohhapple.monster_conquest.ModSounds;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.ModSounds;
+
+import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.network.protocol.Packet;
-import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ClientGamePacketListener;
+import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerEntity;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.Mth;
+import net.minecraft.world.damagesource.CombatRules;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.ProjectileDeflection;
 import net.minecraft.world.entity.projectile.ThrowableItemProjectile;
@@ -33,13 +37,14 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-import net.minecraft.world.damagesource.CombatRules;
+import static com.ohhapple.monster_conquest.army.CombatRules.clearInvulnerabilityForNonManagedAttacker;
 
 /**
  * 枪械弹丸基类。
@@ -63,6 +68,8 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
             SynchedEntityData.defineId(ArmyGunProjectile.class, EntityDataSerializers.STRING);
     private static final EntityDataAccessor<Optional<UUID>> DATA_SHOOTER_COMMANDER =
             SynchedEntityData.defineId(ArmyGunProjectile.class, EntityDataSerializers.OPTIONAL_UUID);
+    private static final EntityDataAccessor<Boolean> DATA_FLIGHT_SOUND_ENABLED =
+            SynchedEntityData.defineId(ArmyGunProjectile.class, EntityDataSerializers.BOOLEAN);
 
     @Nullable
     private UUID shooterCommanderUuid;
@@ -118,6 +125,7 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
         builder.define(DATA_SHOOTER_COMMANDER, Optional.empty());
         builder.define(DATA_SHOOTER_FACTION, "");
         builder.define(DATA_INITIAL_SPEED, 0.0f);
+        builder.define(DATA_FLIGHT_SOUND_ENABLED, true);
     }
 
     @Override
@@ -255,11 +263,10 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
             return;
         }
 
-        // 清零无敌帧，保证高速弹必定结算伤害
-        living.invulnerableTime = 0;
-
         Entity owner = this.getOwner();
         LivingEntity ownerLiving = owner instanceof LivingEntity le ? le : null;
+        // 非单位射出的高速弹保证必定结算伤害；单位射出的高速弹由受击事件统一处理。
+        clearInvulnerabilityForNonManagedAttacker(living, ownerLiving);
         DamageSource source = ownerLiving != null
                 ? this.damageSources().mobProjectile(this, ownerLiving)
                 : this.damageSources().explosion(this, this);
@@ -382,8 +389,8 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
                 var state = level().getBlockState(result.getBlockPos());
                 if (!state.isAir()) {
                     Vec3 hit = result.getLocation();
-                    sl.sendParticles(new net.minecraft.core.particles.BlockParticleOption(
-                                    net.minecraft.core.particles.ParticleTypes.BLOCK, state),
+                    sl.sendParticles(new BlockParticleOption(
+                                    ParticleTypes.BLOCK, state),
                             hit.x, hit.y, hit.z, 12, 0.12, 0.12, 0.12, 0.12);
                 }
             }
@@ -401,7 +408,7 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
                 ? this.damageSources().mobProjectile(this, ownerLiving)
                 : this.damageSources().explosion(this, this);
 
-        target.invulnerableTime = 0;
+        clearInvulnerabilityForNonManagedAttacker(target, ownerLiving);
         if (ownerLiving != null) {
             ownerLiving.setLastHurtMob(target);
             ThreatDispatcher.propagate(target, ownerLiving);
@@ -434,7 +441,7 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
 
     /** 飞行音效（空气摩擦声），null = 不播放。 */
     @Nullable
-    protected net.minecraft.sounds.SoundEvent getFlightSound() { return null; }
+    protected SoundEvent getFlightSound() { return null; }
 
     protected int getFlightSoundInterval() { return 4; }
 
@@ -445,7 +452,30 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
     /** 是否播放飞行音效（霰弹枪等多弹丸射击只让第一颗发声，避免音效叠加）。 */
     private boolean flightSoundEnabled = true;
 
-    public void setFlightSoundEnabled(boolean enabled) { this.flightSoundEnabled = enabled; }
+    public void setFlightSoundEnabled(boolean enabled) {
+        this.flightSoundEnabled = enabled;
+        if (!level().isClientSide) {
+            this.entityData.set(DATA_FLIGHT_SOUND_ENABLED, enabled);
+        }
+    }
+
+    protected final boolean isFlightSoundEnabled() {
+        return level().isClientSide
+                ? this.entityData.get(DATA_FLIGHT_SOUND_ENABLED)
+                : this.flightSoundEnabled;
+    }
+
+    /** 当前动能占初速动能的比例，用于飞行音效音量。 */
+    protected final float flightEnergyFraction() {
+        float initial = this.entityData.get(DATA_INITIAL_SPEED);
+        double current = getDeltaMovement().length();
+        if (initial <= 0.0f) return 1.0f;
+        double speedRatio = current / initial;
+        return Mth.clamp((float) (speedRatio * speedRatio), 0.0f, 1.0f);
+    }
+
+    /** 客户端按本 tick 弹道判断是否从本地玩家身边掠过。 */
+    protected void playClientFlightSound(Vec3 from, Vec3 to) { }
 
     /** 是否绘制拖尾粒子（多发弹丸只让第一颗绘制）。 */
     private boolean trailEnabled = true;
@@ -484,8 +514,8 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
             // 爆炸伤害同样套用穿甲系数（与物品介绍里写的"穿甲"一致）
             dmg = applyArmorPenetration(living, dmg, source);
 
-            // 军团火箭弹爆炸伤害不受无敌帧影响，每个目标都必定结算
-            living.invulnerableTime = 0;
+            // 非单位造成的爆炸不受无敌帧影响；单位造成的爆炸由受击事件统一处理。
+            clearInvulnerabilityForNonManagedAttacker(living, ownerLiving);
 
             if (ownerLiving != null) {
                 ownerLiving.setLastHurtMob(living);
@@ -529,6 +559,11 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
 
         super.tick();
 
+        if (level().isClientSide && !this.isRemoved()) {
+            playClientFlightSound(new Vec3(px, py, pz),
+                    new Vec3(getX(), getY(), getZ()));
+        }
+
         // 距离上限：飞够指定距离后直接清除（防止飞进未加载区域堆积）
         if (maxRange > 0.0 && !this.isRemoved()) {
             traveled += Math.sqrt((getX() - px) * (getX() - px)
@@ -553,11 +588,11 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
         }
 
         // 飞行音效：经过附近的玩家能听到轻微空气摩擦声
-        net.minecraft.sounds.SoundEvent flightSound = getFlightSound();
+        SoundEvent flightSound = getFlightSound();
         if (flightSoundEnabled && flightSound != null
                 && tickCount % Math.max(1, getFlightSoundInterval()) == 0) {
             level().playSound(null, getX(), getY(), getZ(), flightSound,
-                    net.minecraft.sounds.SoundSource.PLAYERS,
+                    SoundSource.PLAYERS,
                     getFlightSoundVolume(), getFlightSoundPitch());
         }
     }

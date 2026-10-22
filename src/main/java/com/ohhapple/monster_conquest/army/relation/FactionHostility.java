@@ -2,11 +2,17 @@ package com.ohhapple.monster_conquest.army.relation;
 
 import com.ohhapple.monster_conquest.army.Faction;
 import com.ohhapple.monster_conquest.army.FactionRegistry;
+
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.MinecraftServer;
+
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 public final class FactionHostility {
@@ -130,7 +136,7 @@ public final class FactionHostility {
         Faction faction = FactionRegistry.getOrCreatePlayer(playerUuid);
         if (faction == null) return;
 
-        java.util.Set<ResourceLocation> defaults = faction.getDefaultHostileFactions();
+        Set<ResourceLocation> defaults = faction.getDefaultHostileFactions();
         String signature = signatureOf(defaults);
         String applied = d.getPlayerDefaultSignature(playerUuid);
         if (signature.equals(applied)) return;
@@ -144,10 +150,10 @@ public final class FactionHostility {
     }
 
     /** 默认名单签名：排序后拼串，用来判断配置里的默认名单有没有变过。 */
-    private static String signatureOf(java.util.Set<ResourceLocation> ids) {
-        java.util.List<String> list = new java.util.ArrayList<>(ids.size());
+    private static String signatureOf(Set<ResourceLocation> ids) {
+        List<String> list = new ArrayList<>(ids.size());
         for (ResourceLocation id : ids) list.add(id.toString());
-        java.util.Collections.sort(list);
+        Collections.sort(list);
         return String.join(",", list);
     }
 }

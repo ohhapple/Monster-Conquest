@@ -1,20 +1,23 @@
 package com.ohhapple.monster_conquest.event;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.item.ControlToolItem;
 import com.ohhapple.monster_conquest.item.HatredWandItem;
+import com.ohhapple.monster_conquest.item.PathToolItem;
 import com.ohhapple.monster_conquest.item.RetrievalToolItem;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.network.serverbound.item.CrosshairUsePayload;
-import net.minecraft.world.InteractionResult;
+
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
+
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
- * 仇恨权杖 / 收纳工具 / 控制工具：右键统一走 CrosshairUsePayload。
+ * 仇恨权杖 / 收纳工具 / 控制工具 / 路径点工具：右键统一走 CrosshairUsePayload。
  * 左键（onLeftClickBlock）在这里不做任何模式切换：
  *   模式切换完全交给客户端 ClientInputEvents 发 payload → 服务端切换。
  *   如果这里也切一次，会和客户端 payload 叠加成"切两次"导致回弹。
@@ -25,7 +28,8 @@ public class ItemInteractionEvents {
     private static boolean isCrosshairTool(ItemStack stack) {
         return stack.getItem() instanceof HatredWandItem
                 || stack.getItem() instanceof RetrievalToolItem
-                || stack.getItem() instanceof ControlToolItem;
+                || stack.getItem() instanceof ControlToolItem
+                || stack.getItem() instanceof PathToolItem;
     }
 
     @SubscribeEvent
@@ -52,6 +56,7 @@ public class ItemInteractionEvents {
     public static void onEntityInteract(PlayerInteractEvent.EntityInteract event) {
         if (!isCrosshairTool(event.getItemStack())) return;
         if (event.getLevel().isClientSide()) {
+            // 客户端事件只触发使用，服务端统一按准星重新射线，避免依赖网络实体 ID。
             PacketDistributor.sendToServer(new CrosshairUsePayload());
         }
         event.setCanceled(true);

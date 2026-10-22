@@ -5,14 +5,16 @@ import com.ohhapple.monster_conquest.army.FactionIds;
 import com.ohhapple.monster_conquest.config.FactionConfig;
 import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
-import com.ohhapple.monster_conquest.entity.ModEntities;
 import com.ohhapple.monster_conquest.entity.commanders.patrol.VillagerPatrolCaptain;
+import com.ohhapple.monster_conquest.entity.ModEntities;
+
 import net.minecraft.core.BlockPos;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.tags.PoiTypeTags;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.ai.village.poi.PoiManager;
 import net.minecraft.world.entity.ai.village.poi.PoiRecord;
 import net.minecraft.world.level.GameRules;
@@ -57,7 +59,7 @@ public final class VillagePatrolSpawner {
     private static void trySpawnInLevel(ServerLevel level) {
         if (!level.getGameRules().getBoolean(GameRules.RULE_DOMOBSPAWNING)) return;
         // 和平难度 + 和平清除单位：不刷（刷出来也会立刻被清除）
-        if (level.getDifficulty() == net.minecraft.world.Difficulty.PEACEFUL
+        if (level.getDifficulty() == Difficulty.PEACEFUL
                 && GeneralConfig.peacefulRemovesUnits) {
             return;
         }

@@ -5,7 +5,9 @@ import com.ohhapple.monster_conquest.army.SoldierType;
 import com.ohhapple.monster_conquest.effect.ArmorBreakEffect;
 import com.ohhapple.monster_conquest.effect.ModEffects;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+import com.ohhapple.monster_conquest.entity.ModEntities;
 import com.ohhapple.monster_conquest.entity.projectile.ArmyTrident;
+
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
@@ -60,7 +62,7 @@ public class DrownedSoldier extends AbstractArmySoldier {
             case TIER_1 -> 34.0;
             case TIER_2 -> 46.0;
             case TIER_3 -> 62.0;
-            case TIER_4 -> 88.0;
+            case TIER_4 -> 82.0;
         };
     }
 
@@ -129,7 +131,7 @@ public class DrownedSoldier extends AbstractArmySoldier {
     @Override
     protected Projectile createProjectile() {
         ArmyTrident trident = new ArmyTrident(
-                com.ohhapple.monster_conquest.entity.ModEntities.ARMY_TRIDENT.get(),
+                ModEntities.ARMY_TRIDENT.get(),
                 this.level());
         trident.setOwner(this);
         trident.setPos(this.getX(), this.getEyeY() - 0.1, this.getZ());

@@ -15,7 +15,7 @@ public class VillagerPatrolCaptain extends AbstractPatrolCaptain {
     @Override public ResourceLocation getDefaultFactionId() { return FactionIds.VILLAGER; }
 
     // ===================== 基础数值 =====================
-    @Override public double getCommanderMaxHealth()           { return 80.0; }
+    @Override public double getCommanderMaxHealth()           { return 60.0; }
     @Override public double getCommanderAttackDamage()        { return 11.5; }
     @Override public double getCommanderArmor()               { return 3.0; }
     @Override public double getCommanderKnockbackResistance() { return 0.4; }

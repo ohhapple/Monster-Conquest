@@ -1,28 +1,47 @@
 package com.ohhapple.monster_conquest.ai.nav;
 
+import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
+import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+import com.ohhapple.monster_conquest.entity.ModEntities;
+import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
+import com.ohhapple.monster_conquest.Monster_conquest;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.control.MoveControl;
+import net.minecraft.world.entity.ai.navigation.PathNavigation;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.level.Level;
+import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.FenceGateBlock;
-import net.minecraft.world.level.block.LadderBlock;
-import net.minecraft.world.level.block.TrapDoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.TrapDoorBlock;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
-import com.ohhapple.monster_conquest.entity.ModEntities;
-import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * AI 导航辅助：
@@ -37,10 +56,17 @@ public final class AiNavUtil {
     private static final int HEAVY_ROUTE_ATTEMPTS_PER_TICK = 1;
     /** 两次昂贵尝试之间至少隔这么多 tick（单次可能几十毫秒，连着跑会持续卡顿）。 */
     private static final int HEAVY_ROUTE_MIN_INTERVAL_TICKS = 4;
+    /** 找"通得到目标那一层"的梯子时向外扫多少格（骑乘下马 / 补发寻路用）。 */
+    private static final int CLIMB_SEARCH_RADIUS = 8;
     private static long heavyAttemptTick = Long.MIN_VALUE;
     private static int heavyAttemptUsed = 0;
     private static long lastHeavyAttemptTick = Long.MIN_VALUE;
     private static boolean lastHeavyAttemptDeferred = false;
+    private static final Map<Mob, DoorProbe> DOOR_PROBES = new WeakHashMap<>();
+    private static final Map<Mob, LadderProbe> LADDER_PROBES = new WeakHashMap<>();
+    private static final Map<LineKey, LineProbe> LINE_PROBES = new HashMap<>();
+
+    private record RetreatCandidate(Vec3 point, double score) {}
 
     /**
      * 申请一次"昂贵绕路尝试"的名额。整队同时下命令 / 一堆单位同时锁定走不到的目标时，
@@ -85,6 +111,472 @@ public final class AiNavUtil {
     }
 
     /**
+     * 给远程单位选一个可以短暂拉开距离的落脚点。
+     *   正后方被墙、悬崖或队友堵住时，会依次尝试左右斜后方；候选点必须同层、
+     *   身体通得过、目标仍可射击，并优先远离当前威胁。
+     *
+     * @param mover          实际移动实体，骑乘时传入坐骑
+     * @param rider          骑手；步行时传 null
+     * @param target         当前威胁
+     * @param wantedDistance 希望退到的距离
+     */
+    @Nullable
+    public static Vec3 findFallbackSpacingPoint(Mob mover, @Nullable LivingEntity rider,
+                                                LivingEntity target, double wantedDistance) {
+        Level level = mover.level();
+        Vec3 origin = mover.position();
+        Vec3 toTarget = target.position().subtract(origin);
+        double horizontal = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+        if (horizontal < 1.0E-4) return null;
+
+        double awayX = -toTarget.x / horizontal;
+        double awayZ = -toTarget.z / horizontal;
+        double currentDistance = origin.distanceTo(target.position());
+        double baseStep = Mth.clamp(wantedDistance - currentDistance + 1.0, 2.0, 6.0);
+        double[] steps = {baseStep, Math.min(7.5, baseStep + 2.5), 7.5};
+        double[] angles = {0.0, 35.0, -35.0, 70.0, -70.0, 105.0, -105.0};
+        List<LivingEntity> nearbyBodies = level.getEntitiesOfClass(
+                LivingEntity.class,
+                mover.getBoundingBox().inflate(11.0),
+                e -> e != mover && e != rider && e != target && e.isAlive());
+
+        Vec3 best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (double step : steps) {
+            for (double degrees : angles) {
+                double radians = Math.toRadians(degrees);
+                double cos = Math.cos(radians);
+                double sin = Math.sin(radians);
+                double dirX = awayX * cos - awayZ * sin;
+                double dirZ = awayX * sin + awayZ * cos;
+                double x = origin.x + dirX * step;
+                double z = origin.z + dirZ * step;
+                double y = rider != null && rider.isPassenger()
+                        ? findMountY(level, rider, x, origin.y, z)
+                        : groundNear(level, x, origin.y, z);
+                if (Double.isNaN(y) || Math.abs(y - origin.y) > 1.5) continue;
+
+                Vec3 candidate = new Vec3(x, y, z);
+                if (!hasClearLineForBody(level, origin.add(0.0, 0.1, 0.0),
+                        candidate.add(0.0, 0.1, 0.0), mover.getBbWidth() * 0.5)) {
+                    continue;
+                }
+
+                AABB candidateBox = mover.getBoundingBox()
+                        .move(candidate.x - origin.x, candidate.y - origin.y, candidate.z - origin.z)
+                        .inflate(0.05);
+                if (!level.noBlockCollision(mover, candidateBox)) continue;
+                boolean occupied = false;
+                for (LivingEntity other : nearbyBodies) {
+                    if (candidateBox.intersects(other.getBoundingBox())) {
+                        occupied = true;
+                        break;
+                    }
+                }
+
+                double eyeHeight = rider != null && rider.isPassenger()
+                        ? WarHorseEntity.RIDER_HEIGHT + rider.getEyeHeight()
+                        : mover.getEyeHeight();
+                Vec3 shotFrom = new Vec3(candidate.x, candidate.y + eyeHeight, candidate.z);
+                boolean clearShot = hasClearLine(level, shotFrom, target.getBoundingBox().getCenter());
+                double distance = candidate.distanceTo(target.position());
+                double score = distance * 3.0
+                        + (clearShot ? 8.0 : -12.0)
+                        + (Math.abs(degrees) > 0.1 ? 0.75 : 0.0)
+                        - Math.abs(candidate.y - origin.y) * 4.0
+                        - Math.abs(degrees) * 0.015
+                        - (occupied ? 18.0 : 0.0);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = candidate;
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 直线后撤被墙挡住时，找一个可以真正寻路到达的墙后 / 侧后方落脚点。
+     *   候选落点不要求与当前位置直线连通，但必须同层、自身无方块碰撞、未被其它生物占用，
+     *   且原版寻路能够完整到达；找到后直接安装路线，由导航负责绕墙。
+     */
+    @Nullable
+    public static Vec3 startRoutedRetreat(Mob mover, @Nullable LivingEntity rider,
+                                          LivingEntity target, double wantedDistance) {
+        Level level = mover.level();
+        long nowTick = level.getGameTime();
+        if (!acquireQuickRouteAttempt(nowTick)) return null;
+
+        Vec3 origin = mover.position();
+        Vec3 toTarget = target.position().subtract(origin);
+        double horizontal = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+        if (horizontal < 1.0E-4) return null;
+
+        double awayX = -toTarget.x / horizontal;
+        double awayZ = -toTarget.z / horizontal;
+        double currentDistance = origin.distanceTo(target.position());
+        double baseStep = Mth.clamp(wantedDistance - currentDistance + 1.5, 4.0, 8.0);
+        double[] steps = {baseStep, Math.max(4.0, baseStep - 2.0), 9.0, 12.0};
+        double[] angles = {0.0, 35.0, -35.0, 70.0, -70.0, 105.0, -105.0};
+        List<LivingEntity> nearbyBodies = level.getEntitiesOfClass(
+                LivingEntity.class,
+                mover.getBoundingBox().inflate(14.0),
+                e -> e != mover && e != rider && e != target && e.isAlive());
+
+        List<RetreatCandidate> candidates = new ArrayList<>();
+        Set<Long> seen = new HashSet<>();
+        for (double step : steps) {
+            for (double degrees : angles) {
+                double radians = Math.toRadians(degrees);
+                double cos = Math.cos(radians);
+                double sin = Math.sin(radians);
+                double dirX = awayX * cos - awayZ * sin;
+                double dirZ = awayX * sin + awayZ * cos;
+                double x = origin.x + dirX * step;
+                double z = origin.z + dirZ * step;
+                BlockPos cell = BlockPos.containing(x, origin.y, z);
+                if (!seen.add(cell.asLong())) continue;
+
+                double y = rider != null && rider.isPassenger()
+                        ? findMountY(level, rider, x, origin.y, z)
+                        : groundNear(level, x, origin.y, z);
+                if (Double.isNaN(y) || Math.abs(y - origin.y) > 1.5) continue;
+
+                Vec3 candidate = new Vec3(x, y, z);
+                AABB candidateBox = mover.getBoundingBox()
+                        .move(candidate.x - origin.x, candidate.y - origin.y, candidate.z - origin.z)
+                        .inflate(0.05);
+                if (!level.noBlockCollision(mover, candidateBox)) continue;
+
+                boolean occupied = nearbyBodies.stream()
+                        .anyMatch(other -> candidateBox.intersects(other.getBoundingBox()));
+                if (occupied) continue;
+
+                double distance = candidate.distanceTo(target.position());
+                double score = distance * 4.0 - Math.abs(degrees) * 0.035
+                        - Math.abs(candidate.y - origin.y) * 4.0;
+                candidates.add(new RetreatCandidate(candidate, score));
+            }
+        }
+        candidates.sort((a, b) -> Double.compare(b.score(), a.score()));
+
+        int attempts = 0;
+        for (RetreatCandidate candidate : candidates) {
+            if (attempts >= 4) break;
+            if (!acquireQuickRouteAttempt(nowTick)) break;
+            attempts++;
+
+            Path path = mover.getNavigation().createPath(
+                    BlockPos.containing(candidate.point()), 1);
+            if (path == null || !path.canReach()) continue;
+            if (mover.getNavigation().moveTo(path, 1.0D)) {
+                if (GeneralConfig.debugMovementLog) {
+                    Monster_conquest.LOGGER.info(
+                            "[RANGED-KITE] unit={} phase=routed destination={}",
+                            mover.getUUID().toString().substring(0, 8),
+                            String.format(java.util.Locale.ROOT, "%.2f,%.2f,%.2f",
+                                    candidate.point().x, candidate.point().y,
+                                    candidate.point().z));
+                }
+                return candidate.point();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 完整路线暂不可用时的短距离自保步。只选 1~3 格内、身体能直接通过的
+     * 同层落脚点，由移动控制器直接执行，不等待寻路完成。
+     */
+    @Nullable
+    public static Vec3 findImmediateRetreatPoint(Mob mover, @Nullable LivingEntity rider,
+                                                 LivingEntity target) {
+        Level level = mover.level();
+        Vec3 origin = mover.position();
+        Vec3 toTarget = target.position().subtract(origin);
+        double horizontal = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+        if (horizontal < 1.0E-4) return null;
+
+        double awayX = -toTarget.x / horizontal;
+        double awayZ = -toTarget.z / horizontal;
+        double[] steps = {1.2, 2.0, 3.0};
+        double[] angles = {0.0, 45.0, -45.0, 90.0, -90.0, 135.0, -135.0};
+        List<LivingEntity> nearbyBodies = level.getEntitiesOfClass(
+                LivingEntity.class,
+                mover.getBoundingBox().inflate(5.0),
+                e -> e != mover && e != rider && e != target && e.isAlive());
+
+        Vec3 best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        int sameLevel = 0;
+        int clearLine = 0;
+        int clearBlocks = 0;
+        for (double step : steps) {
+            for (double degrees : angles) {
+                double radians = Math.toRadians(degrees);
+                double cos = Math.cos(radians);
+                double sin = Math.sin(radians);
+                double dirX = awayX * cos - awayZ * sin;
+                double dirZ = awayX * sin + awayZ * cos;
+                double x = origin.x + dirX * step;
+                double z = origin.z + dirZ * step;
+                double y = rider != null && rider.isPassenger()
+                        ? findMountY(level, rider, x, origin.y, z)
+                        : groundNear(level, x, origin.y, z);
+                if (Double.isNaN(y) || Math.abs(y - origin.y) > 1.0) continue;
+                sameLevel++;
+
+                Vec3 candidate = new Vec3(x, y, z);
+                if (!hasClearLineForBody(level, origin.add(0.0, 0.1, 0.0),
+                        candidate.add(0.0, 0.1, 0.0), mover.getBbWidth() * 0.5)) {
+                    continue;
+                }
+                clearLine++;
+                AABB candidateBox = mover.getBoundingBox()
+                        .move(candidate.x - origin.x, candidate.y - origin.y, candidate.z - origin.z)
+                        .inflate(0.02);
+                if (!level.noBlockCollision(mover, candidateBox)) continue;
+                clearBlocks++;
+
+                boolean occupied = false;
+                for (LivingEntity other : nearbyBodies) {
+                    if (candidateBox.intersects(other.getBoundingBox())) {
+                        occupied = true;
+                        break;
+                    }
+                }
+                double score = step * 4.0
+                        - Math.abs(degrees) * 0.03
+                        - Math.abs(candidate.y - origin.y) * 5.0
+                        - (occupied ? 12.0 : 0.0);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = candidate;
+                }
+            }
+        }
+        if (GeneralConfig.debugMovementLog && mover.tickCount % 20 == 0) {
+            Monster_conquest.LOGGER.info(
+                    "[RANGED-KITE] unit={} phase=immediate-scan sameLevel={} line={} blocks={} origin=({},{},{})",
+                    mover.getUUID().toString().substring(0, 8),
+                    sameLevel, clearLine, clearBlocks,
+                    String.format(java.util.Locale.ROOT, "%.2f", origin.x),
+                    String.format(java.util.Locale.ROOT, "%.2f", origin.y),
+                    String.format(java.util.Locale.ROOT, "%.2f", origin.z));
+        }
+        return best;
+    }
+
+    /**
+     * 选一个 3~6 格外的直线后退点，让 MoveControl 有足够距离持续加速。
+     * 只检查落脚支撑、身体净空和骑手净空。
+     */
+    @Nullable
+    public static Vec3 findStraightBackstepPoint(Mob mover, @Nullable LivingEntity rider,
+                                                 LivingEntity target) {
+        double dx = target.getX() - mover.getX();
+        double dz = target.getZ() - mover.getZ();
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        if (horizontal < 1.0E-4 || !mover.onGround()) return null;
+
+        double[] steps = {6.0, 4.5, 3.0};
+        for (double step : steps) {
+            double x = mover.getX() - dx / horizontal * step;
+            double z = mover.getZ() - dz / horizontal * step;
+            double y = mover.getY();
+            BlockPos support = BlockPos.containing(x, y - 0.08, z);
+            if (!mover.level().getBlockState(support).isSolid()) continue;
+
+            AABB body = mover.getBoundingBox().move(x - mover.getX(), 0.0, z - mover.getZ());
+            if (!mover.level().noBlockCollision(mover, body)) continue;
+            if (rider != null && rider.isPassenger()) {
+                AABB riderBody = rider.getBoundingBox().move(x - mover.getX(), 0.0, z - mover.getZ());
+                if (!mover.level().noBlockCollision(rider, riderBody)) continue;
+            }
+            return new Vec3(x, y, z);
+        }
+        return null;
+    }
+
+    /**
+     * 读取相邻 tick 的真实位移；骑乘时取坐骑。
+     *   位移异常大（传送 / 区块恢复）时返回零，避免把它当成速度用于追击或预判。
+     */
+    public static Vec3 observedMovement(Entity entity) {
+        Entity mover = entity.getVehicle() instanceof Entity vehicle ? vehicle : entity;
+        Vec3 observed = new Vec3(
+                mover.getX() - mover.xo,
+                mover.getY() - mover.yo,
+                mover.getZ() - mover.zo);
+        if (observed.lengthSqr() > 16.0) return Vec3.ZERO;
+        if (observed.lengthSqr() > 1.0E-8) return observed;
+
+        Vec3 delta = mover.getDeltaMovement();
+        return delta.lengthSqr() > 16.0 ? Vec3.ZERO : delta;
+    }
+
+    /** 相邻 tick 的实际水平位移；直接 move 清掉 delta 后仍然有效。 */
+    public static Vec3 observedHorizontalMovement(Entity entity) {
+        Vec3 movement = observedMovement(entity);
+        return new Vec3(movement.x, 0.0, movement.z);
+    }
+
+    /**
+     * 目标是否仍在真实水平移动。
+     *   攻击 Goal 只能用这个结果决定“站定输出”，不能仅凭进入射程就停止跟随；
+     *   否则直接位移、后撤或控制器切换后的目标会被误判为静止。
+     */
+    public static boolean isMovingHorizontally(LivingEntity entity) {
+        return entity != null && observedHorizontalMovement(entity).lengthSqr() > 0.0025;
+    }
+
+    /**
+     * 按实体自身 MOVEMENT_SPEED 执行一 tick 的安全直线后退。
+     * 直接物理移动可以避免 MoveControl 的近目标急停与朝向补偿造成抽搐。
+     */
+    public static boolean applyFullSpeedBackstep(Mob mover, @Nullable LivingEntity rider,
+                                                 LivingEntity target) {
+        double dx = target.getX() - mover.getX();
+        double dz = target.getZ() - mover.getZ();
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        if (horizontal < 1.0E-4 || !mover.onGround()) return false;
+
+        double step = Math.max(1.2, mover.getBbWidth() * 1.1);
+        double x = mover.getX() - dx / horizontal * step;
+        double z = mover.getZ() - dz / horizontal * step;
+        double y = mover.getY();
+        BlockPos support = BlockPos.containing(x, y - 0.08, z);
+        if (!mover.level().getBlockState(support).isSolid()) return false;
+
+        AABB body = mover.getBoundingBox().move(x - mover.getX(), 0.0, z - mover.getZ());
+        if (!mover.level().noBlockCollision(mover, body)) return false;
+        if (rider != null && rider.isPassenger()) {
+            AABB riderBody = rider.getBoundingBox().move(x - mover.getX(), 0.0, z - mover.getZ());
+            if (!mover.level().noBlockCollision(rider, riderBody)) return false;
+        }
+
+        double desiredX = -dx / horizontal;
+        double desiredZ = -dz / horizontal;
+        float currentYaw = mover.getYRot();
+        double currentYawRad = Math.toRadians(currentYaw);
+        double forwardX = -Math.sin(currentYawRad);
+        double forwardZ = Math.cos(currentYawRad);
+        // 已朝向撤离方向时保持航向，目标小幅横移不重新摆头。
+        double dirX = forwardX * desiredX + forwardZ * desiredZ > 0.65
+                ? forwardX : desiredX;
+        double dirZ = forwardX * desiredX + forwardZ * desiredZ > 0.65
+                ? forwardZ : desiredZ;
+        double dirLen = Math.sqrt(dirX * dirX + dirZ * dirZ);
+        dirX /= dirLen;
+        dirZ /= dirLen;
+
+        // 朝撤离方向奔跑，避免战马身体朝敌人、却沿反方向“倒着走”的异常步态。
+        float yaw = (float) Math.toDegrees(Math.atan2(-dirX, dirZ));
+        mover.setYRot(yaw);
+        mover.yBodyRot = yaw;
+        mover.setYHeadRot(yaw);
+        mover.yRotO = yaw;
+        mover.yBodyRotO = yaw;
+        mover.yHeadRotO = yaw;
+        if (rider != null && rider.isPassenger()) {
+            rider.setYRot(yaw);
+            rider.yBodyRot = yaw;
+            rider.setYHeadRot(yaw);
+            rider.yRotO = yaw;
+            rider.yBodyRotO = yaw;
+            rider.yHeadRotO = yaw;
+        }
+        mover.getNavigation().stop();
+        stopMovementInput(mover);
+
+        double speed = mover.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        Vec3 dm = mover.getDeltaMovement();
+        mover.setDeltaMovement(0.0, dm.y, 0.0);
+        mover.move(MoverType.SELF,
+                new Vec3(dirX * speed, 0.0, dirZ * speed));
+        mover.setDeltaMovement(0.0, dm.y, 0.0);
+        mover.hasImpulse = true;
+
+        if (GeneralConfig.debugMovementLog && mover.tickCount % 20 == 0) {
+            Monster_conquest.LOGGER.info(
+                    "[RANGED-KITE] unit={} phase=backstep speed={} destination=({},{})",
+                    mover.getUUID().toString().substring(0, 8),
+                    String.format(java.util.Locale.ROOT, "%.3f", speed),
+                    String.format(java.util.Locale.ROOT, "%.2f", x),
+                    String.format(java.util.Locale.ROOT, "%.2f", z));
+        }
+        return true;
+    }
+
+    /** 检查并执行一 tick 的完整实体速度侧移，不使用 MoveControl.strafe。 */
+    public static boolean applyFullSpeedSidestep(Mob mover, @Nullable LivingEntity rider,
+                                                 LivingEntity target, int direction) {
+        if (direction == 0) return false;
+        Level level = mover.level();
+        Vec3 origin = mover.position();
+        double dx = target.getX() - origin.x;
+        double dz = target.getZ() - origin.z;
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        if (horizontal < 1.0E-4) return false;
+
+        double sideX = -dz / horizontal * direction;
+        double sideZ = dx / horizontal * direction;
+        double speed = mover.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        double x = origin.x + sideX * speed;
+        double z = origin.z + sideZ * speed;
+        double y = origin.y;
+
+        // 贴墙横移只需验证本 tick 的实际位移，不能预先检查两格外并让平行检测线擦到墙。
+        BlockPos support = BlockPos.containing(x, y - 0.08, z);
+        if (!level.getBlockState(support).isSolid()) return false;
+        AABB candidateBox = mover.getBoundingBox()
+                .move(x - origin.x, 0.0, z - origin.z);
+        if (!level.noBlockCollision(mover, candidateBox)) return false;
+        if (rider != null && rider.isPassenger()) {
+            AABB riderBox = rider.getBoundingBox()
+                    .move(x - origin.x, 0.0, z - origin.z);
+            if (!level.noBlockCollision(rider, riderBox)) return false;
+        }
+        if (!level.getEntitiesOfClass(
+                LivingEntity.class,
+                candidateBox,
+                e -> e != mover && e != rider && e != target && e.isAlive()).isEmpty()) {
+            return false;
+        }
+
+        double eyeHeight = rider != null && rider.isPassenger()
+                ? WarHorseEntity.RIDER_HEIGHT + rider.getEyeHeight()
+                : mover.getEyeHeight();
+        Vec3 shotFrom = new Vec3(x, y + eyeHeight, z);
+        if (!hasClearLine(level, shotFrom, target.getBoundingBox().getCenter())) return false;
+
+        float yaw = (float) Math.toDegrees(Math.atan2(-sideX, sideZ));
+        mover.setYRot(yaw);
+        mover.yBodyRot = yaw;
+        mover.setYHeadRot(yaw);
+        mover.yRotO = yaw;
+        mover.yBodyRotO = yaw;
+        mover.yHeadRotO = yaw;
+        if (rider != null && rider.isPassenger()) {
+            rider.setYRot(yaw);
+            rider.yBodyRot = yaw;
+            rider.setYHeadRot(yaw);
+            rider.yRotO = yaw;
+            rider.yBodyRotO = yaw;
+            rider.yHeadRotO = yaw;
+        }
+
+        Vec3 dm = mover.getDeltaMovement();
+        mover.getNavigation().stop();
+        stopMovementInput(mover);
+        mover.setDeltaMovement(0.0, dm.y, 0.0);
+        mover.move(MoverType.SELF, new Vec3(sideX * speed, 0.0, sideZ * speed));
+        mover.setDeltaMovement(0.0, dm.y, 0.0);
+        mover.hasImpulse = true;
+        return true;
+    }
+
+    /**
      * 阵型槽位是否站得住：两格净空 + 下方 4 格内有实心地面，且沿途没有危险方块。
      *   首领阵型槽位与玩家军队阵型槽位共用这一份判定。
      */
@@ -107,7 +599,7 @@ public final class AiNavUtil {
                 // 栅栏 / 墙 / 栏杆的碰撞盒高 1.5 格（isSolid() 也是 true），
                 //   它们不能当站立面，否则会生成"悬在栅栏上"的槽位，士兵只能贴着栅栏站。
                 if (below.getCollisionShape(level, belowPos)
-                        .max(net.minecraft.core.Direction.Axis.Y) > 1.05) continue;
+                        .max(Direction.Axis.Y) > 1.05) continue;
                 return true;
             }
         }
@@ -130,6 +622,22 @@ public final class AiNavUtil {
             }
         }
         return open >= 2;
+    }
+
+    /**
+     * 脚所在格是不是窄通道：水平方向最多两个方向能站人（1 格宽走廊 / 门口 / 拐角）。
+     *   同阵营分离在窄通道里会把彼此推向两侧的墙，最终互相顶死，需要让行。
+     */
+    public static boolean isNarrowPassage(Level level, BlockPos feet) {
+        int open = 0;
+        for (Direction d : Direction.Plane.HORIZONTAL) {
+            BlockPos side = feet.relative(d);
+            if (!level.getBlockState(side).isSolid()
+                    && !level.getBlockState(side.above()).isSolid()) {
+                open++;
+            }
+        }
+        return open <= 2;
     }
 
     /** 在 (x,z) 附近找一个站得住的落脚高度（相对 baseY 上下 2 格内）；找不到返回 NaN。 */
@@ -320,7 +828,7 @@ public final class AiNavUtil {
         for (int dx = -2; dx <= 2; dx++) {
             // 包含脚下一格：单位起跳 / 站在门框上时，门可能刚好在脚下一格，
             //   只往上看会漏掉它（表现为"站在门前不开门"）。
-            for (int dy = -2; dy <= 2; dy++) {
+            for (int dy = -1; dy <= 1; dy++) {
                 for (int dz = -2; dz <= 2; dz++) {
                     BlockPos p = base.offset(dx, dy, dz);
                     BlockState state = level.getBlockState(p);
@@ -409,12 +917,12 @@ public final class AiNavUtil {
      *   又不会把路过的门全开一遍。
      */
     private static boolean isDoorAheadOnPath(Mob mob, BlockPos door) {
-        net.minecraft.world.level.pathfinder.Path path = mob.getNavigation().getPath();
+        Path path = mob.getNavigation().getPath();
         if (path == null || path.isDone()) return false;
         double mobX = mob.getX();
         double mobZ = mob.getZ();
         for (int i = 0; i < path.getNodeCount(); i++) {
-            net.minecraft.world.level.pathfinder.Node node = path.getNode(i);
+            Node node = path.getNode(i);
             double ndx = node.x + 0.5 - mobX;
             double ndz = node.z + 0.5 - mobZ;
             if (ndx * ndx + ndz * ndz > 9.0) continue;               // 3 格内的路径段
@@ -487,6 +995,24 @@ public final class AiNavUtil {
      *   身体过不去时返回 false，上层就会交给寻路绕过去。
      */
     public static boolean hasClearLineForBody(Level level, Vec3 from, Vec3 to, double halfWidth) {
+        long now = level.getGameTime();
+        LineKey key = new LineKey(level.dimension().location(), RoutePlanner.worldVersion(level),
+                Double.doubleToLongBits(from.x), Double.doubleToLongBits(from.y),
+                Double.doubleToLongBits(from.z), Double.doubleToLongBits(to.x),
+                Double.doubleToLongBits(to.y), Double.doubleToLongBits(to.z),
+                Double.hashCode(halfWidth));
+        LineProbe cached = LINE_PROBES.get(key);
+        if (cached != null && now - cached.tick <= 2) return cached.result;
+
+        boolean result = hasClearLineForBodyUncached(level, from, to, halfWidth);
+        LINE_PROBES.put(key, new LineProbe(now, result));
+        if (LINE_PROBES.size() > 512) {
+            LINE_PROBES.entrySet().removeIf(e -> now - e.getValue().tick > 20);
+        }
+        return result;
+    }
+
+    private static boolean hasClearLineForBodyUncached(Level level, Vec3 from, Vec3 to, double halfWidth) {
         if (!hasClearLine(level, from, to)) return false;
         double dx = to.x - from.x;
         double dz = to.z - from.z;
@@ -498,20 +1024,6 @@ public final class AiNavUtil {
         double nz = dx / len * off;
         return hasClearLine(level, from.add(nx, 0.0, nz), to.add(nx, 0.0, nz))
                 && hasClearLine(level, from.subtract(nx, 0.0, nz), to.subtract(nx, 0.0, nz));
-    }
-
-    /** 该格能不能站：脚下有正常支撑、本体与头上一格无实心方块、不危险。 */
-    public static boolean canStandOn(Level level, BlockPos pos) {
-        BlockPos belowPos = pos.below();
-        BlockState below = level.getBlockState(belowPos);
-        if (!below.isSolid()) return false;
-        if (below.getCollisionShape(level, belowPos).max(Direction.Axis.Y) > 1.05) return false;
-        if (isDangerousBlock(below)) return false;
-        BlockState here = level.getBlockState(pos);
-        if (here.isSolid() || isDangerousBlock(here)) return false;
-        BlockState above = level.getBlockState(pos.above());
-        if (above.isSolid() || isDangerousBlock(above)) return false;
-        return true;
     }
 
     /**
@@ -550,7 +1062,7 @@ public final class AiNavUtil {
             if (rise > 1.05) continue;   // 太高跳不上去
             // 台阶高度以内的小坎（默认 0.6：台阶 / 半砖等）直接走上去，不用跳。
             double stepHeight = mob.getAttributeValue(
-                    net.minecraft.world.entity.ai.attributes.Attributes.STEP_HEIGHT);
+                    Attributes.STEP_HEIGHT);
             if (rise <= stepHeight + 0.05) continue;
             if (level.getBlockState(ahead.above()).isSolid()) continue;
             if (level.getBlockState(ahead.above(2)).isSolid()) continue;
@@ -572,513 +1084,88 @@ public final class AiNavUtil {
     }
 
     /**
-     * 该位置的梯子柱是否"能走"：
-     *   上行：不仅上方要还有梯子 / 空位，整根梯子还必须通到目标高度附近（差 ≤2 格）——
-     *         半截装饰梯 / 断头梯不能当上楼通道，否则单位爬到顶就悬着卡住。
-     *   下行：只要踩得上梯子就行，不做限制。
-     */
-    private static boolean ladderLeadsToGoal(Level level, BlockPos ladder, double goalY, boolean ascending) {
-        if (!ascending) return true;   // 往下走：只要踩得上梯子就行
-        if (!level.getBlockState(ladder.above()).is(BlockTags.CLIMBABLE)
-                && !level.isEmptyBlock(ladder.above())) return false;
-        return goalY <= climbableTopY(level, ladder) + 2.0;
-    }
-
-    /** 从这一节可攀爬方块往上数到顶，返回最高那一节的 Y。 */
-    private static int climbableTopY(Level level, BlockPos climbable) {
-        int top = climbable.getY();
-        for (int i = 1; i <= 48; i++) {
-            BlockPos up = climbable.above(i);
-            if (!level.getBlockState(up).is(BlockTags.CLIMBABLE)) break;
-            top = up.getY();
-        }
-        return top;
-    }
-
-    /** 从这一节可攀爬方块往下数到底，返回最低那一节的 Y。 */
-    private static int climbableBottomY(Level level, BlockPos climbable) {
-        int bottom = climbable.getY();
-        for (int i = 1; i <= 48; i++) {
-            BlockPos down = climbable.below(i);
-            if (!level.getBlockState(down).is(BlockTags.CLIMBABLE)) break;
-            bottom = down.getY();
-        }
-        return bottom;
-    }
-
-    /**
-     * 爬梯子辅助（士兵 / 首领 / 巡逻队长通用）：
-     *   · 已经站在梯子 / 藤蔓上，且目标在上方 → 持续向上爬；
-     *   · 站在"能往上走"的梯子旁边（水平 1 格内）且目标明显在上方 → 朝梯子挪一小步准备开爬。
+     * 攀爬接近检查（士兵 / 首领每 tick 调用一次）。
      *
-     * @param goalY 当前想去的目标高度（战斗目标 / 首领 / 行军目标）
-     * @return 是否正在爬 / 正在靠近梯子（true 时调用方不要再做其它移动干预）
+     *   上下梯子由寻路路线和梯子移动控制完成，这里只处理两件事：
+     *   目标在另一层、附近有通得到目标的梯子且单位没在按路线走时，向目标补发一次寻路；
+     *   骑乘单位先下马，让下一次寻路按步兵净空重新规划。
+     *   目标高度与单位齐平（{@code |dy| < 1.5}）时直接跳过，不打扰已就位的单位。
      */
-    public static boolean tryClimbLadder(Mob mob, double goalY) {
-        Level level = mob.level();
-        if (level.isClientSide) return false;
-
-        boolean climbable = isOnClimbable(mob);
-        BlockPos feet = mob.blockPosition();
-        boolean goalBelow = goalY < mob.getY() - 0.5;   // 目标是明显下方：不要往上翻平台
-        boolean deepBelow = goalY < mob.getY() - 1.0;   // 需要顺着梯子往下滑
-        boolean ladderBelow = level.getBlockState(feet.below()).is(BlockTags.CLIMBABLE);
-
-        // 平台 / 墙顶边缘的下行梯（最高一节不比脚高）：站在边缘、身边一格内就是这种梯子时
-        //   也要接管，把单位推回梯子列里再往下滑 ——
-        //   否则单位只在梯顶 / 平台边缘来回挪，永远迈不进梯子列（表现为卡在墙角的梯子边）。
-        BlockPos edgeLadder = deepBelow && !climbable && !ladderBelow && mob.onGround()
-                ? downLadderBeside(mob) : null;
-
-        // 下行：目标是下方时，站在梯子上 / 悬在梯顶正上方（脚下就是梯子）就往下走。
-        //   横向速度朝梯子方块中心修正：寻路 / 跟随的移动输入往往指向"背后的平台"，
-        //     不修正的话单位会被移动目标从梯子上拖开（表现为"想远离梯子"），
-        //     永远踩不上 / 待不住梯子。
-        if (deepBelow && (climbable || ladderBelow || edgeLadder != null)) {
-            if (mob.isPassenger()) {
-                dismountForClimb(mob);
-                return false;
-            }
-            BlockPos column = climbable ? feet : (ladderBelow ? feet.below() : edgeLadder);
-            // "脚还在地上、身体被平台 / 墙顶边缘托着"（正要迈进梯子列，或悬在梯顶但还踩着边）：
-            //   目标点取梯子格中心、用固定最小推力 —— 按距离缩放的推力在"目标就在脚边 0.05 格"时
-            //   几乎为 0，身体又一直有支撑，会永远停在边缘迈不出去。
-            //   已经真的悬空下落（onGround=false）时才用"避开梯子薄板"的开口侧偏移 + 距离缩放。
-            boolean stepping = !climbable && mob.onGround();
-            double cx = column.getX() + 0.5;
-            double cz = column.getZ() + 0.5;
-            if (!climbable && !stepping) {
-                // 悬在梯顶正上方：把落点定在"梯子开口侧让开 0.25 格"处，
-                //   避开梯子那 3/16 厚的碰撞板 —— 往方块中心推会在板边来回顶、下不去。
-                BlockState columnState = level.getBlockState(column);
-                if (columnState.getBlock() instanceof LadderBlock) {
-                    Direction open = columnState.getValue(LadderBlock.FACING);
-                    cx += open.getStepX() * 0.25;
-                    cz += open.getStepZ() * 0.25;
-                }
-            }
-            double dx = cx - mob.getX();
-            double dz = cz - mob.getZ();
-            double len = Math.sqrt(dx * dx + dz * dz);
-            double sx = 0.0;
-            double sz = 0.0;
-            if (len > 1.0E-3) {
-                double strength;
-                if (climbable) {
-                    // 还踩着梯子：离中心越远修正越强（上限 = 原版梯子横向速度上限 0.15）。
-                    strength = Math.min(0.15, len * 0.6);
-                } else if (stepping) {
-                    // 迈进梯子列：固定最小推力（否则会停在"目标点就在脚边"的平衡点上）。
-                    strength = Math.min(0.30, Math.max(len * 0.8, 0.12));
-                } else {
-                    // 悬在梯顶：按距离比例推（不做固定大力，否则会越过落点来回抽动）。
-                    strength = Math.min(0.30, Math.max(len * 0.8, 0.02));
-                }
-                sx = dx / len * strength;
-                sz = dz / len * strength;
-            }
-            Vec3 v = mob.getDeltaMovement();
-            // 还踩着梯子 → 匀速下滑；刚悬在梯顶上方 → 不再上飘，交给重力把它压进梯子列。
-            double vy = climbable ? -0.15 : Math.min(v.y, -0.05);
-            mob.setDeltaMovement(sx, vy, sz);
-            mob.fallDistance = 0;
-            mob.getNavigation().stop();
-            stopMovementInput(mob);
-            tryOpenNearbyDoors(mob);   // 攀爬时也能开门
-            return true;
-        }
-
-        // 出梯 / 选层：站在梯子上，且目标高度已经到达（脚上方 0.5 格 ~ 下方 1 格之间）时，
-        //   朝旁边能站立的地面迈出去。
-        //   · 多层贯通的梯子：在"目标那一层"停住并迈出去，不会一路滑到最底层；
-        //   · 梯底：同样在这里退场，不用再靠移动输入和梯子物理硬推。
-        // 站在梯子上、目标高度已经到达（脚上方 0.5 格 ~ 下方 1 格之间）时，朝旁边能站的地面迈出去。
-        //   但"脚踩在实地上、就站在梯子格里"（刚从旁边走进 / 路过梯子格）不做这个动作：
-        //     水平路径可能正好穿过梯子格，这里一推就会和"走向自己的阵位"互相顶，
-        //     单位会在梯子格边上反复挪动（表现为卡在梯子 / 墙角来回挪）。这种情况直接走开即可。
-        if (climbable && goalY <= mob.getY() + 0.5 && goalY >= mob.getY() - 1.0
-                && (goalBelow || !mob.onGround())) {
-            Direction support = ladderSupportSide(level, feet);
-            Direction open = support != null ? support.getOpposite() : null;
-            if (tryStepOffLadder(mob, level, feet, open)) return true;
-        }
-
-        // 梯顶翻越：站在梯子 / 藤蔓 / 脚手架上，或者刚翻过最后一级悬在梯顶上方时，
-        //   只要目标高度就在头顶 1.5 格内（含齐平、略低），先尝试横移到旁边真正能站的平台。
-        //   这一步必须排在"还要继续向上爬（goalY > y + 0.5）"之前：
-        //   单位爬到"目标下方 0.5 格"后爬升条件不再成立 → 原版梯子物理开始让它下滑 →
-        //   下一 tick 条件又成立继续爬 —— 于是永远卡在最高一节来回上下，上不了平台。
-        //   落脚点要同时覆盖"和脚同层"与"在脚上方一格"（梯子最高一节与平台地板同层）两种结构。
-        boolean hoveringOverLadderTop = !climbable && ladderBelow;
-        // 目标在下方时不做"翻上平台"，否则单位想下梯子时会被反方向推回平台边缘。
-        if ((climbable || hoveringOverLadderTop) && !goalBelow && goalY <= mob.getY() + 1.5) {
-            if (tryTopOut(mob, level, climbable)) return true;
-        }
-
-        boolean climbing = climbable && goalY > mob.getY() + 0.5;
-        if (climbing) {
-            // 已经踩在梯子上也要确认这根梯子通得到目标：
-            //   装饰性断梯爬到顶只会悬着 / 卡住，不能继续往上顶。
-            BlockPos rung = level.getBlockState(feet).is(BlockTags.CLIMBABLE) ? feet : feet.above();
-            if (level.getBlockState(rung).is(BlockTags.CLIMBABLE)
-                    && !ladderLeadsToGoal(level, rung, goalY, true)) {
-                climbing = false;
-            }
-        }
-        BlockPos ladder = climbing ? null : findLadderToClimb(level, mob, goalY);
-        if (!climbing && ladder == null) return false;
-
-        // 坐骑（战马）无法爬梯子 / 脚手架 / 藤蔓：必须下马才能爬，
-        //   攀爬期间持续抑制自动重上马；下一 tick 才会真正开始爬。
-        if (mob.isPassenger()) {
-            // 只要找到要走的梯子就先下马（搜索半径已放宽，很远也能找到）；
-            //   骑在马上没法走梯子，继续骑过去也只会在平台边上打转。
-            dismountForClimb(mob);
-            return false;
-        }
-
-        // 1) 已经踩在梯子上：目标是上方就向上爬
-        if (climbing) {
-            Vec3 v = mob.getDeltaMovement();
-            mob.setDeltaMovement(v.x * 0.4, 0.2, v.z * 0.4);
-            mob.fallDistance = 0;
-            mob.getNavigation().stop();
-            // 脚手架：每一层都是"底部厚板"的碰撞箱，光靠向上速度会被下一层挡住；
-            //   玩家也是跳着上脚手架的 —— 这里补一次原版跳跃把身体抬过台阶。
-            if (level.getBlockState(feet).is(Blocks.SCAFFOLDING)
-                    || level.getBlockState(feet.below()).is(Blocks.SCAFFOLDING)) {
-                mob.getJumpControl().jump();
-            }
-            tryOpenNearbyDoors(mob);   // 攀爬时也能开门（例如梯子顶上的门 / 活板门）
-            return true;
-        }
-
-        // 2) 目标明显在上方（≥2 格）时，靠近旁边能往上走的梯子。
-        //    靠近点取"梯子的开口侧"（背对支撑墙那半边）稍稍偏移：
-        //      梯子贴墙的那条薄碰撞箱会挡住 0.7 宽的巡逻队长 / 首领，
-        //      走方块正中心会被卡在梯子侧面进不去（实测士兵能进、队长进不去）。
-        BlockState ladderState = level.getBlockState(ladder);
-        double tx = ladder.getX() + 0.5;
-        double tz = ladder.getZ() + 0.5;
-        if (ladderState.getBlock() instanceof LadderBlock) {
-            Direction open = ladderState.getValue(LadderBlock.FACING);
-            tx += open.getStepX() * 0.32;
-            tz += open.getStepZ() * 0.32;
-        }
-        double dx = tx - mob.getX();
-        double dz = tz - mob.getZ();
-        double len = Math.sqrt(dx * dx + dz * dz);
-        if (len < 1.0E-3) return false;
-
-        // 离梯子还远：优先让寻路把单位"走到梯子旁边能站的那一格"，
-        //   光靠自己给 0.12 的横向速度顶不过寻路（它想去的平台边缘在反方向）。
-        //   每 10 tick 重发一次（和移动指令同频），避免每 tick 重算路径造成掉刻。
-        BlockPos access = findLadderAccessSpot(level, ladder, feet);
-        // 固定每 10 tick 重发一次：不再"没有路径就每 tick 重算"（登梯口走不到时那会非常费）
-        if (access != null && mob.tickCount % 10 == 0) {
-            if (mob.getNavigation().moveTo(
-                    access.getX() + 0.5, access.getY(), access.getZ() + 0.5, 1.0)) {
-                mob.fallDistance = 0;
-                tryOpenNearbyDoors(mob);
-                return true;
-            }
-        }
-
-        Vec3 v = mob.getDeltaMovement();
-        // 目标在下方时用满梯子横向速度上限（0.15）并允许一点下坠：
-        //   否则寻路输入（指向平台边缘）会和这点推力互相抵消，单位永远迈不出平台边缘。
-        double push = deepBelow ? 0.15 : 0.12;
-        double vy = deepBelow ? Math.max(v.y, -0.1) : Math.max(v.y, -0.05);
-        mob.setDeltaMovement(dx / len * push, vy, dz / len * push);
-        mob.fallDistance = 0;
-        mob.getNavigation().stop();
-        return true;
-    }
-
-    /**
-     * 梯顶翻越：在单位横向相邻的 4 格里找一个"真正能站住"的落脚点并持续推过去。
-     *   · 平台通常在梯子的支撑墙那一侧 —— LadderBlock.FACING 指向梯子开口，
-     *     支撑墙在 FACING.getOpposite()，所以优先朝那个方向试；
-     *   · 高度同时考虑两种常见结构：
-     *       - 梯子最高一节与平台地板同一层 → 落脚点在脚上方一格（最常见的"上平台"结构）；
-     *       - 单位已经翻过最后一级、悬在梯顶上方 → 落脚点与脚齐平。
-     *
-     * @param onRung true = 此刻还踩在可攀爬方块上；false = 悬在梯顶上方（刚翻过最后一级）
-     * @return 是否已找到落脚点并施加了移动速度
-     */
-    private static boolean tryTopOut(Mob mob, Level level, boolean onRung) {
-        if (mob.isPassenger()) return false;
-        BlockPos feet = mob.blockPosition();
-        Direction supportSide = ladderSupportSide(level, feet);
-        Direction[] order = supportSide != null
-                ? new Direction[] {
-                        supportSide,
-                        supportSide.getClockWise(),
-                        supportSide.getCounterClockWise(),
-                        supportSide.getOpposite() }
-                : new Direction[] {
-                        Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST };
-        for (Direction dir : order) {
-            for (int dy = 0; dy <= 1; dy++) {
-                BlockPos spot = feet.relative(dir).above(dy);
-                if (!canStandOn(level, spot)) continue;
-                if (pushToTopOutSpot(mob, spot, onRung)) return true;
-            }
-        }
-        return false;
-    }
-
-    /** 梯子的支撑墙方向（平台通常在这一侧）：FACING 指向开口，支撑墙在反方向；找不到梯子返回 null。 */
-    @Nullable
-    private static Direction ladderSupportSide(Level level, BlockPos feet) {
-        for (BlockPos p : new BlockPos[] { feet, feet.above(), feet.below() }) {
-            BlockState state = level.getBlockState(p);
-            if (state.getBlock() instanceof LadderBlock) {
-                return state.getValue(LadderBlock.FACING).getOpposite();
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 梯子的"登梯口"：梯子旁边（高度 ±1）真正能站住、且离单位最近的一格。
-     *   离梯子还远时先用原版寻路把单位走到这一格，再交给攀爬 / 下滑逻辑。
-     */
-    @Nullable
-    private static BlockPos findLadderAccessSpot(Level level, BlockPos ladder, BlockPos from) {
-        BlockPos best = null;
-        double bestSq = Double.MAX_VALUE;
-        for (Direction dir : Direction.Plane.HORIZONTAL) {
-            BlockPos side = ladder.relative(dir);
-            for (int dy = -1; dy <= 1; dy++) {
-                BlockPos spot = side.above(dy);
-                if (!canStandOn(level, spot)) continue;
-                double ddx = spot.getX() - from.getX();
-                double ddy = spot.getY() - from.getY();
-                double ddz = spot.getZ() - from.getZ();
-                double sq = ddx * ddx + ddy * ddy + ddz * ddz;
-                if (sq < bestSq) {
-                    bestSq = sq;
-                    best = spot;
-                }
-            }
-        }
-        return best;
-    }
-
-    /**
-     * 梯底退场：在梯子最下面一节旁边找一个"真正能站住"的地面并迈过去。
-     *   优先梯子的开口侧（背对支撑墙那一侧，玩家下梯子也是从这一边走出去）。
-     *
-     * @param preferred 梯子开口方向；null（藤蔓 / 脚手架）时按固定顺序试 4 个方向
-     * @return 是否找到落脚点并施加了移动速度
-     */
-    private static boolean tryStepOffLadder(Mob mob, Level level, BlockPos feet, @Nullable Direction preferred) {
-        BlockPos spot = findStepOffSpot(level, feet, preferred);
-        if (spot == null) return false;
-        double tx = spot.getX() + 0.5;
-        double tz = spot.getZ() + 0.5;
-        double dx = tx - mob.getX();
-        double dz = tz - mob.getZ();
-        double len = Math.sqrt(dx * dx + dz * dz);
-        if (len < 1.0E-3) return false;
-        Vec3 v = mob.getDeltaMovement();
-        // 横推 + 允许继续下坠：落地后由目标寻路接管。
-        mob.setDeltaMovement(dx / len * 0.15, Math.min(v.y, -0.05), dz / len * 0.15);
-        mob.fallDistance = 0;
-        mob.hasImpulse = true;
-        mob.getNavigation().stop();
-        stopMovementInput(mob);
-        tryOpenNearbyDoors(mob);
-        return true;
-    }
-
-    /** 梯子旁边能站的落脚点（优先开口侧）；没有返回 null。 */
-    @Nullable
-    private static BlockPos findStepOffSpot(Level level, BlockPos feet, @Nullable Direction preferred) {
-        Direction[] order = preferred != null
-                ? new Direction[] {
-                        preferred,
-                        preferred.getClockWise(),
-                        preferred.getCounterClockWise(),
-                        preferred.getOpposite() }
-                : new Direction[] {
-                        Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST };
-        for (Direction dir : order) {
-            BlockPos spot = feet.relative(dir);
-            if (!canStandOn(level, spot)) continue;
-            return spot;
-        }
-        return null;
-    }
-
-    /** 给"梯顶翻越"施加一次横向推力（还踩着梯子时顺带保底向上 / 跳跃）；返回是否成功施加。 */
-    private static boolean pushToTopOutSpot(Mob mob, BlockPos spot, boolean onRung) {
-        double tx = spot.getX() + 0.5;
-        double tz = spot.getZ() + 0.5;
-        double dx = tx - mob.getX();
-        double dz = tz - mob.getZ();
-        double len = Math.sqrt(dx * dx + dz * dz);
-        if (len < 1.0E-3) return false;
-
-        Vec3 v = mob.getDeltaMovement();
-        double vy;
-        if (onRung) {
-            // 还踩着梯子：一边继续爬（保底 0.12 向上 + 原版梯子物理），一边横推。
-            // 落脚点比脚高一格时按原版跳跃 —— 原版会把"梯子上跳跃"转成 0.2 的额外向上速度，
-            // 正好把身体抬过平台边缘，之后横向速度才不会被平台侧面的碰撞箱吃掉。
-            if (spot.getY() > mob.getY() + 0.4) mob.getJumpControl().jump();
-            vy = Math.max(v.y, 0.12);
-        } else {
-            // 已经翻过最后一级、悬在梯顶上方：不再往上飘，保持横向推力，让重力把单位放到平台上。
-            vy = Math.min(v.y, 0.08);
-        }
-        // 0.15 = 原版在梯子上的横向速度上限（LivingEntity.handleOnClimbable 的 clamp 值）。
-        mob.setDeltaMovement(dx / len * 0.15, vy, dz / len * 0.15);
-        mob.fallDistance = 0;
-        mob.hasImpulse = true;
-        mob.getNavigation().stop();
-        stopMovementInput(mob);
-        tryOpenNearbyDoors(mob);
-        return true;
-    }
-
-    /** 目标在上方（≥2 格）或下方（≥1.5 格）时，找身边"能往上/往下走"的可攀爬方块；没有返回 null。 */
-    @Nullable
-    private static BlockPos findLadderToClimb(Level level, Mob mob, double goalY) {
-        boolean ascending = goalY >= mob.getY() + 2.0;
-        boolean descending = goalY <= mob.getY() - 1.5;
-        if (!ascending && !descending) return null;
+    public static void tickClimbApproach(Mob mob, double goalY, @Nullable Vec3 goal) {
+        if (mob.level().isClientSide || !mob.isAlive()) return;
+        double dy = goalY - mob.getY();
+        if (dy > -1.5 && dy < 1.5) return;              // 目标就在这一层：用不上梯子
+        if (mob.tickCount % 10 != 0) return;            // 梯子搜索每 10 tick 一次，别每 tick 扫
+        PathNavigation nav = mob.getNavigation();
+        Path active = nav.getPath();
+        // 已经有完整路线在走时不需要再扫梯子；部分路径仍可能进不了目标层，
+        // 这时才继续找梯子。
+        if (active != null && !active.isDone() && active.canReach()) return;
+        if (goal == null) return;
+        // 已经在目标点上（驻守 / 就位的单位，目标就是脚下这一格）→ 不要替它重新发路径
+        if (goal.distanceToSqr(mob.position()) < 4.0) return;
         BlockPos base = mob.blockPosition();
-        int minDy = descending ? -3 : -1;
-        int maxDy = 2;
+        LadderProbe probe = LADDER_PROBES.get(mob);
+        BlockPos rung;
+        if (probe != null && probe.tick > mob.tickCount - 20
+                && probe.base.equals(base) && Math.abs(probe.goalY - goalY) < 2.0) {
+            rung = probe.rung;
+            if (rung != null && !ClimbColumns.isRung(mob.level(), rung)) rung = null;
+        } else {
+            rung = findClimbColumn(mob.level(), mob, goalY);
+            LADDER_PROBES.put(mob, new LadderProbe(mob.tickCount, base, goalY, rung));
+        }
+        if (rung == null) return;
+        if (mob.isPassenger()) {
+            dismountForClimb(mob);                      // 坐骑不会爬梯子
+            return;
+        }
+        // 已走完的旧路径会因节点相同被原版拒绝重发（骑乘时这里是坐骑的导航）。
+        if (active != null) nav.stop();
+        nav.moveTo(goal.x, goal.y, goal.z, 1.0);
+    }
 
-        if (ascending) {
-            // 上行：由近到远扫四条射线 —— "先走到附近的梯子 / 脚手架 / 藤蔓再爬"。
-            // 身边有正常路径在走时只扫 2 格（省性能）；没有路径可走（卡在塔下）时才扫到 8 格。
-            int maxRadius = mob.getNavigation().isDone() ? 8 : 2;
-            for (int radius = 1; radius <= maxRadius; radius++) {
-                for (Direction dir : Direction.Plane.HORIZONTAL) {
-                    for (int dy = minDy; dy <= maxDy; dy++) {
-                        BlockPos ladder = base.relative(dir, radius).above(dy);
-                        if (!level.getBlockState(ladder).is(BlockTags.CLIMBABLE)) continue;
-                        if (!ladderLeadsToGoal(level, ladder, goalY, true)) continue;
-                        return ladder;
+    /**
+     * 在附近找一节能通往目标层的梯子：上行要求列顶够得着目标，下行要求梯子延伸到脚下。
+     *   按环形逐圈扫描所有方向，斜前方或门后的梯子也能找到；找不到返回 null。
+     */
+    @Nullable
+    private static BlockPos findClimbColumn(Level level, Mob mob, double goalY) {
+        boolean ascending = goalY > mob.getY();
+        BlockPos base = mob.blockPosition();
+        for (int ring = 1; ring <= CLIMB_SEARCH_RADIUS; ring++) {
+            for (int dx = -ring; dx <= ring; dx++) {
+                for (int dz = -ring; dz <= ring; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != ring) continue;   // 只看当前这一圈
+                    for (int dy = -2; dy <= 2; dy++) {
+                        BlockPos rung = base.offset(dx, dy, dz);
+                        if (!ClimbColumns.isRung(level, rung)) continue;
+                        if (ascending) {
+                            if (ClimbColumns.columnReachesHeight(level, rung, goalY, 3.0)) return rung;
+                        } else if (ClimbColumns.columnBottomY(level, rung) <= mob.getY() - 2.0) {
+                            return rung;
+                        }
                     }
                 }
             }
-            return null;
-        }
-
-        // 下行：
-        //   ① 先在 6 格内"按圈全方向"扫描 —— 实心方块 / 小高台的梯子可能在对角线方向，
-        //      只扫正东正西正南正北四条线会永远找不到（单位就只会站在最近的边缘）；
-        //   ② 再沿四条射线扫到 24 格（大平台 / 大屋顶的梯子可能离"离目标最近的那条边"很远）。
-        //   每一列取"最上面一节"梯节（离脚下走道最近），并优先选旁边有能站的登梯口的梯子 ——
-        //   只有找到登梯口，寻路才能把单位送过去。
-        BlockPos fallback = null;
-        for (int ring = 1; ring <= 6; ring++) {
-            int loDy = ring > 4 ? -2 : minDy;
-            for (int dx = -ring; dx <= ring; dx++) {
-                for (int dz = -ring; dz <= ring; dz++) {
-                    if (Math.max(Math.abs(dx), Math.abs(dz)) != ring) continue;
-                    BlockPos ladder = scanDownColumn(level, base, dx, dz, loDy, maxDy);
-                    if (ladder == null) continue;
-                    if (fallback == null) fallback = ladder;
-                    if (findLadderAccessSpot(level, ladder, base) != null) return ladder;
-                }
-            }
-        }
-        for (int radius = 7; radius <= 24; radius++) {
-            for (Direction dir : Direction.Plane.HORIZONTAL) {
-                BlockPos ladder = scanDownColumn(level, base,
-                        dir.getStepX() * radius, dir.getStepZ() * radius, -2, maxDy);
-                if (ladder == null) continue;
-                if (fallback == null) fallback = ladder;
-                if (findLadderAccessSpot(level, ladder, base) != null) return ladder;
-            }
-        }
-        return fallback;
-    }
-
-    /** 下行用：在某个水平偏移的竖列里从高到低找最高的一节梯子；没有返回 null。 */
-    @Nullable
-    private static BlockPos scanDownColumn(Level level, BlockPos base,
-                                          int dx, int dz, int loDy, int hiDy) {
-        for (int dy = hiDy; dy >= loDy; dy--) {
-            BlockPos p = base.offset(dx, dy, dz);
-            if (level.getBlockState(p).is(BlockTags.CLIMBABLE)) return p;
         }
         return null;
     }
 
     /**
-     * 供"前往下方"的移动指令使用：目标在下方、且身边能找到可下的梯子时，
-     *   返回梯子旁边"登梯口"的坐标 —— 寻路先走到这里，之后由实体自身的攀爬逻辑下梯。
-     *   没有梯子 / 已经在梯子上 / 目标不在下方 → null（照常按原目标寻路）。
+     * 单位是否正处于上下梯子这一段：脚在梯子格上，或移动目标点在梯子格上。
+     *   上层的"最后几格直线驱动"遇到这种情况要让开，否则会把单位从梯子列里拖出去。
+     *   只看脚下与当前移动目标，不看旧路径，避免已站上平台的单位被判成正在爬梯。
      */
-    @Nullable
-    public static Vec3 descentAccessPoint(Mob mob, @Nullable Vec3 goal) {
-        if (goal == null || mob.level().isClientSide) return null;
-        if (isOnClimbable(mob)) {
-            // 已经站在梯子上、且已经下到目标那一层 → 把寻路目标换成"梯子旁边的落脚点"，
-            //   否则寻路会继续朝目标（可能是梯子背后的墙里）推，把单位顶在梯子上原地上下。
-            //   目标还明显在下方 → null（交给下滑逻辑）；目标在头顶 → null（交给爬升 / 翻越逻辑）。
-            if (goal.y < mob.getY() - 1.0 || goal.y > mob.getY() + 0.5) return null;
-            BlockPos feet = mob.blockPosition();
-            Direction support = ladderSupportSide(mob.level(), feet);
-            BlockPos spot = findStepOffSpot(mob.level(), feet,
-                    support != null ? support.getOpposite() : null);
-            return spot == null ? null
-                    : new Vec3(spot.getX() + 0.5, spot.getY(), spot.getZ() + 0.5);
-        }
-        if (goal.y >= mob.getY() - 1.5) return null;
-        BlockPos ladder = findLadderToClimb(mob.level(), mob, goal.y);
-        if (ladder == null) return null;
-        BlockPos access = findLadderAccessSpot(mob.level(), ladder, mob.blockPosition());
-        if (access == null) return null;
-        return new Vec3(access.getX() + 0.5, access.getY(), access.getZ() + 0.5);
-    }
-
-    /**
-     * 单位是否"正踩在梯子上（或刚悬在梯顶正上方）并且目标是下方"。
-     *   这种状态下上层要停掉自己的寻路：原版只会给一条"爬回平台"的半路路径，
-     *   会和下滑互相顶 —— 表现为在梯子上擦着砖块、下滑途中又想往上爬、
-     *   落地后还被旧路线往回拉。
-     */
-    public static boolean isDescendingOnLadder(Mob mob, @Nullable Vec3 goal) {
-        if (goal == null || mob.level().isClientSide) return false;
-        if (goal.y >= mob.getY() - 0.5) return false;
-        if (isOnClimbable(mob)) return true;
-        if (mob.level().getBlockState(mob.blockPosition().below()).is(BlockTags.CLIMBABLE)) return true;
-        // 站在平台 / 墙顶边缘、脚边一格内就是"往下走的梯子"（最高一节不比脚高）时，
-        //   同样算"正在下梯子"：上层不要再发寻路，否则寻路会把单位按在平台上、
-        //   和"迈进梯子列往下滑"互相顶 —— 表现为在梯顶 / 平台边缘来回挪，永远下不去。
-        return downLadderBeside(mob) != null;
-    }
-
-    /**
-     * 站在平台 / 墙顶边缘时，身边一格内"往下走的梯子"（梯子最高一节不比脚高）；
-     *   找不到返回 null。用于"从这里顺着梯子下去"的判定与接管。
-     *   排除"最高一节比脚高"的梯子 —— 那是从这一层往上爬的梯子，不是下行入口。
-     */
-    @Nullable
-    private static BlockPos downLadderBeside(Mob mob) {
+    public static boolean isOnClimbRoute(Mob mob) {
+        if (mob.level().isClientSide) return false;
         Level level = mob.level();
         BlockPos feet = mob.blockPosition();
-        for (Direction dir : Direction.Plane.HORIZONTAL) {
-            BlockPos side = feet.relative(dir);
-            BlockPos top = level.getBlockState(side).is(BlockTags.CLIMBABLE) ? side
-                    : (level.getBlockState(side.below()).is(BlockTags.CLIMBABLE) ? side.below() : null);
-            if (top == null) continue;
-            // "下行入口"的两个条件：最高一节不比脚高（不是往上爬的梯子），
-            //   且整根梯子确实往脚下延伸（真的能往下走，而不是和自己齐平的装饰梯）。
-            if (climbableTopY(level, top) <= feet.getY()
-                    && climbableBottomY(level, top) <= feet.getY() - 2) {
-                return top;
-            }
-        }
-        return null;
+        if (ClimbColumns.isClimbCell(level, feet)) return true;
+        MoveControl control = mob.getMoveControl();
+        if (control == null) return false;
+        return ClimbColumns.isClimbCell(level, BlockPos.containing(
+                control.getWantedX(), control.getWantedY(), control.getWantedZ()));
     }
 
     /**
@@ -1138,6 +1225,15 @@ public final class AiNavUtil {
     public static BlockPos handDoorNear(Mob mob) {
         Level level = mob.level();
         BlockPos base = mob.blockPosition();
+        DoorProbe cached = DOOR_PROBES.get(mob);
+        if (cached != null && cached.tick > mob.tickCount - 3 && cached.base.equals(base)) {
+            if (cached.door == null) return null;
+            BlockState state = level.getBlockState(cached.door);
+            if (state.getBlock() instanceof DoorBlock && isHandOpenable(state)
+                    && cached.door.distToCenterSqr(mob.getX(), mob.getY(), mob.getZ()) <= 16.0) {
+                return cached.door;
+            }
+        }
         Vec3 dm = mob.getDeltaMovement();
         double mx = dm.x;
         double mz = dm.z;
@@ -1167,7 +1263,10 @@ public final class AiNavUtil {
                     double tox = p.getX() + 0.5 - mob.getX();
                     double toz = p.getZ() + 0.5 - mob.getZ();
                     double len = Math.sqrt(tox * tox + toz * toz);
-                    if (len < 0.05) return p;   // 已经站在门洞里
+                    if (len < 0.05) {
+                        DOOR_PROBES.put(mob, new DoorProbe(mob.tickCount, base, p));
+                        return p;   // 已经站在门洞里
+                    }
                     double dot = (tox * mx + toz * mz) / len;
                     // 背后的门不管（除非已经踩在门洞里，需要继续对齐穿过去）
                     if (dot < 0.1 && len > 0.6) continue;
@@ -1182,6 +1281,7 @@ public final class AiNavUtil {
                 }
             }
         }
+        DOOR_PROBES.put(mob, new DoorProbe(mob.tickCount, base, best));
         return best;
     }
 
@@ -1195,7 +1295,7 @@ public final class AiNavUtil {
         BlockState state = level.getBlockState(door);
         double tx = door.getX() + 0.5;
         double tz = door.getZ() + 0.5;
-        net.minecraft.world.phys.AABB shape = state.getCollisionShape(level, door).bounds();
+        AABB shape = state.getCollisionShape(level, door).bounds();
         if (shape.maxX - shape.minX > 1.0E-4 || shape.maxZ - shape.minZ > 1.0E-4) {
             double sizeX = shape.maxX - shape.minX;
             double sizeZ = shape.maxZ - shape.minZ;
@@ -1214,9 +1314,9 @@ public final class AiNavUtil {
 
     /** 让本模组的单位为了攀爬下马（其它生物没有坐骑逻辑，忽略即可）。 */
     private static void dismountForClimb(Mob mob) {
-        if (mob instanceof com.ohhapple.monster_conquest.entity.AbstractArmySoldier soldier) {
+        if (mob instanceof AbstractArmySoldier soldier) {
             soldier.dismountForClimb();
-        } else if (mob instanceof com.ohhapple.monster_conquest.entity.AbstractArmyCommander commander) {
+        } else if (mob instanceof AbstractArmyCommander commander) {
             commander.dismountForClimb();
         }
     }
@@ -1230,4 +1330,29 @@ public final class AiNavUtil {
     public static void stopMovementInput(Mob mob) {
         mob.getMoveControl().setWantedPosition(mob.getX(), mob.getY(), mob.getZ(), 0.0);
     }
+
+    /** 停止导航、清除水平惯性并清掉移动控制器的残留目标。 */
+    public static void haltMovement(Mob mob) {
+        if (mob == null) return;
+        mob.getNavigation().stop();
+        Vec3 dm = mob.getDeltaMovement();
+        mob.setDeltaMovement(0.0, dm.y, 0.0);
+        stopMovementInput(mob);
+    }
+
+    public static void clearCaches() {
+        DOOR_PROBES.clear();
+        LADDER_PROBES.clear();
+        LINE_PROBES.clear();
+    }
+
+    private record DoorProbe(int tick, BlockPos base, @Nullable BlockPos door) {}
+
+    private record LadderProbe(int tick, BlockPos base, double goalY, @Nullable BlockPos rung) {}
+
+    private record LineKey(ResourceLocation dimension, long worldVersion,
+                           long fromX, long fromY, long fromZ,
+                           long toX, long toY, long toZ, int widthHash) {}
+
+    private record LineProbe(long tick, boolean result) {}
 }

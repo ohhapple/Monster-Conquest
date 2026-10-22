@@ -13,7 +13,8 @@ public enum SoldierType {
     GUNNER_INFANTRY(SoldierRole.GUNNER, false),
     GUNNER_CAVALRY(SoldierRole.GUNNER, true),
     MAGE_INFANTRY(SoldierRole.MAGE, false),
-    MAGE_CAVALRY(SoldierRole.MAGE, true);
+    MAGE_CAVALRY(SoldierRole.MAGE, true),
+    FLYING(SoldierRole.FLYING, false);
 
     private final SoldierRole role;
     private final boolean cavalry;
@@ -33,6 +34,7 @@ public enum SoldierType {
     public boolean isThrower() { return role == SoldierRole.THROWER; }
     public boolean isGunner()  { return role == SoldierRole.GUNNER; }
     public boolean isMage()    { return role == SoldierRole.MAGE; }
+    public boolean isFlying()  { return role == SoldierRole.FLYING; }
     public boolean isRanged()  { return role.isRanged(); }
     public boolean isWitch()   { return isThrower(); }
 
@@ -51,6 +53,7 @@ public enum SoldierType {
             case GUNNER_CAVALRY -> GUNNER_INFANTRY;
             case MAGE_INFANTRY -> MAGE_CAVALRY;
             case MAGE_CAVALRY -> MAGE_INFANTRY;
+            case FLYING -> FLYING;
         };
     }
 }

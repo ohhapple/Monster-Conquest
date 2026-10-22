@@ -18,7 +18,14 @@ public final class RecruitableSoldiers {
 
     public record Entry(String id,
                         DeferredHolder<EntityType<?>, ? extends EntityType<? extends Mob>> type,
-                        SoldierType form) {}
+                        SoldierType form,
+                        boolean fixedTier) {
+        public Entry(String id,
+                     DeferredHolder<EntityType<?>, ? extends EntityType<? extends Mob>> type,
+                     SoldierType form) {
+            this(id, type, form, false);
+        }
+    }
 
     public static final List<Entry> ALL = List.of(
             new Entry("soldier_zombie", ModEntities.ZOMBIE_SOLDIER, SoldierType.MELEE_INFANTRY),
@@ -38,6 +45,9 @@ public final class RecruitableSoldiers {
             new Entry("soldier_gunner_rocket", ModEntities.ROCKET_GUNNER_SOLDIER, SoldierType.GUNNER_INFANTRY),
             new Entry("soldier_gunner_sniper", ModEntities.SNIPER_GUNNER_SOLDIER, SoldierType.GUNNER_INFANTRY),
             new Entry("soldier_mace", ModEntities.VILLAGER_MACE_SOLDIER, SoldierType.MELEE_INFANTRY),
-            new Entry("soldier_evoker", ModEntities.EVOKER_SOLDIER, SoldierType.MAGE_INFANTRY)
+            new Entry("soldier_evoker", ModEntities.EVOKER_SOLDIER, SoldierType.MAGE_INFANTRY),
+            new Entry("soldier_piglin_shield", ModEntities.PIGLIN_SHIELD_SOLDIER, SoldierType.MELEE_INFANTRY),
+            new Entry("soldier_vex", ModEntities.VEX_FLYING, SoldierType.FLYING, true),
+            new Entry("soldier_allay", ModEntities.ALLAY_FLYING, SoldierType.FLYING, true)
     );
 }

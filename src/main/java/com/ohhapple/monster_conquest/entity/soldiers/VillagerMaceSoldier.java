@@ -1,30 +1,32 @@
 package com.ohhapple.monster_conquest.entity.soldiers;
 
+import com.ohhapple.monster_conquest.army.CombatRules;
 import com.ohhapple.monster_conquest.army.EquipmentTier;
 import com.ohhapple.monster_conquest.army.SoldierType;
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
 import com.ohhapple.monster_conquest.effect.ArmorBreakEffect;
 import com.ohhapple.monster_conquest.effect.ModEffects;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.PathfinderMob;
-import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.Enchantments;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.LevelEvent;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -97,7 +99,7 @@ public class VillagerMaceSoldier extends AbstractArmySoldier {
         };
     }
 
-    @Override public double getCavalryHorseSpeed()   { return 0.42; }
+    @Override public double getCavalryHorseSpeed()   { return 0.45; }
     @Override public double getMovementSpeed()       { return 0.30; }
     @Override public double getCavalryChargeSpeed()  { return 0.52; }
 
@@ -145,7 +147,9 @@ public class VillagerMaceSoldier extends AbstractArmySoldier {
     @Override
     protected void applyMeleeEffects(LivingEntity victim) {
         if (!(level() instanceof ServerLevel sl)) return;
-        if (victim == null || !victim.isAlive()) return;
+        if (victim == null) return;
+        // 击杀时目标已经 isAlive=false，但落点仍在：震地粒子 / 音效和范围冲击
+        //   必须照常触发；对尸体本身的碎甲由 applyArmorBreak 的存活检查跳过。
 
         // ===================== 粒子 / 音效 =====================
         // 目标骑在坐骑上时 rider.onGround() 恒为 false，只看骑手会漏掉"落地冲击"特效；
@@ -196,7 +200,8 @@ public class VillagerMaceSoldier extends AbstractArmySoldier {
             // 距离衰减：中心 100% → 边缘 40%
             float damage = (float) (baseDamage * (1.0 - 0.6 * (dist / SMASH_RADIUS)));
             if (damage > 0.0f) {
-                other.invulnerableTime = 0;
+                CombatRules
+                        .clearInvulnerabilityForNonManagedAttacker(other, this);
                 other.hurt(meleeDamageSource(), damage);
                 if (!level().isClientSide) ThreatDispatcher.propagate(other, this);
                 // 范围伤害同样附带碎甲

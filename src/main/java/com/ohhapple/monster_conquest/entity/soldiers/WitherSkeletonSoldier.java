@@ -21,8 +21,8 @@ public class WitherSkeletonSoldier extends AbstractArmySoldier {
             case TIER_0 -> 26.0;
             case TIER_1 -> 38.0;
             case TIER_2 -> 52.0;
-            case TIER_3 -> 70.0;
-            case TIER_4 -> 98.0;
+            case TIER_3 -> 62.0;
+            case TIER_4 -> 72.0;
         };
     }
 

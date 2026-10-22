@@ -1,56 +1,89 @@
 package com.ohhapple.monster_conquest.event;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
+import com.ohhapple.monster_conquest.ai.nav.PathProbe;
+import com.ohhapple.monster_conquest.ai.nav.RoutePlanner;
 import com.ohhapple.monster_conquest.army.CombatRules;
 import com.ohhapple.monster_conquest.army.FactionIds;
+import com.ohhapple.monster_conquest.army.FactionRegistry;
 import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
 import com.ohhapple.monster_conquest.army.relation.FactionAlly;
 import com.ohhapple.monster_conquest.army.relation.FactionHostility;
 import com.ohhapple.monster_conquest.army.relation.NativePeace;
 import com.ohhapple.monster_conquest.army.threat.ArmyThreatUtil;
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
+import com.ohhapple.monster_conquest.block.SpawnPointGlobal;
+import com.ohhapple.monster_conquest.config.FactionConfig;
 import com.ohhapple.monster_conquest.effect.GrievousWoundEffect;
 import com.ohhapple.monster_conquest.effect.ModEffects;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+import com.ohhapple.monster_conquest.entity.ManagedUnit;
 import com.ohhapple.monster_conquest.entity.ModEntities;
-import com.ohhapple.monster_conquest.entity.WarHorseEntity;
 import com.ohhapple.monster_conquest.entity.soldiers.EvokerSoldier;
+import com.ohhapple.monster_conquest.entity.soldiers.PiglinShieldSoldier;
+import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.equipment.TacticalMending;
+import com.ohhapple.monster_conquest.item.BulletproofVestItem;
+import com.ohhapple.monster_conquest.item.HatredWandItem;
 import com.ohhapple.monster_conquest.item.WarmClothesItem;
+import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.network.clientbound.sync.SyncRtsSelectionPayload;
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncSquadPayload;
+import com.ohhapple.monster_conquest.path.PathRouteFollower;
+import com.ohhapple.monster_conquest.path.PathRoutes;
+import com.ohhapple.monster_conquest.player.PlayerArmyManager;
+import com.ohhapple.monster_conquest.player.SquadObservationCache;
+import com.ohhapple.monster_conquest.world.NaturalPatrolSpawner;
+import com.ohhapple.monster_conquest.world.RaidSpawner;
+import com.ohhapple.monster_conquest.world.VillageDefense;
+import com.ohhapple.monster_conquest.world.VillagePatrolSpawner;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.Difficulty;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
-import net.minecraft.world.entity.SpawnPlacementTypes;
-import net.minecraft.world.entity.animal.IronGolem;
+import net.minecraft.world.entity.monster.Pillager;
+import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.entity.projectile.EvokerFangs;
-import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.entity.SpawnPlacementTypes;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.ServerLevelAccessor;
-import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.AABB;
+
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
-import net.neoforged.neoforge.event.entity.living.LivingKnockBackEvent;
 import net.neoforged.neoforge.event.entity.EntityAttributeCreationEvent;
-import net.neoforged.neoforge.event.entity.RegisterSpawnPlacementsEvent;
-import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
 import net.neoforged.neoforge.event.entity.living.LivingChangeTargetEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDamageEvent;
+import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.living.LivingHealEvent;
+import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
+import net.neoforged.neoforge.event.entity.living.LivingKnockBackEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerXpEvent;
+import net.neoforged.neoforge.event.entity.RegisterSpawnPlacementsEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.tick.EntityTickEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.network.PacketDistributor;
+
+import java.util.Set;
+import java.util.UUID;
 
 @EventBusSubscriber(modid = Monster_conquest.MODID)
 public class ModEvents {
@@ -96,11 +129,14 @@ public class ModEvents {
         event.put(ModEntities.VILLAGER_MACE_SOLDIER.get(), AbstractArmySoldier.createAttributes().build());
         event.put(ModEntities.VILLAGER_ARCHER_SOLDIER.get(), AbstractArmySoldier.createAttributes().build());
         event.put(ModEntities.VILLAGER_PRIEST_SOLDIER.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.PIGLIN_SHIELD_SOLDIER.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.VEX_FLYING.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ALLAY_FLYING.get(), AbstractArmySoldier.createAttributes().build());
 
         event.put(ModEntities.WAR_HORSE.get(), WarHorseEntity.createAttributes().build());
 
         // 袭击锚点：与原版掠夺者一致的属性（本身不参战，仅作为袭击载体）
-        event.put(ModEntities.RAID_ANCHOR.get(), net.minecraft.world.entity.monster.Pillager.createAttributes().build());
+        event.put(ModEntities.RAID_ANCHOR.get(), Pillager.createAttributes().build());
     }
 
     @SubscribeEvent
@@ -200,18 +236,24 @@ public class ModEvents {
         FactionAlly.ensureDefaults();
         FactionHostility.ensureDefaults();
 
-        com.ohhapple.monster_conquest.player.PlayerArmyManager.setServer(event.getServer());
-        com.ohhapple.monster_conquest.player.PlayerArmyManager.loadFromDisk();
+        PlayerArmyManager.setServer(event.getServer());
+        PlayerArmyManager.loadFromDisk();
+        SpawnPointGlobal.load(event.getServer());
     }
 
     @SubscribeEvent
     public static void onServerStopped(ServerStoppedEvent event) {
-        com.ohhapple.monster_conquest.player.PlayerArmyManager.saveToDisk();
-        com.ohhapple.monster_conquest.player.PlayerArmyManager.setServer(null);
+        RoutePlanner.clearCaches();
+        PathProbe.clearCaches();
+        AiNavUtil.clearCaches();
+        SquadObservationCache.clearAll();
+        PlayerArmyManager.saveToDisk();
+        PlayerArmyManager.setServer(null);
 
         ArmyRelations.setServer(null);
         FactionHostility.setServer(null);
         FactionAlly.setServer(null);
+        SpawnPointGlobal.reset();
 
         // 清空停战窗口：ThreatDispatcher.truceUntilGameTime 是静态字段，
         //   如果不清理，退出世界再开新世界（同一进程）时会残留，
@@ -223,10 +265,10 @@ public class ModEvents {
     public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer p)) return;
         FactionHostility.ensurePlayerDefaults(p.getUUID());
-        var state = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var state = PlayerArmyManager
                 .get(p.getUUID());
 
-        net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(
+        PacketDistributor.sendToPlayer(
                 p,
                 new SyncSquadPayload(state.getSelectedSquad()));
     }
@@ -234,8 +276,9 @@ public class ModEvents {
     @SubscribeEvent
     public static void onPlayerLeave(PlayerEvent.PlayerLoggedOutEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer p)) return;
-        com.ohhapple.monster_conquest.equipment.TacticalMending.clear(p);
-        com.ohhapple.monster_conquest.player.PlayerArmyManager.saveOne(p.getUUID());
+        SquadObservationCache.clearPlayer(p.getUUID());
+        TacticalMending.clear(p);
+        PlayerArmyManager.saveOne(p.getUUID());
     }
 
     /**
@@ -243,9 +286,9 @@ public class ModEvents {
      *   这里只打个标记 —— 真正动手是在下面 XpChange（原版把身上的装备修完之后）。
      */
     @SubscribeEvent
-    public static void onPickupXp(net.neoforged.neoforge.event.entity.player.PlayerXpEvent.PickupXp event) {
+    public static void onPickupXp(PlayerXpEvent.PickupXp event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
-        com.ohhapple.monster_conquest.equipment.TacticalMending.noteOrbPickup(player);
+        TacticalMending.noteOrbPickup(player);
     }
 
     /**
@@ -254,28 +297,28 @@ public class ModEvents {
      *   经验原样给玩家，原版行为不受影响。
      */
     @SubscribeEvent
-    public static void onXpChange(net.neoforged.neoforge.event.entity.player.PlayerXpEvent.XpChange event) {
+    public static void onXpChange(PlayerXpEvent.XpChange event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
-        if (!com.ohhapple.monster_conquest.equipment.TacticalMending.consumeOrbPickup(player)) return;
+        if (!TacticalMending.consumeOrbPickup(player)) return;
         int amount = event.getAmount();
         if (amount <= 0) return;
-        int used = com.ohhapple.monster_conquest.equipment.TacticalMending.repair(player, amount);
+        int used = TacticalMending.repair(player, amount);
         if (used > 0) event.setAmount(amount - used);
     }
 
     @SubscribeEvent
-    public static void onServerTickPost(net.neoforged.neoforge.event.tick.ServerTickEvent.Post event) {
+    public static void onServerTickPost(ServerTickEvent.Post event) {
         // 每 tick 处理延迟的阵营结盟清理（队列空时几乎无开销）
         FactionAlly.processPendingCleanups();
 
         if (event.getServer().getTickCount() % 200 == 0) {
-            com.ohhapple.monster_conquest.player.PlayerArmyManager.saveToDisk();
+            PlayerArmyManager.saveToDisk();
         }
 
         // 每 100 tick 清理空隐藏小队
         if (event.getServer().getTickCount() % 100 == 0) {
             for (ServerPlayer sp : event.getServer().getPlayerList().getPlayers()) {
-                var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+                var st = PlayerArmyManager
                         .getIfPresent(sp.getUUID());
                 if (st != null) st.cleanupEmptyHiddenSquads(sp);
             }
@@ -285,13 +328,12 @@ public class ModEvents {
         if (event.getServer().getTickCount() % 20 == 0) {
             long nowGT = event.getServer().overworld().getGameTime();
             for (ServerPlayer sp : event.getServer().getPlayerList().getPlayers()) {
-                var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+                var st = PlayerArmyManager
                         .getIfPresent(sp.getUUID());
                 // 标记过期时补一次同步，客户端的地面黄框才会跟着消失
                 if (st != null && st.tickRtsMarker(nowGT)) {
-                    net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(sp,
-                            new com.ohhapple.monster_conquest.network.clientbound.sync
-                                    .SyncRtsSelectionPayload(
+                    PacketDistributor.sendToPlayer(sp,
+                            new SyncRtsSelectionPayload(
                                     st.collectRtsSelectedSoldierUuids(sp),
                                     st.getRtsMoveMarker()));
                 }
@@ -299,18 +341,42 @@ public class ModEvents {
 
             // 和平模式：持续清除游戏内建立的仇恨（反击 / 控制工具 / 仇恨工具 / RTS 命令）
             if (event.getServer().getWorldData().getDifficulty()
-                    == net.minecraft.world.Difficulty.PEACEFUL) {
-                com.ohhapple.monster_conquest.item.HatredWandItem
+                    == Difficulty.PEACEFUL) {
+                HatredWandItem
                         .clearRuntimeHatred(event.getServer().overworld());
             }
         }
 
+        // 每 10 秒清理一次无主巡逻路线。只处理已经加载区块中的明确无主目标，
+        //   卸载区块里的单位 / 刷怪点保留路线，避免重新加载后路线丢失。
+        if (event.getServer().getTickCount() % 200 == 0) {
+            for (ServerLevel level : event.getServer().getAllLevels()) {
+                PathRoutes.get(level)
+                        .cleanup(level, level.getGameTime());
+            }
+        }
+
         // 世界生成：村庄巡逻队（村民阵营）自然刷出
-        com.ohhapple.monster_conquest.world.VillagePatrolSpawner.tick(event.getServer());
+        VillagePatrolSpawner.tick(event.getServer());
         // 世界生成：袭击增援（灾厄阵营）
-        com.ohhapple.monster_conquest.world.RaidSpawner.tick(event.getServer());
+        RaidSpawner.tick(event.getServer());
         // 世界生成：野外巡逻队（各阵营，按维度与配置开关）
-        com.ohhapple.monster_conquest.world.NaturalPatrolSpawner.tick(event.getServer());
+        NaturalPatrolSpawner.tick(event.getServer());
+    }
+
+    @SubscribeEvent
+    public static void onLivingDeath(LivingDeathEvent event) {
+        if (!(event.getEntity().level() instanceof ServerLevel level)) return;
+        var routes = PathRoutes.get(level);
+        if (event.getEntity() instanceof AbstractArmySoldier soldier) {
+            routes.clear(PathRoutes.unitKey(
+                    soldier.getUUID()));
+        } else if (event.getEntity() instanceof AbstractArmyCommander commander) {
+            routes.clear(PathRoutes.unitKey(
+                    commander.getUUID()));
+            routes.clear(PathRoutes.armyKey(
+                    commander.getUUID()));
+        }
     }
 
     @SubscribeEvent
@@ -322,22 +388,31 @@ public class ModEvents {
         LivingEntity attacker = CombatRules.damageAttacker(src);
 
         // 防弹衣：被子弹 / 炮弹 / 其它弹射物击中时伤害 -70%，按减免量扣防弹衣耐久
-        if (victim instanceof net.minecraft.server.level.ServerPlayer vestPlayer
-                && (src.getDirectEntity() instanceof net.minecraft.world.entity.projectile.Projectile
-                    || src.is(net.minecraft.tags.DamageTypeTags.IS_PROJECTILE))) {
+        if (victim instanceof ServerPlayer vestPlayer
+                && (src.getDirectEntity() instanceof Projectile
+                    || src.is(DamageTypeTags.IS_PROJECTILE))) {
             float before = event.getAmount();
-            float after = com.ohhapple.monster_conquest.item.BulletproofVestItem
+            float after = BulletproofVestItem
                     .applyProjectileReduction(vestPlayer, before);
             if (after < before) event.setAmount(after);
         }
         // 单位同理（士兵 / 首领）：战术装备栏里放了防弹衣就一起生效
-        if (victim instanceof com.ohhapple.monster_conquest.entity.ManagedUnit vestUnit
-                && (src.getDirectEntity() instanceof net.minecraft.world.entity.projectile.Projectile
-                    || src.is(net.minecraft.tags.DamageTypeTags.IS_PROJECTILE))) {
+        if (victim instanceof ManagedUnit vestUnit
+                && (src.getDirectEntity() instanceof Projectile
+                    || src.is(DamageTypeTags.IS_PROJECTILE))) {
             float before = event.getAmount();
-            float after = com.ohhapple.monster_conquest.item.BulletproofVestItem
+            float after = BulletproofVestItem
                     .applyProjectileReduction(vestUnit, before);
             if (after < before) event.setAmount(after);
+        }
+
+        // 本模组单位发起的任何命中都不使用无敌帧：清当前窗口，
+        //   并让这次伤害结束后也不再产生新窗口。
+        //   这是单位唯一的受击侧实现，攻击方和投射物不再为单位重复清除。
+        boolean managedAttacker = attacker instanceof ManagedUnit;
+        if (managedAttacker) {
+            victim.invulnerableTime = 0;
+            event.setInvulnerabilityTicks(0);
         }
 
         if (attacker == null || attacker == victim) return;
@@ -349,8 +424,8 @@ public class ModEvents {
         }
 
         // 村庄巡逻队保护村民（像铁傀儡一样）：村民被打 → 同村庄的巡逻队立刻锁定攻击者
-        if (victim instanceof net.minecraft.world.entity.npc.Villager villagerVictim) {
-            com.ohhapple.monster_conquest.world.VillageDefense
+        if (victim instanceof Villager villagerVictim) {
+            VillageDefense
                     .onVillagerAttacked(villagerVictim, attacker);
         }
 
@@ -365,9 +440,7 @@ public class ModEvents {
         //   · 玩家被打 → 玩家共享仇恨
         //   · 军团单位（士兵 / 首领，含其召唤的尖牙）打人 → 受害者仇恨该单位，
         //     整个军团与玩家共享仇恨也随之联动（唤魔者尖牙的仇恨归属即此）。
-        boolean armyAttacker = attacker instanceof AbstractArmySoldier
-                || attacker instanceof AbstractArmyCommander;
-        if (armyAttacker || victim instanceof Player) {
+        if (managedAttacker || victim instanceof Player) {
             ThreatDispatcher.propagate(victim, attacker);
         }
     }
@@ -441,17 +514,17 @@ public class ModEvents {
         ResourceLocation fac = ArmyThreatUtil.factionOf(unit);
         if (fac == null) return false;
         String ironGolemKey = EntityType.getKey(EntityType.IRON_GOLEM).toString();
-        java.util.Set<String> enemies;
+        Set<String> enemies;
         if (FactionIds.isPlayer(fac)) {
-            enemies = com.ohhapple.monster_conquest.config.FactionConfig.playerFactionEnemies;
+            enemies = FactionConfig.playerFactionEnemies;
         } else {
-            var faction = com.ohhapple.monster_conquest.army.FactionRegistry.get(fac);
+            var faction = FactionRegistry.get(fac);
             enemies = faction == null ? null : faction.getDefaultHostileEntityTypes();
         }
         if (enemies != null && enemies.contains(ironGolemKey)) return true;
         // 全局"额外仇视生物"名单（配置 defaultEnemies，默认空）
-        java.util.Set<String> global =
-                com.ohhapple.monster_conquest.config.FactionConfig.defaultEnemies;
+        Set<String> global =
+                FactionConfig.defaultEnemies;
         return global != null && global.contains(ironGolemKey);
     }
 
@@ -469,7 +542,7 @@ public class ModEvents {
      *   只有结仇的目标才允许被铁傀儡锁定 —— 其余模组单位默认中立。
      */
     private static boolean golemHasGrudge(
-            net.minecraft.world.entity.animal.IronGolem golem, LivingEntity target) {
+            IronGolem golem, LivingEntity target) {
         if (golem.getTarget() == target) return true;
         LivingEntity unit = target;
         if (target instanceof WarHorseEntity horse) {
@@ -477,8 +550,8 @@ public class ModEvents {
             if (rider instanceof LivingEntity le) {
                 unit = le;
             } else {
-                java.util.UUID owner = horse.getOwnerUuid();
-                if (owner != null && horse.level() instanceof net.minecraft.server.level.ServerLevel sl) {
+                UUID owner = horse.getOwnerUuid();
+                if (owner != null && horse.level() instanceof ServerLevel sl) {
                     Entity e = sl.getEntities().get(owner);
                     if (e instanceof LivingEntity le) unit = le;
                 }
@@ -488,7 +561,7 @@ public class ModEvents {
             if (u == null) continue;
             if (golem.getLastHurtByMob() == u) return true;
             if (u.getLastHurtMob() == golem) return true;
-            if (u instanceof net.minecraft.world.entity.Mob m && m.getTarget() == golem) return true;
+            if (u instanceof Mob m && m.getTarget() == golem) return true;
         }
         return false;
     }
@@ -504,7 +577,7 @@ public class ModEvents {
         if (cur != null && cur.isAlive()) return;
         if (!(golem.level() instanceof ServerLevel sl)) return;
 
-        net.minecraft.world.phys.AABB box = golem.getBoundingBox().inflate(16.0);
+        AABB box = golem.getBoundingBox().inflate(16.0);
         LivingEntity best = null;
         double bestSq = Double.MAX_VALUE;
         for (AbstractArmySoldier s : sl.getEntitiesOfClass(AbstractArmySoldier.class, box)) {
@@ -535,6 +608,13 @@ public class ModEvents {
     @SubscribeEvent
     public static void onLivingKnockBack(LivingKnockBackEvent event) {
         LivingEntity entity = event.getEntity();
+        // 猪灵盾兵举盾时免疫击退；攻击放盾窗口内姿态不可见，仍会正常承受击退。
+        if (entity instanceof PiglinShieldSoldier piglinShield
+                && piglinShield.hasShieldGuardStack()
+                && piglinShield.isShieldGuardPoseVisible()) {
+            event.setCanceled(true);
+            return;
+        }
         if (!entity.isPassenger()) return;
         if (entity instanceof AbstractArmySoldier || entity instanceof AbstractArmyCommander) {
             event.setCanceled(true);
@@ -550,6 +630,8 @@ public class ModEvents {
     public static void onEntityTickPre(EntityTickEvent.Pre event) {
         if (!(event.getEntity() instanceof LivingEntity living)) return;
         if (living.level().isClientSide) return;
+        // 路径点工具：设过巡逻路径的单位按顺序走点
+        PathRouteFollower.tick(living);
         // 铁傀儡：只主动打"仇视铁傀儡"的单位
         if (living instanceof IronGolem golem) {
             tickIronGolemAggro(golem);

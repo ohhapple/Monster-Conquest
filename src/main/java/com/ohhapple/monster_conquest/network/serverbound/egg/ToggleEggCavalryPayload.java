@@ -42,6 +42,10 @@ public record ToggleEggCavalryPayload() implements CustomPacketPayload {
             boolean isSoldier = stack.getItem() instanceof SoldierSpawnEggItem;
             boolean isCommander = stack.getItem() instanceof CommanderSpawnEggItem;
             if (!isSoldier && !isCommander) return;
+            if (isSoldier
+                    && !((SoldierSpawnEggItem) stack.getItem()).canToggleCavalry()) {
+                return;
+            }
 
             if (!player.isCreative()) {
                 player.displayClientMessage(

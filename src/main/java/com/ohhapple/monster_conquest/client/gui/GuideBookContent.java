@@ -5,23 +5,31 @@ import com.ohhapple.monster_conquest.army.Faction;
 import com.ohhapple.monster_conquest.army.FactionRegistry;
 import com.ohhapple.monster_conquest.army.SoldierRole;
 import com.ohhapple.monster_conquest.army.SoldierType;
-import com.ohhapple.monster_conquest.config.FactionConfig;
 import com.ohhapple.monster_conquest.client.input.ModKeyMappings;
+import com.ohhapple.monster_conquest.config.FactionConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
-import com.ohhapple.monster_conquest.entity.ModEntities;
+import com.ohhapple.monster_conquest.entity.commanders.patrol.AbstractPatrolCaptain;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.util.FactionDisplay;
+
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 说明书内容：
@@ -95,19 +103,11 @@ public final class GuideBookContent {
             new Chapter("relations", 0xFFE0A0FF),
             new Chapter("commanders", 0xFFFFB060),
             new Chapter("soldiers", 0xFFA0E0FF),
-            new Chapter("world", 0xFFB0E0B0)
+            new Chapter("world", 0xFFB0E0B0),
+            new Chapter("facilities", 0xFFE0C080),
+            new Chapter("path", 0xFF9ADf9A)
     );
 
-    /** 巡逻队长（不在 Faction#getCommanderTypes 里，单独列出）。 */
-    private static final List<EntityType<? extends AbstractArmyCommander>> PATROL_CAPTAINS = List.of(
-            ModEntities.UNDEAD_PATROL_CAPTAIN.get(),
-            ModEntities.VILLAGER_PATROL_CAPTAIN.get(),
-            ModEntities.ILLAGER_PATROL_CAPTAIN.get(),
-            ModEntities.NETHER_PATROL_CAPTAIN.get(),
-            ModEntities.END_PATROL_CAPTAIN.get(),
-            ModEntities.MONSTER_PATROL_CAPTAIN.get(),
-            ModEntities.NEUTRAL_PATROL_CAPTAIN.get()
-    );
 
     public static List<GuideLine> body(Chapter chapter) {
         return switch (chapter.id()) {
@@ -123,6 +123,10 @@ public final class GuideBookContent {
 
     private static List<GuideLine> staticBody(String id) {
         String raw = Component.translatable("guide.monster_conquest.chapter." + id + ".body").getString();
+        if (id.equals("tutorial") || id.equals("logic") || id.equals("facilities")) {
+            raw += "\n" + Component.translatable(
+                    "guide.monster_conquest.chapter." + id + ".extra").getString();
+        }
         List<GuideLine> out = new ArrayList<>();
         for (String line : raw.split("\n", -1)) {
             String text = line.strip();
@@ -158,7 +162,7 @@ public final class GuideBookContent {
                 .replace("{key.formation5}", keyName(ModKeyMappings.RTS_FORMATION_5));
     }
 
-    private static String keyName(net.minecraft.client.KeyMapping mapping) {
+    private static String keyName(KeyMapping mapping) {
         try {
             return mapping.getTranslatedKeyMessage().getString();
         } catch (Throwable t) {
@@ -219,24 +223,47 @@ public final class GuideBookContent {
 
     private static List<GuideLine> commandersBody() {
         List<GuideLine> out = new ArrayList<>();
+        List<EntityType<?>> all = commanderTypes();
+        List<EntityType<?>> placed = new ArrayList<>();
         for (Faction faction : FactionRegistry.all()) {
             if (faction.isPlayerFaction()) continue;
+            List<EntityType<?>> leaders = new ArrayList<>();
+            List<EntityType<?>> captains = new ArrayList<>();
+            for (EntityType<?> type : all) {
+                AbstractArmyCommander sample = sampleCommander(type);
+                if (sample == null || !faction.getId().equals(sample.getDefaultFactionId())) continue;
+                // 巡逻队长属于各自阵营：排在本阵营首领下面，不再单开一节
+                (sample instanceof AbstractPatrolCaptain ? captains : leaders).add(type);
+            }
+            if (leaders.isEmpty() && captains.isEmpty()) continue;
             out.add(GuideLine.of(heading(factionName(faction.getId())), 0, 8));
-            for (EntityType<? extends AbstractArmyCommander> type : faction.getCommanderTypes()) {
+            for (EntityType<?> type : leaders) {
                 appendCommander(out, type, faction);
+                placed.add(type);
+            }
+            for (EntityType<?> type : captains) {
+                appendCommander(out, type, null);
+                placed.add(type);
             }
         }
-        out.add(GuideLine.of(heading(tr("guide.monster_conquest.section.patrol")), 0, 8));
-        for (EntityType<? extends AbstractArmyCommander> type : PATROL_CAPTAINS) {
-            appendCommander(out, type, null);
+        // 兜底：默认阵营不是已注册阵营的单位也照样列出来，不会漏
+        List<EntityType<?>> rest = new ArrayList<>();
+        for (EntityType<?> type : all) {
+            if (!placed.contains(type)) rest.add(type);
+        }
+        if (!rest.isEmpty()) {
+            out.add(GuideLine.of(heading(tr("guide.monster_conquest.section.other")), 0, 8));
+            for (EntityType<?> type : rest) {
+                appendCommander(out, type, null);
+            }
         }
         return out;
     }
 
     private static void appendCommander(List<GuideLine> out,
-                                        EntityType<? extends AbstractArmyCommander> type,
+                                        EntityType<?> type,
                                         @Nullable Faction faction) {
-        AbstractArmyCommander c = commanderSample(type);
+        AbstractArmyCommander c = sampleCommander(type);
         out.add(GuideLine.of(named(name(type)), 6, 6));
         if (c == null) {
             out.add(GuideLine.of(body(tr("guide.monster_conquest.stat.unknown")), 12));
@@ -272,20 +299,39 @@ public final class GuideBookContent {
 
     private static List<GuideLine> soldiersBody() {
         List<GuideLine> out = new ArrayList<>();
-        for (Faction faction : FactionRegistry.all()) {
-            if (faction.isPlayerFaction()) continue;
-            List<EntityType<? extends AbstractArmySoldier>> types = faction.getSoldierTypes();
-            if (types.isEmpty()) continue;
-            out.add(GuideLine.of(heading(factionName(faction.getId())), 0, 8));
-            for (EntityType<? extends AbstractArmySoldier> type : types) {
-                appendSoldier(out, type);
-            }
+        // 士兵直接平铺介绍：类型清单从实体注册表筛出来，和阵营兵种表无关
+        for (EntityType<?> type : soldierTypes()) {
+            appendSoldier(out, type);
         }
         return out;
     }
 
-    private static void appendSoldier(List<GuideLine> out, EntityType<? extends AbstractArmySoldier> type) {
-        AbstractArmySoldier s = soldierSample(type);
+    // ===================== 单位清单（按注册表筛，不用手工维护） =====================
+
+    /** 全部士兵：遍历模组注册的实体类型，按"是不是士兵"筛 —— 没加入任何阵营的兵也会列出来。 */
+    private static List<EntityType<?>> soldierTypes() {
+        List<EntityType<?>> out = new ArrayList<>();
+        for (EntityType<?> type : BuiltInRegistries.ENTITY_TYPE) {
+            if (isModUnitType(type) && sampleSoldier(type) != null) out.add(type);
+        }
+        return out;
+    }
+
+    /** 全部首领 / 巡逻队长：同样按注册表筛。 */
+    private static List<EntityType<?>> commanderTypes() {
+        List<EntityType<?>> out = new ArrayList<>();
+        for (EntityType<?> type : BuiltInRegistries.ENTITY_TYPE) {
+            if (isModUnitType(type) && sampleCommander(type) != null) out.add(type);
+        }
+        return out;
+    }
+
+    private static boolean isModUnitType(EntityType<?> type) {
+        return Monster_conquest.MODID.equals(EntityType.getKey(type).getNamespace());
+    }
+
+    private static void appendSoldier(List<GuideLine> out, EntityType<?> type) {
+        AbstractArmySoldier s = sampleSoldier(type);
         out.add(GuideLine.of(named(name(type)), 6, 6));
         if (s == null) {
             out.add(GuideLine.of(body(tr("guide.monster_conquest.stat.unknown")), 12));
@@ -293,22 +339,36 @@ public final class GuideBookContent {
         }
         SoldierRole role = s.getRole();
         SoldierType form = s.getDefaultSoldierType();
+        String roleText = tr("tooltip.monster_conquest.role." + role.name().toLowerCase());
+        String formText = role.isFlying()
+                ? tr("tooltip.monster_conquest.form.flying")
+                : tr("tooltip.monster_conquest.form."
+                        + (form.isCavalry() ? "cavalry" : "infantry"));
 
         out.add(GuideLine.of(flatStats(
-                label("guide.monster_conquest.stat.role",
-                        tr("tooltip.monster_conquest.role." + role.name().toLowerCase())),
-                label("guide.monster_conquest.stat.form",
-                        tr("tooltip.monster_conquest.form."
-                                + (form.isCavalry() ? "cavalry" : "infantry")))
+                label("guide.monster_conquest.stat.role", roleText),
+                label("guide.monster_conquest.stat.form", formText)
         ), 12));
 
-        out.add(GuideLine.of(tierStats("guide.monster_conquest.stat.health",
-                t -> s.getMaxHealthForTier(t)), 12));
-        out.add(GuideLine.of(tierStats("guide.monster_conquest.stat.armor",
-                s::getArmorForTier), 12));
-        if (role.isMelee() || role.isDual()) {
-            out.add(GuideLine.of(tierStats("guide.monster_conquest.stat.melee",
-                    s::getMeleeDamageForTier), 12));
+        if (s.hasFixedTier()) {
+            out.add(GuideLine.of(singleStat("guide.monster_conquest.stat.health",
+                    s.getMaxHealthForTier(EquipmentTier.TIER_0)), 12));
+            out.add(GuideLine.of(singleStat("guide.monster_conquest.stat.armor",
+                    s.getArmorForTier(EquipmentTier.TIER_0)), 12));
+        } else {
+            out.add(GuideLine.of(tierStats("guide.monster_conquest.stat.health",
+                    s::getMaxHealthForTier), 12));
+            out.add(GuideLine.of(tierStats("guide.monster_conquest.stat.armor",
+                    s::getArmorForTier), 12));
+        }
+        if (role.isMelee() || role.isDual() || role.isFlying()) {
+            if (s.hasFixedTier()) {
+                out.add(GuideLine.of(singleStat("guide.monster_conquest.stat.melee",
+                        s.getMeleeDamageForTier(EquipmentTier.TIER_0)), 12));
+            } else {
+                out.add(GuideLine.of(tierStats("guide.monster_conquest.stat.melee",
+                        s::getMeleeDamageForTier), 12));
+            }
         }
         if (role.isArcher() || role.isDual() || role.isGunner()) {
             out.add(GuideLine.of(tierStats("guide.monster_conquest.stat.ranged",
@@ -316,7 +376,7 @@ public final class GuideBookContent {
         }
 
         List<MutableComponent> misc = new ArrayList<>();
-        if (role.isMelee() || role.isDual()) {
+        if (role.isMelee() || role.isDual() || role.isFlying()) {
             misc.add(label("guide.monster_conquest.stat.attack_interval",
                     seconds(s.getMeleeAttackIntervalTicks())));
         }
@@ -325,9 +385,11 @@ public final class GuideBookContent {
                     seconds(s.getRangedAttackCooldownTicks())));
         }
         misc.add(label("guide.monster_conquest.stat.speed", num(s.getMovementSpeed())));
-        misc.add(label("guide.monster_conquest.stat.horse", num(s.getCavalryHorseSpeed())));
-        if (s.usesLanceInCavalry()) {
-            misc.add(label("guide.monster_conquest.stat.charge", num(s.getCavalryChargeSpeed())));
+        if (s.canRide()) {
+            misc.add(label("guide.monster_conquest.stat.horse", num(s.getCavalryHorseSpeed())));
+            if (s.usesLanceInCavalry()) {
+                misc.add(label("guide.monster_conquest.stat.charge", num(s.getCavalryChargeSpeed())));
+            }
         }
         out.add(GuideLine.of(flatStats(misc.toArray(new MutableComponent[0])), 12));
 
@@ -355,6 +417,13 @@ public final class GuideBookContent {
                     .withStyle(s -> s.withColor(color)));
         }
         return out;
+    }
+
+    private static MutableComponent singleStat(String labelKey, double value) {
+        return Component.empty()
+                .append(labelComponent(labelKey))
+                .append(Component.literal(" " + num(value))
+                        .withStyle(s -> s.withColor(COLOR_BODY)));
     }
 
     private static MutableComponent labelled(String labelKey, String value) {
@@ -404,14 +473,14 @@ public final class GuideBookContent {
                 .append(Component.literal("：" + text).withStyle(s -> s.withColor(COLOR_TRAIT)));
     }
 
-    private static String factionList(java.util.Set<ResourceLocation> ids) {
+    private static String factionList(Set<ResourceLocation> ids) {
         if (ids.isEmpty()) return tr("guide.monster_conquest.stat.none");
         List<String> names = new ArrayList<>();
         for (ResourceLocation id : ids) names.add(factionName(id));
         return String.join("、", names);
     }
 
-    private static String factionListNames(java.util.Collection<String> ids) {
+    private static String factionListNames(Collection<String> ids) {
         if (ids.isEmpty()) return tr("guide.monster_conquest.stat.none");
         List<String> names = new ArrayList<>();
         for (String raw : ids) {
@@ -426,33 +495,30 @@ public final class GuideBookContent {
     private static final Map<EntityType<?>, Object> SAMPLES = new HashMap<>();
 
     @Nullable
-    private static AbstractArmySoldier soldierSample(EntityType<? extends AbstractArmySoldier> type) {
+    private static Entity sample(@Nullable EntityType<?> type) {
+        if (type == null) return null;
         var level = Minecraft.getInstance().level;
         if (level == null) return null;
         try {
             Object cached = SAMPLES.get(type);
-            if (cached instanceof AbstractArmySoldier s) return s;
-            AbstractArmySoldier created = type.create(level);
-            if (created != null) SAMPLES.put(type, created);
+            if (cached != null) return cached instanceof Entity entity ? entity : null;
+            Entity created = type.create(level);
+            SAMPLES.put(type, created == null ? Boolean.FALSE : created);
             return created;
         } catch (Throwable t) {
+            SAMPLES.put(type, Boolean.FALSE);
             return null;
         }
     }
 
     @Nullable
-    private static AbstractArmyCommander commanderSample(EntityType<? extends AbstractArmyCommander> type) {
-        var level = Minecraft.getInstance().level;
-        if (level == null) return null;
-        try {
-            Object cached = SAMPLES.get(type);
-            if (cached instanceof AbstractArmyCommander c) return c;
-            AbstractArmyCommander created = type.create(level);
-            if (created != null) SAMPLES.put(type, created);
-            return created;
-        } catch (Throwable t) {
-            return null;
-        }
+    private static AbstractArmySoldier sampleSoldier(@Nullable EntityType<?> type) {
+        return sample(type) instanceof AbstractArmySoldier soldier ? soldier : null;
+    }
+
+    @Nullable
+    private static AbstractArmyCommander sampleCommander(@Nullable EntityType<?> type) {
+        return sample(type) instanceof AbstractArmyCommander commander ? commander : null;
     }
 
     /** 去掉多余小数：12.0 → 12，12.5 → 12.5 */

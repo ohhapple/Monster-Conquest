@@ -1,33 +1,53 @@
 package com.ohhapple.monster_conquest.ai.soldier;
 
+import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
-import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
-import com.ohhapple.monster_conquest.entity.WarHorseEntity;
 import com.ohhapple.monster_conquest.entity.commanders.patrol.AbstractPatrolCaptain;
+import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import com.ohhapple.monster_conquest.player.PlayerCommandState;
 import com.ohhapple.monster_conquest.player.PlayerFormationCalculator;
+import com.ohhapple.monster_conquest.player.SquadObservationCache;
+
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
+import java.util.Locale;
+import java.util.UUID;
 
 public class FormationGoal extends Goal {
 
-    private static final double ARRIVE_HORIZ_SQR = 2 * 2;
+    /**
+     * 到位半径（格²）：一格内算"站在点上"。
+     *   容差放到两格时，迷宫 / 绕墙的单位会在离命令点两格的地方（常常还在墙角另一侧）
+     *   被判成已到位停下 —— 表现为"永远进不去 / 停在半路"。
+     */
+    private static final double ARRIVE_HORIZ_SQR = 1.0;
     /** 驻守滞回：已到位后偏离超过这个距离并持续一小段时间才重新起步。 */
     private static final double LEAVE_HORIZ_SQR = 3.5 * 3.5;
+    /**
+     * 玩家指令（前往 / 驻守 / 跟随）的驻守滞回半径：
+     *   只防"在到位边界上被挤一下就走回去"的抖动；比这个远就说明没站到点上，
+     *   要放行重新走过去（按 3.5 格滞回会把半路停下的单位锁死在离目标很远的地方）。
+     */
+    private static final double PLAYER_STATION_HOLD_SQR = 1.5 * 1.5;
     /**
      * 到位判定的高度容差：站在墙顶 / 平台上时，水平方向压在阵位上不算到位 ——
      *   否则站在 10 格高的墙顶、水平距离够了就被判成"已到位"再也不下来。
@@ -66,6 +86,8 @@ public class FormationGoal extends Goal {
     /** 智能绕路检查节流（tick）：原版路径够不到目标时改用方块级 A* 绕路。 */
     private int smartRouteCheckTick = 0;
     private static final int SMART_ROUTE_CHECK_INTERVAL = 10;
+    /** 目的地附近友军占位检查的节流。 */
+    private int slotOccupancyCheckTick = 0;
 
     /** 寻路重发节流：没有路径时 5 tick 重试一次，有路径在走时 10 tick 重发一次。 */
     private int navReissueTick = 0;
@@ -83,7 +105,7 @@ public class FormationGoal extends Goal {
     private static final int PRESS_FAR_WINDOWS = 10;    // ~20 秒（目标还很远，多给点时间绕路）
     private static final int PRESS_NO_PROGRESS_WINDOWS = 5;  // ~10 秒没接近过目标
     private static final int PRESS_HOLD_TICKS = 100;    // 远的就歇 5 秒再重试
-    private static final int PRESS_HOLD_MAX_TICKS = 1200;   // 连续顶住时最多歇 60 秒
+    private static final int PRESS_HOLD_MAX_TICKS = 600;    // 连续顶住时最多歇 30 秒
     private int pressWatchTick = 0;
     private double pressLastX = Double.NaN;
     private double pressLastZ = Double.NaN;
@@ -144,7 +166,8 @@ public class FormationGoal extends Goal {
         if (commander != null && commander.getCurrentThreat() != null
                 && commander.getManualMarchTarget() == null) return false;
         LivingEntity target = soldier.getTarget();
-        return target == null || !target.isAlive();
+        return soldier.isMoveOrderPriorityActive()
+                || target == null || !target.isAlive();
     }
 
     @Override
@@ -159,9 +182,14 @@ public class FormationGoal extends Goal {
         slotReissueTick = 0;
         marchFollow.reset();
         smartRouteCheckTick = 0;
+        slotOccupancyCheckTick = 0;
+        navReissueTick = 0;
+        progressCheckTick = 0;
+        lastGoalDistSq = -1.0;
+        noProgressChecks = 0;
         // 刚接手移动：下一次判定当作"新命令"，确保先把路径对齐到当前命令目标
         lastMoveOrderStamp = Integer.MIN_VALUE;
-        moveOrderLegDone = false;
+        moveOrderLegDone = soldier.hasMoveOrderPointReached();
         pressWatchTick = 0;
         pressLastX = Double.NaN;
         pressLastZ = Double.NaN;
@@ -175,7 +203,11 @@ public class FormationGoal extends Goal {
 
     @Override
     public void stop() {
-        soldier.getNavigation().stop();
+        stopMover();
+        // 阵型 Goal 停下后不能把旧的指定点路线继续留给战斗 Goal / 路线跟随器。
+        if (soldier.isFollowingMarchRoute() || soldier.isMarchRoutePlanning()) {
+            soldier.releaseMarchRoute();
+        }
         soldier.setAtFormationSlot(false);
         if (soldier.getVehicle() instanceof WarHorseEntity horse) {
             horse.setLockedYaw(null);
@@ -224,11 +256,17 @@ public class FormationGoal extends Goal {
             settleTimer = 0;
             return;
         }
-
         double dx = soldier.getX() - slot.x;
         double dz = soldier.getZ() - slot.z;
         double horizSqr = dx * dx + dz * dz;
         logDiag(commander, slot, horizSqr, false);
+
+        // 正在按方块级 A* 路线绕路 → 到达 / 停顿 / 阵位滞回都交给路线控制器判断。
+        //   前置判定会在骑马段终点或窄道前误判“已经到位”，随后清掉下一段步行路线。
+        if (soldier.isFollowingMarchRoute()) {
+            resetSettle();
+            return;
+        }
 
         if (soldier.isAtFormationSlot()) {
             // 驻守滞回：槽位随首领小幅移动 / 被队友挤开时不重新起步，
@@ -246,18 +284,11 @@ public class FormationGoal extends Goal {
             }
             leaveTicks = 0;
             leaveSlot();
-        } else if (horizSqr <= ARRIVE_HORIZ_SQR
-                && Math.abs(soldier.getY() - slot.y) <= ARRIVE_Y_TOLERANCE) {
+        } else if (arrivedAt(slot, horizSqr)) {
             resetSettle();
             // 锁定"最近一次行进方向"（阵型朝向），而不是指挥官当下的朝向：
             //   指挥官站定后会自然环顾，阵型朝向不受影响。
             arrive(commander.getFormationFacing());
-            return;
-        }
-
-        // 正在按方块级 A* 路线绕路 → 不做"磨蹭就停下"的判定（迷宫半路不许停）。
-        if (soldier.isFollowingMarchRoute()) {
-            resetSettle();
             return;
         }
 
@@ -271,7 +302,9 @@ public class FormationGoal extends Goal {
         boolean watery = approachMover.isInWater();
         // 要按"本体宽度"判定：宽体坐骑（战马 1.4 格）擦着墙角走时，中心线是通的、
         //   身体却会撞在角上 —— 只查中心线会把它一直朝墙角里带（单位贴着墙角推的来源之一）。
-        if ((horizSqr < 16.0 || (watery && horizSqr < 576.0))
+        // 上下梯子这一段例外：直线驱动会把单位从梯子列里拖出去（从平台边掉下去）。
+        if (!AiNavUtil.isOnClimbRoute(approachMover)
+                && (horizSqr < 16.0 || (watery && horizSqr < 576.0))
                 && AiNavUtil.hasClearLineForBody(soldier.level(),
                 approachMover.position().add(0, 0.5, 0), slot.add(0, 0.5, 0),
                 approachMover.getBbWidth() * 0.5 + 0.05)) {
@@ -302,6 +335,9 @@ public class FormationGoal extends Goal {
         lastSlotTarget = slot;
         Vec3 navGoal = navGoal(slot.x, targetY, slot.z);
         if (navGoal == null) return;
+        // 旧路径可能已经走完但还留在导航里：节点相同的路径会被原版 Path.sameAs 判成
+        //   "同一条路"而拒绝，单位会原地站着不动。重发前先清掉旧路径。
+        nav.stop();
         nav.moveTo(navGoal.x, navGoal.y, navGoal.z, 1.0D);
         // 只有"确实推进不了"（连续 60 tick 没更接近槽位）才用方块级 A* 绕路；
         //   槽位落在墙里 / 迷宫外够不到时，先按"首领本人"的位置走。
@@ -315,11 +351,19 @@ public class FormationGoal extends Goal {
                             ? commander.position()
                             : new Vec3(slot.x, targetY, slot.z);
                     // 先让 A* 规划绕路；A* 也没路且已经在目标附近（6 格内）才允许停下。
-                    boolean planned = soldier.position().distanceToSqr(fallback) > 16.0
+                    //   目标在另一层（命令点在平台上、人还在下面）时水平接近不算到位：
+                    //   必须让 A* 再找一次路（会经过梯子），否则单位会停在平台下面不动。
+                    boolean sameLevel = atTargetLevel(slot.y);
+                    boolean planned = (!sameLevel || soldier.position().distanceToSqr(fallback) > 16.0)
                             && soldier.startMarchRouteAround(fallback);
-                    if (!planned && horizSqr <= 9.0) {
+                    if (soldier.isMarchRoutePlanning()) return;
+                    if (!planned && sameLevel && horizSqr <= 9.0) {
+                        if (acceptMountedNearSlot(slot, horizSqr, commander.getFormationFacing())) {
+                            return;
+                        }
+                        // 走不到就停住等（不标"已到位"）：路打通后会自己再走过去。
                         resetSettle();
-                        arrive(commander.getFormationFacing());
+                        giveUpAtUnreachable();
                         return;
                     }
                 }
@@ -436,76 +480,147 @@ public class FormationGoal extends Goal {
             yaw = follow.getYRot();
         }
 
-        // 指定点命令（前往 / 驻守）→ 阵型以命令点为中心展开；跟随 → 阵型排在主人身后
-        boolean stationLike = movement == PlayerCommandState.MovementMode.STATION;
-        Vec3 slot = PlayerFormationCalculator.getSlot(player, soldier, ss, mode, anchor, yaw, stationLike);
-        if (slot == null) {
-            if (movement == PlayerCommandState.MovementMode.STATION) {
-                stopMover();
-                return;
-            }
-            defaultFollow(resolveFollowTarget(player, ss));
-            return;
-        }
-
         // 新命令识别：SquadState 的"移动指令代号"变了 = 玩家刚给这个小队 / 单兵下了新命令。
         //   旧路径 / 旧绕路必须当场作废，否则单位会先沿旧路线走到一半才听新命令
         //   （表现为"明明下了新命令，它还朝旧地点走一小会儿"）。
         boolean orderChanged = ss.getMoveOrderStamp() != lastMoveOrderStamp;
         if (orderChanged) {
             lastMoveOrderStamp = ss.getMoveOrderStamp();
-            moveOrderLegDone = false;
+            // 新命令会在 sync 阶段清掉这个标记；同一条命令期间 Goal 重启时
+            //   保持"已到命令点"，不要又折返回锚点。
+            moveOrderLegDone = soldier.hasMoveOrderPointReached();
+            // 新指令不能继承上一条路线失败留下的规划退避；否则个别单位会
+            //   在队友已经开始走时仍停着，直到脱困传送清掉状态才重新规划。
+            soldier.clearMarchRoute();
+            navReissueTick = 0;
+            smartRouteCheckTick = 0;
+            slotOccupancyCheckTick = 0;
+            progressCheckTick = 0;
+            lastGoalDistSq = -1.0;
+            noProgressChecks = 0;
+            lastSlotTarget = null;
             pressStallWindows = 0;
             pressNoProgressWindows = 0;
             pressBestDistSq = Double.MAX_VALUE;
             pressHoldUntil = 0;
             pressHoldTicks = 0;
+            pressWatchTick = 0;
+            pressTravel = 0.0;
+            pressLastX = Double.NaN;
+            pressLastZ = Double.NaN;
+            soldier.tryMountForOpenTravel();
         }
-
         // "前往指定点"命令执行期间：先走到命令点本身 ——
         //   原版寻路走不通时由方块级 A* 绕路，到了命令点附近再按阵型展开。
         //   否则阵型排布会把站位放在锚点后方（线列阵第一排就在锚点后 5 格、后排兵种还更远），
         //   目标点在墙 / 障碍另一侧时站位会落在障碍这一侧 —— 表现为"被地形挡住、不会绕路"。
         //
         // 每名士兵的"去命令点"这一段是一次性的（moveOrderLegDone）：
-        //   判断条件本身是"离命令点还有 6 格以上"，而宽阵型两翼的阵位就在 6 格以外，
-        //   如果不记住"已经到过命令点"，两翼士兵会在两个目标之间无限折返。
+        //   到达后只切一次阵位，避免两翼士兵在命令点和自己的阵位之间反复折返。
         boolean headingToOrderPoint = false;
-        if (movement == PlayerCommandState.MovementMode.STATION && !moveOrderLegDone) {
-            if (ss.isMoveOrderPriorityActive(soldier.getX(), soldier.getZ(),
-                    player.level().getGameTime())) {
-                headingToOrderPoint = true;
-            } else {
-                // 到过命令点附近（或命令超时）→ 这一段结束，之后只奔自己的阵位
+        if (movement == PlayerCommandState.MovementMode.STATION
+                && ss.hasMoveOrder() && !moveOrderLegDone) {
+            double orderDx = soldier.getX() - anchor.x;
+            double orderDz = soldier.getZ() - anchor.z;
+            // 直线距离小于 6 格不等于到达：一格厚的迷宫墙另一侧、上层平台边缘
+            // 都可能满足这个距离。只有真的走到命令点这一层、最后几格没有遮挡，
+            // 才结束“去命令点”阶段；否则单位会提前切阵位，围着外墙站住。
+            if (arrivedAt(anchor, orderDx * orderDx + orderDz * orderDz)) {
                 moveOrderLegDone = true;
+                soldier.markMoveOrderPointReached();
+            } else {
+                headingToOrderPoint = true;
             }
         }
-        Vec3 moveTarget = headingToOrderPoint ? anchor : slot;
+        Vec3 moveTarget;
+        Vec3 formationSlot = null;
+        if (headingToOrderPoint) {
+            // 执行"前往"命令时只认命令点。阵位要等真的进入目标区域后再排，
+            // 否则迷宫 / 平台边缘会在墙外提前生成一批不可达阵位。
+            moveTarget = anchor;
+        } else {
+            // 指定点命令（前往 / 驻守）→ 阵型以命令点为中心展开；跟随 → 阵型排在主人身后
+            boolean stationLike = movement == PlayerCommandState.MovementMode.STATION;
+            Vec3 slot = PlayerFormationCalculator.getSlot(
+                    player, soldier, ss, mode, anchor, yaw, stationLike);
+            if (slot == null) {
+                if (movement == PlayerCommandState.MovementMode.STATION) {
+                    stopMover();
+                    return;
+                }
+                defaultFollow(resolveFollowTarget(player, ss));
+                return;
+            }
+            formationSlot = slot;
+            moveTarget = slot;
+        }
+        if (formationSlot != null
+                && soldier.tickCount >= slotOccupancyCheckTick
+                && soldier.position().distanceToSqr(formationSlot) <= 64.0) {
+            slotOccupancyCheckTick = soldier.tickCount + 20;
+            Vec3 adjusted = PlayerFormationCalculator.resolveOccupiedSlot(
+                    player, soldier, ss, formationSlot, anchor);
+            if (!adjusted.equals(formationSlot)) {
+                moveTarget = adjusted;
+                resetSettle();
+                if (GeneralConfig.debugMovementLog) {
+                    Monster_conquest.LOGGER.info(
+                            "[SLOT-YIELD] t={} id={} old={} new={}",
+                            soldier.tickCount,
+                            soldier.getUUID().toString().substring(0, 8),
+                            formationSlot, adjusted);
+                }
+            }
+        }
 
         double dx = soldier.getX() - moveTarget.x;
         double dz = soldier.getZ() - moveTarget.z;
         double horizSqr = dx * dx + dz * dz;
         logDiag(null, moveTarget, horizSqr, ss.isSoftStation());
 
-        if (horizSqr <= ARRIVE_HORIZ_SQR
-                && Math.abs(soldier.getY() - moveTarget.y) <= ARRIVE_Y_TOLERANCE) {
-            resetSettle();
-            arrive(yaw);
-            return;
-        }
-
-        // 正在按方块级 A* 路线绕路（迷宫 / 绕墙）→ 这就是"正在前进"：
-        //   不做"磨蹭就停下"的判定，否则直线距离不缩短时会在半路停下 / 走走停停。
+        // 路线执行期间由路线控制器负责到达判定，避免骑乘前缀终点被阵位判定提前接管。
         if (soldier.isFollowingMarchRoute()) {
-            // 同一条命令 → 继续按绕路走完（绕路的目标就是命令点，不能因为阵位偏移就丢掉它）
             if (!orderChanged) {
                 resetSettle();
                 return;
             }
-            // 新命令：旧绕路作废，落到下面按新目标重新规划
             soldier.clearMarchRoute();
             soldier.getNavigation().stop();
             AiNavUtil.stopMovementInput(soldier.getVehicle() instanceof Mob m ? m : soldier);
+        }
+
+        // 已在阵位：小范围偏移（被队友挤开 / 命令点微动）不重新起步，与 NPC 驻守同一套滞回。
+        //   没有这一层时，单位在到位边界上一被挤出去就立刻走回来 —— 表现为原地小幅度蹭。
+        if (soldier.isAtFormationSlot() && !orderChanged) {
+            if (horizSqr <= PLAYER_STATION_HOLD_SQR && atTargetLevel(moveTarget.y)) {
+                leaveTicks = 0;
+                resetSettle();
+                stopMover();
+                return;
+            }
+            if (++leaveTicks <= LEAVE_DELAY_TICKS) {
+                resetSettle();
+                stopMover();
+                return;
+            }
+            leaveTicks = 0;
+            leaveSlot();
+        }
+
+        if (arrivedAt(moveTarget, horizSqr)) {
+            resetSettle();
+            if (headingToOrderPoint) {
+                // 到达命令点只是"前往"这一段完成，还不是个人阵位。
+                //   若在这里标成已到阵位，下一步会先停 10 tick 再展开队形，
+                //   期间还会恢复索敌（表现为到了目的地却迟一拍才动）。
+                moveOrderLegDone = true;
+                soldier.markMoveOrderPointReached();
+                leaveSlot();
+                stopMover();
+            } else {
+                arrive(yaw);
+            }
+            return;
         }
 
         leaveSlot();
@@ -519,7 +634,8 @@ public class FormationGoal extends Goal {
         Mob approachMover = soldier.getVehicle() instanceof Mob m ? m : soldier;
         boolean watery = approachMover.isInWater();
         // 同上：按本体宽度判定（宽体坐骑擦墙角时交给寻路绕行，不做直线冲刺）。
-        if ((horizSqr < 16.0 || (watery && horizSqr < 576.0))
+        if (!AiNavUtil.isOnClimbRoute(approachMover)
+                && (horizSqr < 16.0 || (watery && horizSqr < 576.0))
                 && AiNavUtil.hasClearLineForBody(soldier.level(),
                 approachMover.position().add(0, 0.5, 0), moveTarget.add(0, 0.5, 0),
                 approachMover.getBbWidth() * 0.5 + 0.05)) {
@@ -546,6 +662,8 @@ public class FormationGoal extends Goal {
         AiNavUtil.stopMovementInput(soldier.getVehicle() instanceof Mob m ? m : soldier);
         Vec3 navGoal = navGoal(moveTarget.x, targetY, moveTarget.z);
         if (navGoal == null) return;
+        // 同上：清掉可能残留的旧（已走完）路径，避免新路径因节点相同被拒。
+        soldier.getNavigation().stop();
         soldier.getNavigation().moveTo(navGoal.x, navGoal.y, navGoal.z, 1.0D);
         // 原版刚给的路径同样够不到目标（连路都没有 / 半路路径 / 门被当成台阶）
         //   → 直接改走方块级 A* 绕路（迷宫入口就靠这一步）。
@@ -562,11 +680,20 @@ public class FormationGoal extends Goal {
                     //   只有 A* 也规划不出路、而且已经在目标附近（6 格内）时，
                     //   才允许"就地停下" —— 顺序反了会导致单位在迷宫墙外停下、
                     //   永远轮不到 A* 找入口。
-                    boolean planned = soldier.position().distanceToSqr(routeTarget) > 16.0
-                            && soldier.startMarchRouteAround(routeTarget);
-                    if (!planned && horizSqr <= 9.0) {
+                    //   目标在另一层（命令点在平台上、人还在下面）时水平接近不算到位：
+                    //   必须让 A* 再找一次路（会经过梯子），否则单位会停在平台下面不动。
+                    boolean sameLevel = atTargetLevel(moveTarget.y);
+                    boolean needsRoute = !sameLevel
+                            || soldier.position().distanceToSqr(routeTarget) > 16.0;
+                    boolean planned = needsRoute && soldier.startMarchRouteAround(routeTarget);
+                    if (soldier.isMarchRoutePlanning()) return;
+                    if (!planned && sameLevel && horizSqr <= 9.0) {
+                        if (acceptMountedNearSlot(moveTarget, horizSqr, yaw)) {
+                            return;
+                        }
+                        // 走不到就停住等（不标"已到位"）：路打通后会自己再走过去。
                         resetSettle();
-                        arrive(yaw);
+                        giveUpAtUnreachable();
                         return;
                     }
                 }
@@ -578,35 +705,11 @@ public class FormationGoal extends Goal {
     }
 
     private Vec3 computeSquadCentroid(Player player, int squadId) {
-        double sx = soldier.getX(), sy = soldier.getY(), sz = soldier.getZ();
-        double count = 1;
-        double range = GeneralConfig.armyFollowRange;
-        for (AbstractArmySoldier other : player.level().getEntitiesOfClass(
-                AbstractArmySoldier.class,
-                soldier.getBoundingBox().inflate(range),
-                s -> s != soldier
-                        && s.isAlive()
-                        && player.getUUID().equals(s.getCommanderUuid().orElse(null))
-                        && s.getSquadId() == squadId)) {
-            sx += other.getX();
-            sy += other.getY();
-            sz += other.getZ();
-            count++;
-        }
-        return new Vec3(sx / count, sy / count, sz / count);
+        return SquadObservationCache.centroid(player, soldier, squadId);
     }
 
     private boolean anySquadMateInCombat(Player player, int squadId) {
-        for (AbstractArmySoldier other : player.level().getEntitiesOfClass(
-                AbstractArmySoldier.class,
-                player.getBoundingBox().inflate(GeneralConfig.armyFollowRange),
-                s -> s.isAlive()
-                        && player.getUUID().equals(s.getCommanderUuid().orElse(null))
-                        && s.getSquadId() == squadId)) {
-            var t = other.getTarget();
-            if (t != null && t.isAlive()) return true;
-        }
-        return false;
+        return SquadObservationCache.anyInCombat(player, squadId);
     }
 
     /**
@@ -617,24 +720,8 @@ public class FormationGoal extends Goal {
      *   找不到正在战斗的队友 → 原地停下（下一个 tick 会重新检查）。
      */
     private void approachNearestFightingMate(Player player, int squadId) {
-        AbstractArmySoldier nearestMate = null;
-        double nearestDistSq = Double.MAX_VALUE;
-
-        for (AbstractArmySoldier other : player.level().getEntitiesOfClass(
-                AbstractArmySoldier.class,
-                player.getBoundingBox().inflate(GeneralConfig.armyFollowRange),
-                s -> s != soldier
-                        && s.isAlive()
-                        && player.getUUID().equals(s.getCommanderUuid().orElse(null))
-                        && s.getSquadId() == squadId)) {
-            var t = other.getTarget();
-            if (t == null || !t.isAlive()) continue;
-            double d = soldier.distanceToSqr(other);
-            if (d < nearestDistSq) {
-                nearestDistSq = d;
-                nearestMate = other;
-            }
-        }
+        AbstractArmySoldier nearestMate = SquadObservationCache.nearestFightingMate(
+                player, soldier, squadId);
 
         if (nearestMate == null) {
             // 没有正在战斗的队友 → 原地停下，下一个 tick 再判定
@@ -662,6 +749,7 @@ public class FormationGoal extends Goal {
         double ty = groundY(matePos.x, matePos.z, matePos.y);
         Vec3 navGoal = navGoal(matePos.x, ty, matePos.z);
         if (navGoal == null) return;
+        soldier.getNavigation().stop();
         soldier.getNavigation().moveTo(navGoal.x, navGoal.y, navGoal.z, 1.0D);
     }
 
@@ -711,6 +799,7 @@ public class FormationGoal extends Goal {
         AiNavUtil.stopMovementInput(soldier.getVehicle() instanceof Mob m ? m : soldier);
         Vec3 navGoal = navGoal(routeTarget.x, routeTarget.y, routeTarget.z);
         if (navGoal == null) return;
+        soldier.getNavigation().stop();
         soldier.getNavigation().moveTo(navGoal.x, navGoal.y, navGoal.z, 1.0D);
         // 原版刚给的路径仍然够不到目标 → 同样交给方块级 A* 绕路。
         if (trySmartRoute(routeTarget, false)) return;
@@ -725,7 +814,7 @@ public class FormationGoal extends Goal {
      */
     private static LivingEntity resolveFollowTarget(Player owner,
                                                     PlayerCommandState.SquadState ss) {
-        java.util.UUID id = ss.getFollowTargetUuid();
+        UUID id = ss.getFollowTargetUuid();
         if (id == null || id.equals(owner.getUUID())) return owner;
         if (!(owner.level() instanceof ServerLevel sl)) return owner;
         Entity e = sl.getEntities().get(id);
@@ -770,26 +859,15 @@ public class FormationGoal extends Goal {
         AiNavUtil.stopMovementInput(soldier.getVehicle() instanceof Mob m ? m : soldier);
         Vec3 navGoal = navGoal(player.getX(), targetY, player.getZ());
         if (navGoal == null) return;
+        soldier.getNavigation().stop();
         soldier.getNavigation().moveTo(navGoal.x, navGoal.y, navGoal.z, 1.0D);
     }
 
     // ===================== 辅助 =====================
 
-    /**
-     * 目标在下方、身边能找到可下的梯子时，把寻路目标换成"登梯口"（梯子旁能站的一格）；
-     *   否则照常按原目标寻路。目标在下方时原版只会给一条"走到平台边缘就停"的半路路径，
-     *   单位会一直站在边缘下不去。
-     */
+    /** 寻路目标：梯子的上下由带梯子的寻路 + 梯子感知移动控制器负责，这里原样返回。 */
     private Vec3 navGoal(double x, double y, double z) {
-        Vec3 target = new Vec3(x, y, z);
-        // 正在下梯子：交给实体自身的下滑逻辑，上层不要发寻路（否则会往平台 / 砖块方向顶）。
-        if (AiNavUtil.isDescendingOnLadder(soldier, target)) {
-            soldier.getNavigation().stop();
-            soldier.clearMarchRoute();
-            return null;
-        }
-        Vec3 access = AiNavUtil.descentAccessPoint(soldier, target);
-        return access != null ? access : target;
+        return new Vec3(x, y, z);
     }
 
     /**
@@ -804,7 +882,7 @@ public class FormationGoal extends Goal {
      */
     private boolean trySmartRoute(Vec3 routeTarget, boolean allowMissingPath) {
         if (soldier.tickCount < smartRouteCheckTick) return false;   // 节流：每 10 tick 最多查一次
-        net.minecraft.world.level.pathfinder.Path path = soldier.getNavigation().getPath();
+        Path path = soldier.getNavigation().getPath();
         if (path == null && !allowMissingPath) return false;
         // 已经贴着绕路目标：交给到达判定，不再重复规划
         if (soldier.position().distanceToSqr(routeTarget) <= 2.25) return false;
@@ -813,7 +891,12 @@ public class FormationGoal extends Goal {
                 || AiNavUtil.pathStepsOverDoor(soldier, path);
         if (!cannotReach) return false;
         smartRouteCheckTick = soldier.tickCount + SMART_ROUTE_CHECK_INTERVAL;
-        return soldier.startMarchRouteAround(routeTarget);
+        boolean planned = soldier.startMarchRouteAround(routeTarget);
+        if (!planned && soldier.isMarchRoutePlanning()) {
+            // 规划在后台继续，当前原版路径照常前进；路线完成时会接到单位当前位置。
+            return false;
+        }
+        return planned;
     }
 
     /**
@@ -878,14 +961,20 @@ public class FormationGoal extends Goal {
                 : nav.getPath().getNextNodePos().toString();
         String locked = soldier.getVehicle() instanceof WarHorseEntity horse
                 && horse.getLockedYaw() != null
-                ? String.format(java.util.Locale.ROOT, "%.1f", horse.getLockedYaw()) : "-";
-        com.ohhapple.monster_conquest.Monster_conquest.LOGGER.info(
-                "[MOVE-DIAG] t={} side={} mover={} pos=({},{},{}) rot={} mounted={} soft={} route={} navDone={} path={} next={} wanted=({},{},{}) delta=({},{},{}) lockedYaw={} slot={} slotDist={}",
+                ? String.format(Locale.ROOT, "%.1f", horse.getLockedYaw()) : "-";
+        boolean mountFit = AiNavUtil.mountFitsAt(soldier.level(), soldier,
+                mover.getX(), mover.getY(), mover.getZ());
+        Monster_conquest.LOGGER.info(
+                "[MOVE-DIAG] t={} unit={} id={} side={} mover={} pos=({},{},{}) rot={} mounted={} open={} mountFit={} dismountCd={} soft={} route={} planning={} navDone={} path={} next={} wanted=({},{},{}) delta=({},{},{}) lockedYaw={} slot={} slotDist={}",
                 soldier.tickCount,
+                soldier.getType().toShortString(),
+                soldier.getUUID().toString().substring(0, 8),
                 commander != null ? "NPC" : "PLAYER",
                 mover.getType().toShortString(),
                 fmt(mover.getX()), fmt(mover.getY()), fmt(mover.getZ()), fmt(mover.getYRot()),
-                soldier.isPassenger(), soft, soldier.isFollowingMarchRoute(),
+                soldier.isPassenger(), soldier.isOpenTerrainCached(), mountFit,
+                soldier.getTerrainDismountCooldown(), soft, soldier.isFollowingMarchRoute(),
+                soldier.isMarchRoutePlanning(),
                 nav.isDone(), pathTarget, nextNode,
                 fmt(mover.getMoveControl().getWantedX()),
                 fmt(mover.getMoveControl().getWantedY()),
@@ -897,7 +986,58 @@ public class FormationGoal extends Goal {
     }
 
     private static String fmt(double value) {
-        return String.format(java.util.Locale.ROOT, "%.2f", value);
+        return String.format(Locale.ROOT, "%.2f", value);
+    }
+
+    /**
+     * 是否已经站在目标那一层：脚下有实地 + 高度差在容差内。
+     *   挂在梯子半路时不算到位 —— 脚没落地，否则单位会被判成"已到位"停在梯子中间下不来。
+     *   骑乘时看的是坐骑（真正在走的实体）：骑手本人永远不 onGround，
+     *   按骑手判定会让骑兵永远"到不了位"，阵位目标一直重发 —— 马原地转圈。
+     */
+    private boolean atTargetLevel(double targetY) {
+        Mob mover = soldier.getVehicle() instanceof Mob m ? m : soldier;
+        return mover.onGround()
+                && Math.abs(mover.getY() - targetY) <= ARRIVE_Y_TOLERANCE;
+    }
+
+    /**
+     * 骑乘单位长时间停在阵位边缘时，接受一个安全且看得见目标的落脚点。
+     *   马体宽、转向慢，原版导航可能无法生成最后几格路径；继续重试只会让整队
+     *   在同一个位置反复停走。只在目标 3 格内、同层、马能站下且直线无墙时生效。
+     */
+    private boolean acceptMountedNearSlot(Vec3 slot, double horizSqr, float yaw) {
+        if (!(soldier.getVehicle() instanceof WarHorseEntity)) return false;
+        if (horizSqr > 9.0 || !atTargetLevel(slot.y)) return false;
+        WarHorseEntity horse = (WarHorseEntity) soldier.getVehicle();
+        if (!AiNavUtil.mountFitsAt(soldier.level(), soldier,
+                horse.getX(), horse.getY(), horse.getZ())) return false;
+        if (!AiNavUtil.hasClearLineForBody(soldier.level(),
+                horse.position().add(0.0, 0.5, 0.0),
+                slot.add(0.0, 0.5, 0.0),
+                horse.getBbWidth() * 0.5 + 0.05)) return false;
+        arrive(yaw);
+        return true;
+    }
+
+    /**
+     * 是否算"走到位"：水平一格内、和目标同层，且不是"半路假到位"。
+     *   · 还踩着一条通向目标的未走完路径 → 先把最后一段走完（避免在拐角处被拦住）；
+     *   · 目标与当前位置之间隔着方块（栅栏 / 墙角）→ 不算到位，交给寻路绕过去。
+     *   距离已经贴脸（0.6 格内）时直接算到位，避免在最后一点点上反复起步。
+     */
+    private boolean arrivedAt(Vec3 target, double horizSqr) {
+        if (horizSqr > ARRIVE_HORIZ_SQR || !atTargetLevel(target.y)) return false;
+        if (horizSqr <= 0.36) return true;
+        Mob mover = soldier.getVehicle() instanceof Mob m ? m : soldier;
+        Path path = mover.getNavigation().getPath();
+        if (path != null && !path.isDone() && path.canReach()
+                && path.getTarget().distToCenterSqr(target.x, target.y, target.z) < 4.0) {
+            return false;
+        }
+        return AiNavUtil.hasClearLineForBody(soldier.level(),
+                mover.position().add(0.0, 0.5, 0.0), target.add(0.0, 0.5, 0.0),
+                mover.getBbWidth() * 0.5 + 0.05);
     }
 
     private void arrive(float yaw) {
@@ -926,6 +1066,7 @@ public class FormationGoal extends Goal {
         if (mover != soldier) {
             Vec3 dmRider = soldier.getDeltaMovement();
             soldier.setDeltaMovement(0, dmRider.y, 0);
+            AiNavUtil.stopMovementInput(soldier);
         }
     }
 
@@ -975,10 +1116,21 @@ public class FormationGoal extends Goal {
             return false;
         }
 
-        net.minecraft.world.level.pathfinder.Path path = mover.getNavigation().getPath();
+        Path path = mover.getNavigation().getPath();
         boolean hasFullPath = path != null && path.canReach();
         if (hasFullPath || soldier.isMarchRoutePlanDeferred()) {
             // 目标有完整路径（只是挤在人群 / 门口）/ 绕路规划只是被节流推迟 → 继续走
+            pressStallWindows = 0;
+            pressNoProgressWindows = 0;
+            pressBestDistSq = Math.min(pressBestDistSq, horizSqr);
+            return false;
+        }
+        // 玩家单位去远处的迷宫 / 单格宽通道：原版常常只能给半路路径，而方块级 A*
+        //   的规划还可能被全局预算排队。这里一旦按“推不动”进入长按停，单位会错过
+        //   后续规划，最后只能靠脱困传送；这种情况下保持继续尝试，交给 A* / 重发路径。
+        if (soldier.isPlayerArmy()
+                && (horizSqr > 9.0
+                    || AiNavUtil.isNarrowPassage(soldier.level(), mover.blockPosition()))) {
             pressStallWindows = 0;
             pressNoProgressWindows = 0;
             pressBestDistSq = Math.min(pressBestDistSq, horizSqr);
@@ -994,6 +1146,10 @@ public class FormationGoal extends Goal {
             pressBestDistSq = horizSqr;
             pressNoProgressWindows = 0;
             pressHoldTicks = 0;
+        } else if (soldier.isFollowingMarchRoute() && !stalled) {
+            // 正在按绕路路线移动：绕墙 / 进迷宫时直线距离会先变远，这不是"没进展"。
+            //   照常累计的话，长绕路走到一半就会被这里的"放弃"判定叫停（表现为蹭一段停一下）。
+            pressNoProgressWindows = 0;
         } else {
             pressNoProgressWindows++;
         }
@@ -1001,7 +1157,7 @@ public class FormationGoal extends Goal {
         boolean targetAbove = target.y >= mover.getY() + 2.0;
         int need = targetAbove ? PRESS_ABOVE_WINDOWS
                 : (horizSqr <= 100.0 ? PRESS_NEAR_WINDOWS : PRESS_FAR_WINDOWS);
-        // "一直不接近目标"在跟随绕路路线时同样要计入：贴着墙原地推的时候，
+        // "一直不接近目标"在跟随绕路路线时也要计入（原地推墙的那几秒）：
         //   绕路路线会被反复丢弃又重建，只统计"没有路线"的窗口会导致永远不触发。
         boolean giveUp = pressStallWindows >= need
                 || pressNoProgressWindows >= PRESS_NO_PROGRESS_WINDOWS;
@@ -1010,28 +1166,41 @@ public class FormationGoal extends Goal {
         pressStallWindows = 0;
         pressNoProgressWindows = 0;
         pressBestDistSq = horizSqr;
-        if (horizSqr <= 100.0) {
-            // 目标就在旁边但上不去 / 进不去 → 就地站住
-            resetSettle();
-            arrive(soldier.getYRot());
-        } else {
-            // 还远：歇一会儿再试；连续触发时等待时间翻倍，避免"推一下、被拉回、再推"的循环
-            pressHoldTicks = pressHoldTicks <= 0
-                    ? PRESS_HOLD_TICKS
-                    : Math.min(pressHoldTicks * 2, PRESS_HOLD_MAX_TICKS);
-            pressHoldUntil = soldier.tickCount + pressHoldTicks;
-            stopMover();
+        giveUpAtUnreachable();
+        if (GeneralConfig.debugMovementLog) {
+            Monster_conquest.LOGGER.info(
+                    "[PRESS-HOLD] t={} pos=({},{},{}) target=({},{},{}) hold={}"
+                            + " following={} pathCanReach={} narrow={}",
+                    soldier.tickCount,
+                    fmt(mover.getX()), fmt(mover.getY()), fmt(mover.getZ()),
+                    fmt(target.x), fmt(target.y), fmt(target.z), pressHoldTicks,
+                    soldier.isFollowingMarchRoute(),
+                    hasFullPath,
+                    AiNavUtil.isNarrowPassage(soldier.level(), mover.blockPosition()));
         }
         return true;
     }
 
+    /**
+     * 目标确实走不到（隔着墙 / 封闭空间 / 门没开）：就地停住，并逐步拉长重试间隔。
+     *   这里不能标"已到位"、也不能锁朝向 —— 那会让单位看起来"隔着墙就算到了"，
+     *   而且路后来打通（开门、拆墙、绕路可行）时它也不会再尝试走过去。
+     */
+    private void giveUpAtUnreachable() {
+        pressHoldTicks = pressHoldTicks <= 0
+                ? PRESS_HOLD_TICKS
+                : Math.min(pressHoldTicks * 2, PRESS_HOLD_MAX_TICKS);
+        pressHoldUntil = soldier.tickCount + pressHoldTicks;
+        stopMover();
+    }
+
     /** 身边一格内（同一层 / 上下 1 格）有没有梯子、脚手架、藤蔓 —— 有就交给攀爬逻辑，不当推墙处理。 */
     private boolean nearClimbable(Mob mover) {
-        net.minecraft.core.BlockPos base = mover.blockPosition();
-        for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.Plane.HORIZONTAL) {
-            net.minecraft.core.BlockPos side = base.relative(dir);
+        BlockPos base = mover.blockPosition();
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            BlockPos side = base.relative(dir);
             for (int dy = -1; dy <= 1; dy++) {
-                if (mover.level().getBlockState(side.above(dy)).is(net.minecraft.tags.BlockTags.CLIMBABLE)) {
+                if (mover.level().getBlockState(side.above(dy)).is(BlockTags.CLIMBABLE)) {
                     return true;
                 }
             }
@@ -1045,7 +1214,19 @@ public class FormationGoal extends Goal {
         int gy = soldier.level().getHeight(
                 Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, gx, gz);
         if (Math.abs(gy - fallbackY) > 6.0) return fallbackY;
+        // 命令点在平台 / 屋顶上，而底下那格地面被上方的方块盖住（在平台底下、被墙围住）：
+        //   吸到地面等于把单位指到进不去的地方，只会让它绕着墙怼 —— 保持命令高度。
+        if (fallbackY > gy + 1.0 && isCoveredAbove(gx, gy, gz)) return fallbackY;
         return gy;
+    }
+
+    /** 这个落脚点头顶不远（2~5 格内）有没有实心方块盖着（在平台 / 屋顶下面）。 */
+    private boolean isCoveredAbove(int x, int y, int z) {
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (int dy = 2; dy <= 5; dy++) {
+            if (soldier.level().getBlockState(pos.set(x, y + dy, z)).isSolid()) return true;
+        }
+        return false;
     }
 
     private static void lockYaw(AbstractArmySoldier soldier, float yaw) {

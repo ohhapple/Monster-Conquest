@@ -1,12 +1,15 @@
 package com.ohhapple.monster_conquest.army;
 
 import com.ohhapple.monster_conquest.config.FactionConfig;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.raid.Raider;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -134,7 +137,7 @@ public final class ArmyAnchor {
     private static boolean isRaidUnit(Entity target) {
         ArmyAnchor targetAnchor = anchorOf(target);
         if (targetAnchor != null && targetAnchor.isRaid()) return true;
-        if (target instanceof net.minecraft.world.entity.raid.Raider raider) {
+        if (target instanceof Raider raider) {
             return raider.hasActiveRaid();
         }
         return false;

@@ -33,6 +33,13 @@ public class RtsSelectionRenderer {
         if (!RtsClientState.isRtsMode()) return;
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
 
+        // 记录本帧实际使用的投影 / 视图矩阵和相机位置，供输入阶段的屏幕射线使用。
+        //   直接用 FOV 选项估算会在疾跑、速度效果或其它视角修饰下产生边缘偏移。
+        RtsClientState.setMatrices(
+                event.getProjectionMatrix(),
+                event.getModelViewMatrix(),
+                event.getCamera().getPosition());
+
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) return;
 

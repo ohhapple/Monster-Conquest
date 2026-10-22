@@ -25,6 +25,8 @@ public final class ModSounds {
             register("gun.rocket_launch");
     public static final DeferredHolder<SoundEvent, SoundEvent> SNIPER_SHOOT =
             register("gun.sniper_shoot");
+    public static final DeferredHolder<SoundEvent, SoundEvent> BULLET_FLYBY =
+            register("gun.bullet_flyby");
     public static final DeferredHolder<SoundEvent, SoundEvent> BULLET_HIT =
             register("gun.bullet_hit");
     public static final DeferredHolder<SoundEvent, SoundEvent> ROCKET_EXPLODE =

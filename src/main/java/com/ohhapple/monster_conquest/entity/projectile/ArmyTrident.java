@@ -1,9 +1,11 @@
 package com.ohhapple.monster_conquest.entity.projectile;
 
-import com.ohhapple.monster_conquest.config.CombatConfig;
+import com.ohhapple.monster_conquest.army.CombatRules;
 import com.ohhapple.monster_conquest.army.FactionIds;
+import com.ohhapple.monster_conquest.config.CombatConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
@@ -21,12 +23,13 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
+import java.util.function.Consumer;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.function.Consumer;
 
 /**
  * 军团三叉戟。同 ArmyArrow：完全自研命中处理，不调 super.onHitEntity。
@@ -129,9 +132,9 @@ public class ArmyTrident extends ThrownTrident {
             return;
         }
 
-        living.invulnerableTime = 0;
-
         Entity owner = this.getOwner();
+        CombatRules
+                .clearInvulnerabilityForNonManagedAttacker(living, owner);
         DamageSource source = this.damageSources().trident(
                 this, owner != null ? owner : this);
         float dmg = (float) this.getBaseDamage();

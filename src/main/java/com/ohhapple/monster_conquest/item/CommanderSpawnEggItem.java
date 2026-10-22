@@ -42,6 +42,9 @@ public class CommanderSpawnEggItem extends Item {
         this.typeSupplier = typeSupplier;
     }
 
+    /** 蛋自带的阵营（蛋里没有阵营数据时用）。 */
+    public ResourceLocation getDefaultFaction() { return defaultFaction; }
+
     @Override
     public InteractionResult useOn(UseOnContext ctx) {
         Level level = ctx.getLevel();
@@ -58,8 +61,7 @@ public class CommanderSpawnEggItem extends Item {
                 ? clicked
                 : clicked.relative(face);
 
-        EntityType<? extends AbstractArmyCommander> type = typeSupplier.get();
-        AbstractArmyCommander commander = type.create(sl);
+        AbstractArmyCommander commander = createCommanderFromEgg(sl, stack);
         if (commander == null) return InteractionResult.PASS;
 
         float yaw = ctx.getPlayer() != null ? ctx.getPlayer().getYRot() : 0f;
@@ -71,8 +73,6 @@ public class CommanderSpawnEggItem extends Item {
                 ? defaultFaction
                 : ResourceLocation.tryParse(override);
         if (faction != null) commander.setFactionId(faction);
-        // 收纳工具做出来的蛋带着单位界面里配置的手动装备 / 战术装备
-        commander.readGearTag(tag);
 
         sl.addFreshEntity(commander);
 
@@ -86,6 +86,20 @@ public class CommanderSpawnEggItem extends Item {
 
         if (ctx.getPlayer() == null || !ctx.getPlayer().getAbilities().instabuild) stack.shrink(1);
         return InteractionResult.SUCCESS;
+    }
+
+    /**
+     * 刷怪蛋 → 首领实例：收纳工具做出来的蛋带着单位界面里配置的手动装备 / 战术装备，一并还原。
+     *   不含阵营兜底、也不加进世界 —— 交给调用方决定（刷怪蛋放置 / 刷怪点模板都走这里）。
+     */
+    @Nullable
+    public static AbstractArmyCommander createCommanderFromEgg(ServerLevel level, ItemStack stack) {
+        if (!(stack.getItem() instanceof CommanderSpawnEggItem egg)) return null;
+        AbstractArmyCommander commander = egg.typeSupplier.get().create(level);
+        if (commander == null) return null;
+        CompoundTag tag = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
+        commander.readGearTag(tag);
+        return commander;
     }
 
     @Override

@@ -4,6 +4,7 @@ import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.army.relation.FactionAlly;
 import com.ohhapple.monster_conquest.army.threat.ArmyThreatUtil;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+import com.ohhapple.monster_conquest.entity.ManagedUnit;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.DamageTypeTags;
@@ -14,6 +15,7 @@ import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.ShieldItem;
@@ -35,6 +37,19 @@ public final class CombatRules {
             TagKey.create(Registries.DAMAGE_TYPE,
                     ResourceLocation.fromNamespaceAndPath(Monster_conquest.MODID, "magic_damage"));
 
+    /**
+     * 允许触发单位盾牌判定的战斗伤害标签。
+     *   实体攻击 / 投射物由代码兜底识别；标签用于数据包补充模组战斗伤害。
+     */
+    public static final TagKey<DamageType> COMBAT_DAMAGE =
+            TagKey.create(Registries.DAMAGE_TYPE,
+                    ResourceLocation.fromNamespaceAndPath(Monster_conquest.MODID, "combat_damage"));
+
+    /** 数据包兜底：给没有实现 NeoForge 盾牌能力、但确实应视为盾牌的物品使用。 */
+    public static final TagKey<Item> SHIELD_ITEMS =
+            TagKey.create(Registries.ITEM,
+                    ResourceLocation.fromNamespaceAndPath(Monster_conquest.MODID, "shields"));
+
     /** 是否魔法伤害（含原版 magic / indirect_magic / 音爆 / 龙息 / 凋零）。 */
     public static boolean isMagicDamage(DamageSource source) {
         return source.is(MAGIC_DAMAGE)
@@ -55,6 +70,19 @@ public final class CombatRules {
     }
 
     /**
+     * 是否为可参与盾牌判定的战斗命中。
+     *   不把摔落、火焰、仙人掌等环境伤害混进举盾概率；
+     *   数据包可通过 combat_damage 标签追加特殊战斗伤害类型。
+     */
+    public static boolean isCombatDamage(DamageSource source) {
+        if (source == null) return false;
+        return source.is(COMBAT_DAMAGE)
+                || source.is(DamageTypeTags.IS_PROJECTILE)
+                || source.getDirectEntity() instanceof Projectile
+                || damageAttacker(source) != null;
+    }
+
+    /**
      * 是不是"能格挡的盾牌"：原版盾、模组盾（ShieldItem 子类），
      *   或任何声明了原版盾格挡能力（shield_block）的物品 —— 自定义 / 模组盾牌同样能触发格挡。
      */
@@ -62,7 +90,8 @@ public final class CombatRules {
         if (stack.isEmpty()) return false;
         return stack.is(Items.SHIELD)
                 || stack.getItem() instanceof ShieldItem
-                || stack.canPerformAction(ItemAbilities.SHIELD_BLOCK);
+                || stack.canPerformAction(ItemAbilities.SHIELD_BLOCK)
+                || stack.is(SHIELD_ITEMS);
     }
 
     /** 解析伤害来源的施加者（投射物取发射者）。 */
@@ -75,6 +104,17 @@ public final class CombatRules {
             attacker = owner;
         }
         return attacker instanceof LivingEntity living ? living : null;
+    }
+
+    /**
+     * 攻击者不是 Monster Conquest 单位时，保留原有"命中前清窗口"的行为。
+     *   攻击者是单位时由 LivingIncomingDamageEvent 统一处理，这里不再重复清除。
+     */
+    public static void clearInvulnerabilityForNonManagedAttacker(
+            LivingEntity target, @Nullable Entity attacker) {
+        if (!(attacker instanceof ManagedUnit)) {
+            target.invulnerableTime = 0;
+        }
     }
 
     /** 两个实体是否属于同一方（同军队 / 同阵营 / 单向结盟都算）。 */

@@ -1,15 +1,22 @@
 package com.ohhapple.monster_conquest.ai.soldier;
 
+import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import com.ohhapple.monster_conquest.army.SoldierRole;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
-import net.minecraft.world.InteractionHand;
+import com.ohhapple.monster_conquest.player.PlayerCommandState;
+
+import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.UseAnim;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
@@ -26,6 +33,10 @@ public class SoldierRangedAttackGoal extends Goal {
 
     private static final float DUAL_LOW_HP_THRESHOLD = 0.5f;
     private static final int REPOSITION_TICKS = 10;
+    private static final int SPACING_COMMIT_TICKS = 24;
+    private static final int SIDESTEP_FLIP_MIN_TICKS = 24;
+    private static final int SIDESTEP_FLIP_RANDOM_TICKS = 12;
+    private static final int BOW_DRAW_TICKS = 8;
 
     /** 回退目标扫描半径（格）。 */
     private static final double FALLBACK_SCAN_RANGE = 16.0;
@@ -38,6 +49,19 @@ public class SoldierRangedAttackGoal extends Goal {
     /** 走位寻路节流：目标没变时不必每 tick 重算路径（打不到的目标也一样）。 */
     /** -1 = 还没用过：第一次调用先随机错开，避免整队同一 tick 一起跑寻路。 */
     private int moveCooldown = -1;
+
+    @Nullable private UUID spacingTargetId;
+    @Nullable private Vec3 spacingDestination;
+    private int spacingMoveTick = -1000;
+    private int spacingCommitUntil = 0;
+    private int lastSpacingLogTick = -1000;
+    private boolean directSpacing;
+    private boolean withdrawing;
+    private int sidestepDirection = 1;
+    private int sidestepFlipTick = 0;
+    private int failedWithdrawPlans;
+    private int bowDrawTicks;
+    @Nullable private UUID bowDrawTargetId;
 
     /** 走位寻路的节流：有路径在走时 10 tick 重发一次，没路径时 5 tick 重试一次。 */
     private boolean shouldReissueMove(Mob mover) {
@@ -67,7 +91,14 @@ public class SoldierRangedAttackGoal extends Goal {
     }
 
     @Override
+    public boolean requiresUpdateEveryTick() {
+        // 紧急后撤每 tick 直接位移一次；隔 tick 执行会把实际逃跑速度砍半并产生顿挫。
+        return true;
+    }
+
+    @Override
     public boolean canUse() {
+        if (soldier.isMoveOrderPriorityActive()) return false;
         if (isVolleyMode()) return true;
 
         SoldierRole r = soldier.getRole();
@@ -94,6 +125,7 @@ public class SoldierRangedAttackGoal extends Goal {
 
     @Override
     public boolean canContinueToUse() {
+        if (soldier.isMoveOrderPriorityActive()) return false;
         if (isVolleyMode()) return true;
 
         SoldierRole r = soldier.getRole();
@@ -112,13 +144,29 @@ public class SoldierRangedAttackGoal extends Goal {
 
     @Override
     public void start() {
+        cancelBowDraw();
         this.cooldown = 0;
         this.repositionTicks = 0;
         this.failedShots = 0;
         this.moveCooldown = -1;
+        this.spacingTargetId = null;
+        this.spacingDestination = null;
+        this.spacingMoveTick = -1000;
+        this.spacingCommitUntil = 0;
+        this.lastSpacingLogTick = -1000;
+        this.directSpacing = false;
+        this.withdrawing = false;
+        this.failedWithdrawPlans = 0;
+        this.bowDrawTicks = 0;
+        this.bowDrawTargetId = null;
+        this.sidestepDirection = soldier.getRandom().nextBoolean() ? 1 : -1;
+        this.sidestepFlipTick = soldier.tickCount
+                + SIDESTEP_FLIP_MIN_TICKS
+                + Math.floorMod(soldier.getId(), SIDESTEP_FLIP_RANDOM_TICKS + 1);
     }
 
     private boolean isVolleyMode() {
+        if (soldier.isMoveOrderPriorityActive()) return false;
         if (!soldier.isVolleyActiveNow()) return false;
         SoldierRole r = soldier.getRole();
         return r.isArcher() || r.isDual() || r.isGunner();
@@ -126,6 +174,9 @@ public class SoldierRangedAttackGoal extends Goal {
 
     @Override
     public void tick() {
+        // 移动命令优先：Goal 可能是在命令生效前启动的，本 tick 先停手，
+        //   避免齐射 / 走位继续占用 MOVE 旗标。
+        if (soldier.isMoveOrderPriorityActive()) return;
 
         if (cooldown > 0) cooldown--;
         if (repositionTicks > 0) repositionTicks--;
@@ -136,7 +187,7 @@ public class SoldierRangedAttackGoal extends Goal {
             var cmdState = owner != null
                     ? PlayerArmyManager.getIfPresent(owner.getUUID()) : null;
             Vec3 vt = cmdState != null
-                    ? com.ohhapple.monster_conquest.player.PlayerCommandState
+                    ? PlayerCommandState
                             .stateForCommand(soldier, cmdState).getVolleyTarget()
                     : null;
             if (vt != null) {
@@ -160,8 +211,9 @@ public class SoldierRangedAttackGoal extends Goal {
                 soldier.xRotO = pitch;
 
                 if (cooldown <= 0) {
+                    if (holdBowDraw(null)) return;
                     soldier.performVolleyShot(vt);
-                    swingAfterShot();
+                    playShotFinishAnimation();
                     cooldown = soldier.getRangedAttackCooldownTicks();
                 }
                 return;
@@ -170,31 +222,54 @@ public class SoldierRangedAttackGoal extends Goal {
 
         // ==================== 普通射击 ====================
         LivingEntity target = soldier.getTarget();
-        if (target == null) return;
-
-        soldier.getLookControl().setLookAt(target, 30.0f, 30.0f);
-        if (soldier.getVehicle() instanceof Mob horse) {
-            horse.getLookControl().setLookAt(target, 30.0f, 30.0f);
+        if (target == null) {
+            cancelBowDraw();
+            return;
+        }
+        boolean mounted = soldier.getSoldierType().isCavalry();
+        Mob mover = soldier.getVehicle() instanceof Mob h ? h : soldier;
+        boolean closeThreat = soldier.distanceTo(target) < soldier.getMinAttackRange(mounted);
+        if (soldier.isFollowingMarchRoute() || soldier.isMarchRoutePlanning()) {
+            if (!closeThreat) {
+                cancelBowDraw();
+                return;
+            }
+            soldier.clearMarchRoute();
+            AiNavUtil.haltMovement(mover);
+            if (mover != soldier) AiNavUtil.stopMovementInput(soldier);
         }
 
-        boolean mounted = soldier.getSoldierType().isCavalry();
+        if (withdrawing && soldier.getVehicle() instanceof WarHorseEntity horse) {
+            syncRiderFacingToMount(horse);
+        } else {
+            soldier.getLookControl().setLookAt(target, 30.0f, 30.0f);
+            if (soldier.getVehicle() instanceof Mob horse) {
+                horse.getLookControl().setLookAt(target, 30.0f, 30.0f);
+            }
+        }
+
         double min = soldier.getMinAttackRange(mounted);
         double max = soldier.getMaxAttackRange(mounted);
         // 理想站位距离（默认 = 最大射程；霰弹枪兵更近）
         double hold = soldier.getPreferredAttackRange(mounted);
         double dist = soldier.distanceTo(target);
+        if (bowDrawTicks > 0 && dist > max + 1.0) cancelBowDraw();
 
-        Mob mover = soldier.getVehicle() instanceof Mob h ? h : soldier;
-
-        // 硬驻守：不移动，直接尝试开火。
+        // 硬驻守：不主动追击，但敌人贴身时允许紧急让开。
         //   能否命中交给 tryPerformRangedAttack 判断
         //   （弓箭走 BallisticAim，枪械走 GunAim + 显式射程闸门）。
         if (soldier.isHardStationed()) {
-            mover.getNavigation().stop();
+            if (dist < min || withdrawing) {
+                // 驻守只是不主动追击；敌人贴身后仍要做一次有限的自保后撤。
+                maintainSkirmishSpacing(mover, target, min, hold, dist, false);
+            } else {
+                clearSkirmishSpacing(mover, true);
+            }
             if (cooldown <= 0) {
+                if (holdBowDraw(target.getUUID())) return;
                 boolean fired = soldier.tryPerformRangedAttack(target);
                 if (fired) {
-                    swingAfterShot();
+                    playShotFinishAnimation();
                     cooldown = soldier.getRangedAttackCooldownTicks();
                 } else {
                     cooldown = 5;
@@ -205,12 +280,16 @@ public class SoldierRangedAttackGoal extends Goal {
 
         boolean isDual = soldier.getRole().isDual();
         boolean highHpDual = isDual && !isDualLowHealth();
-
-        // 撤退倍率从士兵实体读取（默认 1.0 = 与自身 / 坐骑速度一致，子类可覆盖）
-        double retreatMod = soldier.getRangedRetreatSpeedModifier();
+        boolean routeOwnsMovement = soldier.isFollowingRoute();
+        if (routeOwnsMovement && closeThreat) {
+            soldier.clearRoute();
+            AiNavUtil.haltMovement(mover);
+            if (mover != soldier) AiNavUtil.stopMovementInput(soldier);
+            routeOwnsMovement = false;
+        }
 
         if (highHpDual) {
-            if (repositionTicks > 0) {
+            if (repositionTicks > 0 || routeOwnsMovement) {
                 // 保持导航路径
             } else if (dist > 4.5) {
                 // 主动靠近：原值 1.0；节流重发，避免每 tick 重算路径
@@ -220,10 +299,11 @@ public class SoldierRangedAttackGoal extends Goal {
             }
 
             if (cooldown <= 0 && dist > 4.5) {
+                if (holdBowDraw(target.getUUID())) return;
                 boolean fired = soldier.tryPerformRangedAttack(target);
                 if (fired) {
                     failedShots = 0;
-                    swingAfterShot();
+                    playShotFinishAnimation();
                     cooldown = soldier.getRangedAttackCooldownTicks();
                 } else {
                     cooldown = 5;
@@ -231,29 +311,20 @@ public class SoldierRangedAttackGoal extends Goal {
                 }
             }
         } else {
-            if (repositionTicks > 0) {
+            if (repositionTicks > 0 || routeOwnsMovement) {
                 // reposition 期间不覆盖 navigation
-            } else if (dist < min) {
-                // 被近身 → 拉距离（使用士兵实体的可覆盖倍率）
-                Vec3 away = soldier.position().subtract(target.position()).normalize();
-                Vec3 dest = soldier.position().add(away.scale(6.0));
-                if (shouldReissueMove(mover)) {
-                    mover.getNavigation().moveTo(dest.x, dest.y, dest.z, retreatMod);
-                }
-            } else if (dist > hold) {
-                // 主动靠近到"理想站位距离"（默认最大射程，霰弹枪兵为近身距离）
-                if (shouldReissueMove(mover)) mover.getNavigation().moveTo(target, 1.0D);
             } else {
-                mover.getNavigation().stop();
+                maintainSkirmishSpacing(mover, target, min, hold, dist, true);
             }
 
             // 目标超出最大射程时只靠近、不开火：
             //   否则每次失败都会用 1 格微移覆盖整段寻路，导致原地反复重算路径
             if (cooldown <= 0 && dist <= max + 1.0) {
+                if (holdBowDraw(target.getUUID())) return;
                 boolean fired = soldier.tryPerformRangedAttack(target);
                 if (fired) {
                     failedShots = 0;
-                    swingAfterShot();
+                    playShotFinishAnimation();
                     cooldown = soldier.getRangedAttackCooldownTicks();
                 } else {
                     cooldown = 5;
@@ -263,8 +334,262 @@ public class SoldierRangedAttackGoal extends Goal {
         }
     }
 
-    /** 枪械射击不播放挥臂动画；只有弓 / 投掷等武器才挥动手臂。 */
-    private void swingAfterShot() {
+    /**
+     * 维持远程交战距离。后撤采用迟滞，并在正后方受阻时转为斜后方；
+     * 距离合适后只在近距机动带内短暂侧移，不把整段最大射程都当作风筝区。
+     */
+    private void maintainSkirmishSpacing(Mob mover, LivingEntity target,
+                                         double minRange, double holdRange,
+                                         double distance, boolean allowSidestep) {
+        int now = soldier.tickCount;
+        if (spacingTargetId == null || !spacingTargetId.equals(target.getUUID())) {
+            spacingTargetId = target.getUUID();
+            spacingDestination = null;
+            spacingMoveTick = -1000;
+            spacingCommitUntil = 0;
+            directSpacing = false;
+            withdrawing = false;
+            failedWithdrawPlans = 0;
+            sidestepDirection = soldier.getRandom().nextBoolean() ? 1 : -1;
+            sidestepFlipTick = now + SIDESTEP_FLIP_MIN_TICKS;
+        }
+
+        double releaseDistance = minRange
+                + Math.min(4.0, Math.max(2.0, minRange * 0.18));
+        if (withdrawing && distance >= releaseDistance) {
+            AiNavUtil.haltMovement(mover);
+            withdrawing = false;
+            spacingDestination = null;
+            directSpacing = false;
+            failedWithdrawPlans = 0;
+            return;
+        }
+
+        if (distance < minRange) {
+            if (!withdrawing && GeneralConfig.debugMovementLog) {
+                Monster_conquest.LOGGER.info(
+                        "[RANGED-KITE] unit={} phase=withdraw start={} min={} target={}",
+                        soldier.getUUID().toString().substring(0, 8),
+                        String.format(java.util.Locale.ROOT, "%.2f", distance),
+                        String.format(java.util.Locale.ROOT, "%.2f", minRange),
+                        target.getUUID().toString().substring(0, 8));
+            }
+            withdrawing = true;
+        }
+        if (withdrawing) {
+            boolean routedWithdraw = !directSpacing && spacingDestination != null;
+            Vec3 frameMovement = AiNavUtil.observedHorizontalMovement(mover);
+            boolean routeStalled = routedWithdraw
+                    && (mover.horizontalCollision || frameMovement.lengthSqr() < 1.0E-4);
+            boolean allowDirectEscape = !routedWithdraw || routeStalled;
+            if (allowDirectEscape && AiNavUtil.applyFullSpeedBackstep(
+                    mover, soldier.isPassenger() ? soldier : null, target)) {
+                spacingDestination = null;
+                directSpacing = false;
+                spacingCommitUntil = 0;
+                failedWithdrawPlans = 0;
+                return;
+            }
+            if (allowDirectEscape && trySideStepRetreat(mover, target)) {
+                spacingDestination = null;
+                directSpacing = false;
+                spacingCommitUntil = 0;
+                failedWithdrawPlans = 0;
+                return;
+            }
+            boolean stuck = mover.getNavigation().isStuck();
+            boolean finished = mover.getNavigation().isDone();
+            boolean directReached = directSpacing && spacingDestination != null
+                    && mover.position().distanceToSqr(spacingDestination) <= 1.0;
+            boolean needPlan = spacingDestination == null
+                    || now >= spacingCommitUntil
+                    || directReached
+                    || (!directSpacing && (finished || stuck) && now - spacingMoveTick >= 6);
+            if (needPlan) {
+                LivingEntity rider = soldier.isPassenger() ? soldier : null;
+                mover.getNavigation().stop();
+                spacingDestination = AiNavUtil.findFallbackSpacingPoint(
+                        mover, rider, target, releaseDistance);
+                directSpacing = false;
+                spacingMoveTick = -1000;
+                if (spacingDestination == null) {
+                    spacingDestination = AiNavUtil.startRoutedRetreat(
+                            mover, rider, target, releaseDistance);
+                    if (spacingDestination != null) spacingMoveTick = now;
+                }
+                if (spacingDestination == null) {
+                    spacingDestination = AiNavUtil.findImmediateRetreatPoint(
+                            mover, rider, target);
+                    directSpacing = spacingDestination != null;
+                }
+                if (spacingDestination == null) {
+                    spacingDestination = AiNavUtil.findStraightBackstepPoint(
+                            mover, rider, target);
+                    directSpacing = spacingDestination != null;
+                }
+                if (spacingDestination != null) {
+                    failedWithdrawPlans = 0;
+                } else {
+                    failedWithdrawPlans++;
+                    if (GeneralConfig.enableFormSwitch
+                            && soldier.getVehicle() instanceof WarHorseEntity
+                            && failedWithdrawPlans >= 3 && mover.horizontalCollision) {
+                        AiNavUtil.haltMovement(mover);
+                        soldier.dismountForTerrain();
+                        spacingDestination = null;
+                        directSpacing = false;
+                        failedWithdrawPlans = 0;
+                        return;
+                    }
+                }
+                if (GeneralConfig.debugMovementLog
+                        && (spacingDestination != null || now - lastSpacingLogTick >= 20)) {
+                    lastSpacingLogTick = now;
+                    Monster_conquest.LOGGER.info(
+                            "[RANGED-KITE] unit={} phase=plan release={} direct={} destination={}",
+                            soldier.getUUID().toString().substring(0, 8),
+                            String.format(java.util.Locale.ROOT, "%.2f", releaseDistance),
+                            directSpacing,
+                            spacingDestination == null ? "none"
+                                    : String.format(java.util.Locale.ROOT, "%.2f,%.2f,%.2f",
+                                            spacingDestination.x,
+                                            spacingDestination.y,
+                                            spacingDestination.z));
+                }
+                spacingCommitUntil = now + SPACING_COMMIT_TICKS;
+            }
+            if (spacingDestination != null && directSpacing) {
+                mover.getNavigation().stop();
+                mover.getMoveControl().setWantedPosition(
+                        spacingDestination.x, spacingDestination.y,
+                        spacingDestination.z, 1.0D);
+                spacingMoveTick = now;
+            } else if (spacingDestination != null
+                    && (now - spacingMoveTick >= 10
+                    || mover.getNavigation().isDone()
+                    || mover.getNavigation().isStuck())) {
+                if (mover.getNavigation().moveTo(
+                        spacingDestination.x, spacingDestination.y, spacingDestination.z, 1.0D)) {
+                    spacingMoveTick = now;
+                } else {
+                    spacingDestination = null;
+                }
+            }
+            return;
+        }
+
+        if (distance > holdRange) {
+            spacingDestination = null;
+            if (shouldReissueMove(mover)) mover.getNavigation().moveTo(target, 1.0D);
+            return;
+        }
+
+        double skirmishLimit = minRange
+                + Math.max(5.0, Math.min(8.0, minRange * 0.3));
+        if (distance > skirmishLimit) {
+            if (AiNavUtil.isMovingHorizontally(target)) {
+                if (shouldReissueMove(mover)) {
+                    mover.getNavigation().moveTo(target, 1.0D);
+                }
+            } else {
+                mover.getNavigation().stop();
+            }
+            return;
+        }
+        if (!allowSidestep) {
+            AiNavUtil.haltMovement(mover);
+            return;
+        }
+
+        if (now >= sidestepFlipTick) {
+            sidestepDirection = soldier.getRandom().nextBoolean() ? 1 : -1;
+            sidestepFlipTick = now + SIDESTEP_FLIP_MIN_TICKS
+                    + soldier.getRandom().nextInt(SIDESTEP_FLIP_RANDOM_TICKS + 1);
+        }
+        LivingEntity rider = soldier.isPassenger() ? soldier : null;
+        if (!AiNavUtil.applyFullSpeedSidestep(mover, rider, target, sidestepDirection)) {
+            sidestepDirection = -sidestepDirection;
+            if (!AiNavUtil.applyFullSpeedSidestep(mover, rider, target, sidestepDirection)) {
+                AiNavUtil.haltMovement(mover);
+            }
+        }
+    }
+
+    private void clearSkirmishSpacing(Mob mover, boolean stopMovement) {
+        spacingTargetId = null;
+        spacingDestination = null;
+        spacingMoveTick = -1000;
+        spacingCommitUntil = 0;
+        directSpacing = false;
+        withdrawing = false;
+        failedWithdrawPlans = 0;
+        if (stopMovement) {
+            AiNavUtil.haltMovement(mover);
+        }
+    }
+
+    private boolean trySideStepRetreat(Mob mover, LivingEntity target) {
+        LivingEntity rider = soldier.isPassenger() ? soldier : null;
+        if (AiNavUtil.applyFullSpeedSidestep(mover, rider, target, sidestepDirection)) {
+            sidestepFlipTick = Math.max(sidestepFlipTick, soldier.tickCount + 30);
+            return true;
+        }
+        sidestepDirection = -sidestepDirection;
+        if (AiNavUtil.applyFullSpeedSidestep(mover, rider, target, sidestepDirection)) {
+            sidestepFlipTick = Math.max(sidestepFlipTick, soldier.tickCount + 30);
+            return true;
+        }
+        return false;
+    }
+
+    private void syncRiderFacingToMount(WarHorseEntity horse) {
+        float yaw = horse.getYRot();
+        soldier.setYRot(yaw);
+        soldier.yBodyRot = yaw;
+        soldier.setYHeadRot(yaw);
+        soldier.yRotO = yaw;
+        soldier.yBodyRotO = yaw;
+        soldier.yHeadRotO = yaw;
+    }
+
+    /**
+     * 弓类武器先进入原版使用物品状态，让客户端模型播放拉弓；
+     * 非弓远程武器仍使用普通挥臂动画。
+     *
+     * @return true 表示本 tick 仍在拉弓或需要等待下一次重新瞄准
+     */
+    private boolean holdBowDraw(@Nullable UUID targetId) {
+        if (soldier.getMainHandItem().getUseAnimation() != UseAnim.BOW) {
+            cancelBowDraw();
+            return false;
+        }
+        if (bowDrawTicks > 0) {
+            if (targetId != null && !targetId.equals(bowDrawTargetId)) {
+                cancelBowDraw();
+                return true;
+            }
+            if (--bowDrawTicks > 0) return true;
+            cancelBowDraw();
+            return false;
+        }
+        soldier.startUsingItem(InteractionHand.MAIN_HAND);
+        bowDrawTicks = BOW_DRAW_TICKS;
+        bowDrawTargetId = targetId;
+        return true;
+    }
+
+    private void cancelBowDraw() {
+        if (soldier.isUsingItem() && soldier.getUsedItemHand() == InteractionHand.MAIN_HAND
+                && soldier.getUseItem().getUseAnimation() == UseAnim.BOW) {
+            soldier.stopUsingItem();
+        }
+        bowDrawTicks = 0;
+        bowDrawTargetId = null;
+    }
+
+    /** 弓由使用物品姿态驱动；其它远程武器使用挥臂。 */
+    private void playShotFinishAnimation() {
+        if (soldier.getMainHandItem().getUseAnimation() == UseAnim.BOW) return;
         if (!soldier.getRole().isGunner()) {
             soldier.swing(InteractionHand.MAIN_HAND, true);
         }
@@ -326,9 +651,14 @@ public class SoldierRangedAttackGoal extends Goal {
 
     @Override
     public void stop() {
-        if (soldier.getVehicle() instanceof Mob h) h.getNavigation().stop();
-        else soldier.getNavigation().stop();
+        cancelBowDraw();
+        Mob mover = soldier.getVehicle() instanceof Mob mount ? mount : soldier;
+        AiNavUtil.haltMovement(mover);
+        if (mover != soldier) {
+            AiNavUtil.stopMovementInput(soldier);
+        }
         repositionTicks = 0;
+        clearSkirmishSpacing(mover, false);
     }
 
     // ===================== 回退目标搜索 =====================
@@ -342,6 +672,7 @@ public class SoldierRangedAttackGoal extends Goal {
      */
     @Nullable
     private LivingEntity findFallbackTarget() {
+        if (soldier.isMoveOrderPriorityActive()) return null;
         if (fallbackScanCooldown > 0) {
             fallbackScanCooldown--;
             return null;

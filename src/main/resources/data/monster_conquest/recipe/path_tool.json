@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "equipment",
+  "ingredients": [
+    { "item": "minecraft:stick" },
+    { "item": "minecraft:lime_dye" }
+  ],
+  "result": { "id": "monster_conquest:path_tool", "count": 1 }
+}

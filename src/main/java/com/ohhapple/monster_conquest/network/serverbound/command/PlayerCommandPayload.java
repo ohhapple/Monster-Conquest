@@ -1,25 +1,29 @@
 package com.ohhapple.monster_conquest.network.serverbound.command;
 
 import com.ohhapple.monster_conquest.config.PlayerConfig;
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import com.ohhapple.monster_conquest.player.PlayerCommandState;
+import com.ohhapple.monster_conquest.player.PlayerMountUtil;
 import com.ohhapple.monster_conquest.util.RaycastUtil;
+
 import net.minecraft.core.BlockPos;
-import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
+
 import net.neoforged.neoforge.network.handling.IPayloadContext;
+
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -141,7 +145,7 @@ public record PlayerCommandPayload(int action, int value) implements CustomPacke
                     Entity t = RaycastUtil.raycastEntity(player,
                             RaycastUtil.DEFAULT_MAX_DISTANCE,
                             e -> e instanceof LivingEntity);
-                    if (t instanceof net.minecraft.world.entity.LivingEntity le) {
+                    if (t instanceof LivingEntity le) {
                         // 目标是军队 / 巡逻小队成员时，整支军队一起锁定
                         state.setForcedTarget(le.getUUID(),
                                 PlayerCommandState.expandArmyTargets(player.level(), le));
@@ -244,7 +248,7 @@ public record PlayerCommandPayload(int action, int value) implements CustomPacke
                 // 玩家策略：上马 / 下马（马哨必须放在战术装备栏）
                 case ACT_PLAYER_MOUNT -> {
                     if (!player.isPassenger()
-                            && !com.ohhapple.monster_conquest.player.PlayerMountUtil
+                            && !PlayerMountUtil
                             .mount(player, true)) {
                         player.displayClientMessage(
                                 Component.translatable(
@@ -254,7 +258,7 @@ public record PlayerCommandPayload(int action, int value) implements CustomPacke
                 }
 
                 case ACT_PLAYER_DISMOUNT -> {
-                    if (!com.ohhapple.monster_conquest.player.PlayerMountUtil
+                    if (!PlayerMountUtil
                             .dismount(player)) {
                         player.displayClientMessage(
                                 Component.translatable(
@@ -266,7 +270,7 @@ public record PlayerCommandPayload(int action, int value) implements CustomPacke
                 // 行动策略：编入附近单兵 / 解散当前小队
                 case ACT_ENLIST_LONE -> {
                     int n = state.enlistNearbyLoneSoldiers(
-                            player, com.ohhapple.monster_conquest.config.PlayerConfig.enlistNearbyRadius);
+                            player, PlayerConfig.enlistNearbyRadius);
                     player.displayClientMessage(
                             Component.translatable(
                                     "msg.monster_conquest.squad.enlist_done", n),

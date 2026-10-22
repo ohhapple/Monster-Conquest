@@ -75,7 +75,8 @@ public class GeneralConfig {
     public static final ModConfigSpec.DoubleValue ARMY_FOLLOW_RANGE_DEF = BUILDER
             .comment("军团的索敌 / 活动范围上限（格）。招募、阵型刷新、仇恨传播、")
             .comment("  工具扫描等系统仍统一使用这个值；各兵种的索敌半径已细分：")
-            .comment("  近战 32 / 双形态·投掷 40 / 弓手 48 / 枪手按枪械射程 / 首领 64，")
+            .comment("  近战 32 / 投掷 40 / 弓手·双形态 96 / 枪手按枪械射程 /")
+            .comment("  首领基类兜底 64，各阵营最多 128（受此项上限），")
             .comment("  但都不会超过这里的设置：调小会整体收紧，调大只放开上限。")
             .defineInRange("armyFollowRange", 128.0, 32.0, 256.0);
 
@@ -85,6 +86,12 @@ public class GeneralConfig {
             .comment("  会向本半径内的所有同阵营单位（首领 / 士兵 / 孤儿士兵）广播威胁。")
             .comment("  独立于 armyFollowRange。调小 → 支援更局部；调大 → 支援更全局。")
             .defineInRange("factionSupportRange", 64.0, 16.0, 256.0);
+
+    public static final ModConfigSpec.DoubleValue PATROL_LEASH_RADIUS_DEF = BUILDER
+            .comment("设置了路径点巡逻的单位允许离开路线的最大距离（格）。")
+            .comment("  敌人在这个范围内会正常追击 / 攻击；目标逃出范围后放弃追击并回到路线。")
+            .comment("  路径点、玩家小编队、NPC 军队和刷怪点动态同步到单位的路线共用。")
+            .defineInRange("patrolLeashRadius", 24.0, 4.0, 128.0);
 
     // ===================== 和平模式 =====================
 
@@ -108,6 +115,12 @@ public class GeneralConfig {
             .comment("  0 = 关闭（部队一离开加载范围就立刻卸载）。")
             .defineInRange("unitKeepLoadedSeconds", 5, 0, 60);
 
+    public static final ModConfigSpec.BooleanValue UPDATE_CHECK_ENABLED_DEF = BUILDER
+            .comment("客户端启动进入世界后，是否读取构建分支的 gradle.properties 检查版本。")
+            .comment("  同时校验 minecraft_version 和 mod_loader；分支未知时不检查。")
+            .comment("  每次启动只尝试一次；关闭后完全不发起网络请求。")
+            .define("updateCheckEnabled", true);
+
     public static final ModConfigSpec SPEC = BUILDER.build();
 
     // ===================== 缓存值 =====================
@@ -125,9 +138,11 @@ public class GeneralConfig {
 
     public static double armyFollowRange;
     public static double factionSupportRange;
+    public static double patrolLeashRadius = 24.0;
     public static boolean peacefulRemovesUnits;
     public static boolean debugMovementLog;
     public static int unitKeepLoadedSeconds;
+    public static boolean updateCheckEnabled;
 
     // ===================== 加载 =====================
     @SubscribeEvent
@@ -148,8 +163,10 @@ public class GeneralConfig {
 
         armyFollowRange = ARMY_FOLLOW_RANGE_DEF.get();
         factionSupportRange = FACTION_SUPPORT_RANGE_DEF.get();
+        patrolLeashRadius = PATROL_LEASH_RADIUS_DEF.get();
         peacefulRemovesUnits = PEACEFUL_REMOVES_UNITS_DEF.get();
         debugMovementLog = DEBUG_MOVEMENT_LOG_DEF.get();
         unitKeepLoadedSeconds = UNIT_KEEP_LOADED_SECONDS_DEF.get();
+        updateCheckEnabled = UPDATE_CHECK_ENABLED_DEF.get();
     }
 }

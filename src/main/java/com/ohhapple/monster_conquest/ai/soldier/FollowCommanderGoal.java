@@ -1,13 +1,16 @@
 package com.ohhapple.monster_conquest.ai.soldier;
 
+import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.commanders.patrol.AbstractPatrolCaptain;
-import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
+import com.ohhapple.monster_conquest.player.PlayerArmyManager;
+import com.ohhapple.monster_conquest.player.PlayerCommandState;
+
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -102,14 +105,14 @@ public class FollowCommanderGoal extends Goal {
         if (!soldier.isPlayerCommanded()) return true;
         Player owner = soldier.getCommanderPlayer();
         if (owner == null) return false;
-        var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var st = PlayerArmyManager
                 .getIfPresent(owner.getUUID());
         if (st == null) return false;
-        var ss = com.ohhapple.monster_conquest.player.PlayerCommandState
+        var ss = PlayerCommandState
                 .stateForCommand(soldier, st);
 
         if (ss.getMovement()
-                == com.ohhapple.monster_conquest.player.PlayerCommandState.MovementMode.STATION) {
+                == PlayerCommandState.MovementMode.STATION) {
             return true;
         }
         if (soldier.isInCombatGrace()) return true;
@@ -138,6 +141,7 @@ public class FollowCommanderGoal extends Goal {
         if (mover != this.soldier) {
             Vec3 dmRider = this.soldier.getDeltaMovement();
             this.soldier.setDeltaMovement(0, dmRider.y, 0);
+            AiNavUtil.stopMovementInput(this.soldier);
         }
         this.marchFollow.reset();
     }
@@ -147,6 +151,7 @@ public class FollowCommanderGoal extends Goal {
 
         LivingEntity leader = soldier.getLeaderEntity();
         if (leader == null) return;
+        if (soldier.isFollowingMarchRoute()) return;
 
         double distSq = soldier.distanceToSqr(leader);
 
@@ -156,7 +161,10 @@ public class FollowCommanderGoal extends Goal {
                 && !soldier.getSoldierType().isWitch()
                 && !soldier.isPassenger()
                 && distSq > 15 * 15
-                && soldier.isOpenTerrainCached()) {
+                && soldier.tickCount % 20 == 0
+                && soldier.getTerrainDismountCooldown() <= 0
+                && AiNavUtil.mountFitsAt(soldier.level(), soldier,
+                        soldier.getX(), soldier.getY(), soldier.getZ())) {
             soldier.switchToCavalry();
         }
 
@@ -183,16 +191,9 @@ public class FollowCommanderGoal extends Goal {
         //   完全无路可走（被困住 / 被墙地形切断）才传送。
                 if (soldier.hasReachablePathTo(leader.position())) {
                     stuckWindows = 0;
-                    // 正在下梯子：停掉寻路，交给下滑逻辑（否则会被拉回平台）。
-                    if (AiNavUtil.isDescendingOnLadder(soldier, leader.position())) {
-                        soldier.getNavigation().stop();
-                        soldier.clearMarchRoute();
-                        return;
-                    }
-                    Vec3 navTarget = AiNavUtil.descentAccessPoint(soldier, leader.position());
-                    if (navTarget == null) navTarget = leader.position();
+                    soldier.getNavigation().stop();
                     soldier.getNavigation().moveTo(
-                            navTarget.x, navTarget.y, navTarget.z, speedModifier);
+                            leader.getX(), leader.getY(), leader.getZ(), speedModifier);
                     this.timeToRecalcPath = 10;
                 } else if (soldier.isFollowingMarchRoute()
                         || soldier.isMarchRoutePlanDeferred()) {
@@ -209,8 +210,12 @@ public class FollowCommanderGoal extends Goal {
                 } else {
                     stuckWindows = 0;
                     if (soldier.isPlayerArmy()) {
-                        // 玩家士兵：静音传送到玩家 3 格外的安全处
-                        soldier.teleportNearSafely(leader, 3.0);
+                        // 窄通道（1 格宽走廊 / 迷宫）里"暂时没路"很常见：
+                        //   继续尝试寻路，不把玩家士兵凭空传送走。
+                        if (!AiNavUtil.isNarrowPassage(soldier.level(), soldier.blockPosition())) {
+                            // 玩家士兵：静音传送到玩家 3 格外的安全处
+                            soldier.teleportNearSafely(leader, 3.0);
+                        }
                     } else {
                         // NPC 军队：随机偏移 2~5 格 + 音效
                         double angle = soldier.getRandom().nextDouble() * Math.PI * 2;
@@ -244,14 +249,8 @@ public class FollowCommanderGoal extends Goal {
                 return;
             }
             Vec3 target = computeFollowTarget(leader);
-            // 正在下梯子：停掉寻路，交给下滑逻辑。
-            if (AiNavUtil.isDescendingOnLadder(soldier, target)) {
-                soldier.getNavigation().stop();
-                soldier.clearMarchRoute();
-                return;
-            }
-            Vec3 access = AiNavUtil.descentAccessPoint(soldier, target);
-            if (access != null) target = access;
+            // 已走完的旧路径会因节点相同被原版拒绝重发；骑乘时这里是坐骑的导航。
+            if (soldier.getNavigation().isDone()) soldier.getNavigation().stop();
             soldier.getNavigation().moveTo(target.x, target.y, target.z, speedModifier);
         }
     }

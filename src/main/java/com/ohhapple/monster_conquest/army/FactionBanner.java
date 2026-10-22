@@ -1,18 +1,21 @@
 package com.ohhapple.monster_conquest.army;
 
+import com.ohhapple.monster_conquest.client.renderer.FactionBannerRenderer;
+
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.component.CustomData;
+
 import org.jetbrains.annotations.Nullable;
 
 /**
  * 阵营长杆旗帜。
  *
  * 外观（长旗杆 + 会飘动的旗面 + 中央十字图案）由客户端渲染器
- * {@code com.ohhapple.monster_conquest.client.renderer.FactionBannerRenderer} 绘制：
+ * {@code FactionBannerRenderer} 绘制：
  *   · 旗面底色 = {@link FactionColors#bannerCornerColor}
  *   · 十字图案 = {@link FactionColors#bannerCrossColor}
  * 颜色直接取自阵营数据，因此与"身上的阵营旗 / 手里的盾牌图案"始终是同一组颜色。

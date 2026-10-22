@@ -1,23 +1,26 @@
 package com.ohhapple.monster_conquest.client.gui;
 
 import com.ohhapple.monster_conquest.block.TradeStationService;
+import com.ohhapple.monster_conquest.item.BackpackItem;
 import com.ohhapple.monster_conquest.network.serverbound.trade.BuyTradeOfferPayload;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
+
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 交易站 GUI：两列出售清单（子弹 / 枪械 / 战术工具），顶部选数量（×1/×8/×64）。
+ * 交易站 GUI：两列出售清单（子弹 / 枪械 / 工具），每页两列八行，顶部选数量与翻页。
  *   是否买得起只作显示用；真正扣材料、发物品都在服务端校验。
  */
 public class TradeStationScreen extends Screen {
@@ -27,6 +30,7 @@ public class TradeStationScreen extends Screen {
     private static final int COL_W = 203;
     private static final int ROW_H = 24;
     private static final int ROWS = 8;
+    private static final int PAGE_SIZE = ROWS * 2;
 
     private static final int COL_BG = 0xD0101418;
     private static final int COL_BORDER = 0xFF3C4650;
@@ -41,8 +45,12 @@ public class TradeStationScreen extends Screen {
     private final List<Button> qtyButtons = new ArrayList<>();
 
     private int quantity = 1;
+    private int pageIndex = 0;
+    private Button pagePrev;
+    private Button pageNext;
 
     private int panelX, panelY;
+    private GuiViewport viewport = new GuiViewport(1.0f, 0, 0);
 
     public TradeStationScreen(BlockPos pos) {
         super(Component.translatable("gui.monster_conquest.trade.title"));
@@ -51,8 +59,9 @@ public class TradeStationScreen extends Screen {
 
     @Override
     protected void init() {
-        panelX = (this.width - PANEL_W) / 2;
-        panelY = (this.height - PANEL_H) / 2;
+        viewport = GuiViewport.fit(width, height, PANEL_W, PANEL_H, 8);
+        panelX = 0;
+        panelY = 0;
 
         // 数量选择：×1 / ×8 / ×64
         qtyButtons.clear();
@@ -60,16 +69,30 @@ public class TradeStationScreen extends Screen {
         for (int i = 0; i < qtys.length; i++) {
             final int q = qtys[i];
             Button b = Button.builder(Component.literal("×" + q), btn -> quantity = q)
-                    .bounds(panelX + PANEL_W - 8 - (qtys.length - i) * 34, panelY + 6, 30, 16)
+                    .bounds(panelX + 64 + i * 34, panelY + 6, 30, 16)
                     .build();
             qtyButtons.add(this.addRenderableWidget(b));
         }
 
+        pagePrev = this.addRenderableWidget(
+                Button.builder(Component.literal("<"), btn -> changePage(-1))
+                        .bounds(panelX + 318, panelY + 6, 20, 16)
+                        .tooltip(Tooltip.create(Component.translatable(
+                                "gui.monster_conquest.trade.prev_page")))
+                        .build());
+        pageNext = this.addRenderableWidget(
+                Button.builder(Component.literal(">"), btn -> changePage(1))
+                        .bounds(panelX + 402, panelY + 6, 20, 16)
+                        .tooltip(Tooltip.create(Component.translatable(
+                                "gui.monster_conquest.trade.next_page")))
+                        .build());
+
         buyButtons.clear();
         for (int i = 0; i < offers.size(); i++) {
             final int offerIndex = i;
-            int col = i / ROWS;
-            int row = i % ROWS;
+            int slot = i % PAGE_SIZE;
+            int col = slot / ROWS;
+            int row = slot % ROWS;
             int colX = panelX + 8 + col * (COL_W + 8);
             int rowY = panelY + 30 + row * ROW_H;
             Button b = Button.builder(
@@ -89,9 +112,37 @@ public class TradeStationScreen extends Screen {
         PacketDistributor.sendToServer(new BuyTradeOfferPayload(pos, offerIndex, qty));
     }
 
+    private int pageCount() {
+        return Math.max(1, (offers.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+    }
+
+    private void changePage(int delta) {
+        int next = pageIndex + delta;
+        if (next < 0 || next >= pageCount()) return;
+        pageIndex = next;
+    }
+
+    private void syncPageWidgets() {
+        int pageStart = pageIndex * PAGE_SIZE;
+        int pageEnd = Math.min(offers.size(), pageStart + PAGE_SIZE);
+        for (int i = 0; i < buyButtons.size(); i++) {
+            buyButtons.get(i).visible = i >= pageStart && i < pageEnd;
+        }
+        boolean paged = pageCount() > 1;
+        pagePrev.visible = paged;
+        pageNext.visible = paged;
+        pagePrev.active = paged && pageIndex > 0;
+        pageNext.active = paged && pageIndex + 1 < pageCount();
+    }
+
     @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-        super.render(g, mouseX, mouseY, partialTick);
+        int localMouseX = viewport.localX(mouseX);
+        int localMouseY = viewport.localY(mouseY);
+        g.fill(0, 0, width, height, 0xB0000000);
+        viewport.push(g);
+        syncPageWidgets();
+        super.render(g, localMouseX, localMouseY, partialTick);
 
         g.fill(panelX - 1, panelY - 1, panelX + PANEL_W + 1, panelY + PANEL_H + 1, COL_BORDER);
         g.fill(panelX, panelY, panelX + PANEL_W, panelY + PANEL_H, COL_BG);
@@ -99,9 +150,17 @@ public class TradeStationScreen extends Screen {
         g.drawString(this.font,
                 Component.translatable("gui.monster_conquest.trade.qty_label"),
                 panelX + 8, panelY + 10, COL_TEXT_DIM);
+        if (pageCount() > 1) {
+            g.drawCenteredString(this.font,
+                    Component.translatable("gui.monster_conquest.trade.page",
+                            pageIndex + 1, pageCount()),
+                    panelX + 370, panelY + 10, COL_TEXT);
+        }
 
-        for (int i = 0; i < offers.size(); i++) {
-            renderOffer(g, i, mouseX, mouseY);
+        int pageStart = pageIndex * PAGE_SIZE;
+        int pageEnd = Math.min(offers.size(), pageStart + PAGE_SIZE);
+        for (int i = pageStart; i < pageEnd; i++) {
+            renderOffer(g, i, localMouseX, localMouseY);
         }
         for (int i = 0; i < qtyButtons.size(); i++) {
             qtyButtons.get(i).active = switch (i) {
@@ -118,12 +177,48 @@ public class TradeStationScreen extends Screen {
         g.drawString(this.font,
                 Component.translatable("gui.monster_conquest.trade.hint"),
                 panelX + 8, panelY + PANEL_H - 12, COL_TEXT_DIM);
+        viewport.pop(g);
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        return super.mouseClicked(viewport.localX(mouseX), viewport.localY(mouseY), button);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        return super.mouseReleased(viewport.localX(mouseX), viewport.localY(mouseY), button);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button,
+                                double dragX, double dragY) {
+        return super.mouseDragged(viewport.localX(mouseX), viewport.localY(mouseY), button,
+                viewport.localDelta(dragX), viewport.localDelta(dragY));
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY,
+                                 double scrollX, double scrollY) {
+        return super.mouseScrolled(viewport.localX(mouseX), viewport.localY(mouseY),
+                scrollX, scrollY);
+    }
+
+    @Override
+    public void mouseMoved(double mouseX, double mouseY) {
+        super.mouseMoved(viewport.localX(mouseX), viewport.localY(mouseY));
+    }
+
+    @Override
+    public void renderBackground(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
+        // 全屏遮罩由 render() 自己绘制，避免缩放后的原版背景越出面板。
     }
 
     private void renderOffer(GuiGraphics g, int index, int mouseX, int mouseY) {
         TradeStationService.Offer offer = offers.get(index);
-        int col = index / ROWS;
-        int row = index % ROWS;
+        int slot = index - pageIndex * PAGE_SIZE;
+        int col = slot / ROWS;
+        int row = slot % ROWS;
         int colX = panelX + 8 + col * (COL_W + 8);
         int rowY = panelY + 30 + row * ROW_H;
 
@@ -131,11 +226,11 @@ public class TradeStationScreen extends Screen {
         ItemStack result = new ItemStack(offer.item(), Math.min(offer.count(), 64));
         g.renderItem(result, colX + 3, rowY + 3);
 
-        // 名称（超宽裁剪）
+        // 名称按实际像素宽度截断；缩放坐标系下不依赖 scissor。
         Component name = new ItemStack(offer.item()).getHoverName();
-        g.enableScissor(colX + 22, rowY + 4, colX + 96, rowY + 16);
-        g.drawString(this.font, name, colX + 22, rowY + 7, COL_TEXT);
-        g.disableScissor();
+        String clippedName = this.font.plainSubstrByWidth(name.getString(), 72);
+        g.drawString(this.font, Component.literal(clippedName),
+                colX + 22, rowY + 7, COL_TEXT);
 
         // 价格图标（带所需数量）
         int px = colX + 98;
@@ -186,7 +281,7 @@ public class TradeStationScreen extends Screen {
             if (!s.isEmpty() && s.is(item)) n += s.getCount();
         }
         // 背包（物品）里的物品也算
-        n += com.ohhapple.monster_conquest.item.BackpackItem.countItem(mc.player, item);
+        n += BackpackItem.countItem(mc.player, item);
         return n;
     }
 }

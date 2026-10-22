@@ -52,7 +52,8 @@ public final class PlayerFaction implements Faction {
                 ModEntities.RIFLE_GUNNER_SOLDIER.get(),
                 ModEntities.SHOTGUN_GUNNER_SOLDIER.get(),
                 ModEntities.ROCKET_GUNNER_SOLDIER.get(),
-                ModEntities.SNIPER_GUNNER_SOLDIER.get()
+                ModEntities.SNIPER_GUNNER_SOLDIER.get(),
+                ModEntities.PIGLIN_SHIELD_SOLDIER.get()
         );
     }
 

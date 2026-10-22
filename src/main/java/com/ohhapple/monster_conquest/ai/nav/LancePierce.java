@@ -1,17 +1,22 @@
 package com.ohhapple.monster_conquest.ai.nav;
 
+import com.ohhapple.monster_conquest.army.CombatRules;
+import com.ohhapple.monster_conquest.army.ShieldGuardController;
+import com.ohhapple.monster_conquest.army.ShieldGuardUser;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
 import com.ohhapple.monster_conquest.item.LanceItem;
-import net.minecraft.world.level.ClipContext;
-import net.minecraft.world.entity.LivingEntity;
+
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
+import java.util.function.Predicate;
 import java.util.Map;
 import java.util.UUID;
-import java.util.function.Predicate;
 
 /**
  * 骑枪穿刺：骑兵冲锋 / 穿越时，对马前方扇形内的敌人逐个造成伤害。
@@ -19,6 +24,7 @@ import java.util.function.Predicate;
  * 近战士兵与首领 / 巡逻队长共用这一份逻辑，保证两者的骑兵近战表现完全一致：
  *   · 必须"有活目标 + 马正在冲锋或穿越"才结算（行军 / 归队途中不会误伤）；
  *   · 每 tick 结算一次，同一目标 10 tick 内只吃一次伤害；
+ *   · 只要实际发起一次穿刺伤害尝试，不论目标是否成功掉血，都会让盾牌让开 5 tick；
  *   · 伤害 = 近战攻击力 + 当前冲锋速度 × 8，命中后把目标推离冲锋方向。
  */
 public final class LancePierce {
@@ -56,6 +62,7 @@ public final class LancePierce {
         if (!horse.isCharging() && !horse.isPassingThrough()) return 0;
 
         int hits = 0;
+        boolean attempted = false;
 
         Vec3 forward = Vec3.directionFromRotation(0, horse.getYRot());
 
@@ -86,7 +93,15 @@ public final class LancePierce {
             if (age < nextAllowed) continue;
             hitCooldown.put(victim.getUUID(), age + PER_TARGET_CD);
 
-            victim.invulnerableTime = 0;
+            // 攻击尝试已经开始：伤害被无敌帧 / 护盾 / 其它规则挡掉也必须放盾。
+            if (!attempted && rider instanceof ShieldGuardUser guard) {
+                guard.setShieldGuardAttackLockTicks(
+                        ShieldGuardController.ATTACK_LOCK_TICKS);
+                attempted = true;
+            }
+
+            CombatRules
+                    .clearInvulnerabilityForNonManagedAttacker(victim, rider);
             float dmg = (float) (rider.getAttributeValue(Attributes.ATTACK_DAMAGE)
                     + chargeSpeed * 8.0);
             boolean hit = victim.hurt(rider.damageSources().mobAttack(rider), dmg);

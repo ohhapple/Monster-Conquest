@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.util;
 
 import com.ohhapple.monster_conquest.army.FactionIds;
+import com.ohhapple.monster_conquest.army.FactionRegistry;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import org.jetbrains.annotations.Nullable;
@@ -31,5 +32,17 @@ public final class FactionDisplay {
             return Component.translatable("faction.monster_conquest.player_all");
         }
         return Component.translatable("faction.monster_conquest." + id.getPath());
+    }
+
+    /**
+     * 显示名（带兜底）：没注册过的阵营（例如没有语言条目的数据包阵营）
+     *   直接显示 id 原文，避免界面上出现翻译键。
+     */
+    public static Component displayNameOrId(@Nullable ResourceLocation id) {
+        if (id == null) return Component.literal("-");
+        if (!FactionIds.isAnyPlayerFaction(id) && FactionRegistry.get(id) == null) {
+            return Component.literal(id.toString());
+        }
+        return displayName(id);
     }
 }

@@ -1,15 +1,17 @@
 package com.ohhapple.monster_conquest.item;
 
-import com.ohhapple.monster_conquest.config.GeneralConfig;
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.army.FactionIds;
+import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
-import com.ohhapple.monster_conquest.entity.ModEntities;
-import com.ohhapple.monster_conquest.entity.WarHorseEntity;
 import com.ohhapple.monster_conquest.entity.commanders.patrol.AbstractPatrolCaptain;
+import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.player.PlayerArmyManager;
+
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -17,18 +19,23 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
-import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.phys.AABB;
+
 import net.neoforged.neoforge.registries.DeferredItem;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 public class RetrievalToolItem extends Item {
@@ -56,6 +63,13 @@ public class RetrievalToolItem extends Item {
             Mode[] all = values();
             return all[(ordinal() + 1) % all.length];
         }
+    }
+
+    public record RetrievalPlan(
+            List<Entity> targets,
+            List<Entity> eggTargets,
+            List<AbstractArmySoldier> summonedTargets,
+            @Nullable AbstractArmySoldier directSummon) {
     }
 
     public RetrievalToolItem(Properties props) { super(props); }
@@ -100,32 +114,49 @@ public class RetrievalToolItem extends Item {
         if (!(player.level() instanceof ServerLevel sl)) return false;
 
         Mode mode = getMode(player.getMainHandItem());
+        RetrievalPlan plan = buildRetrievalPlan(mode, sl, target.getBoundingBox()
+                .inflate(GeneralConfig.armyFollowRange * 2), target);
+        List<Entity> targets = plan.targets();
 
-        List<Entity> targets = new ArrayList<>();
-        if (mode == Mode.ARMY) {
-            targets.addAll(collectArmyMembers(player, sl, target));
-        }
-        if (targets.isEmpty()) targets.add(target);
-
-        if (!player.isCreative()) {
-            ResourceLocation f = resolveFaction(targets.get(0));
-            if (f == null || !FactionIds.isPlayer(f)
-                    || !player.getUUID().equals(FactionIds.parsePlayer(f))) {
-                player.displayClientMessage(
-                        Component.translatable("item.monster_conquest.retrieval_tool.not_owner"),
-                        true);
-                return true;
-            }
+        if (!canRetrieve(player, target)) {
+            player.displayClientMessage(
+                    Component.translatable("item.monster_conquest.retrieval_tool.not_owner"),
+                    true);
+            return true;
         }
 
+        Map<UUID, UUID> summonRoots = resolveSummonRoots(targets, sl);
+        Set<UUID> packedRoots = new HashSet<>();
         int count = 0;
         int failedFull = 0;
-        for (Entity t : targets) {
+        for (Entity t : plan.eggTargets()) {
             switch (retrieveSingle(player, sl, t)) {
-                case OK -> count++;
+                case OK -> {
+                    count++;
+                    if (t instanceof AbstractArmySoldier soldier) {
+                        packedRoots.add(soldier.getUUID());
+                    } else if (t instanceof AbstractArmyCommander commander) {
+                        packedRoots.add(commander.getUUID());
+                    }
+                }
                 case FULL -> failedFull++;
                 case INVALID -> { }
             }
+        }
+
+        AbstractArmySoldier directSummon = plan.directSummon();
+        if (directSummon != null && !directSummon.isRemoved()) {
+            directSummon.discardSummonedInstance();
+            count++;
+        }
+
+        for (AbstractArmySoldier soldier : plan.summonedTargets()) {
+            if (soldier.isRemoved() || soldier == directSummon) continue;
+            UUID root = summonRoots.get(soldier.getUUID());
+            // 没有可产蛋的非召唤物根说明召唤者已丢失；无主召唤物不再等待根部收纳。
+            if (root != null && !packedRoots.contains(root)) continue;
+            soldier.discardSummonedInstance();
+            count++;
         }
 
         if (count == 0 && failedFull == 0) return false;
@@ -156,44 +187,176 @@ public class RetrievalToolItem extends Item {
         return true;
     }
 
-    private static List<Entity> collectArmyMembers(Player player, ServerLevel sl, Entity target) {
-        List<Entity> out = new ArrayList<>();
-        UUID army = AbstractArmySoldier.resolveArmyUuid(target, sl);
-        if (army == null) return out;
+    /**
+     * 将一次收纳拆成“产蛋单位”和“无蛋附属召唤物”。
+     *   SINGLE：
+     *     · 右键召唤者 → 只产蛋并收纳召唤者，不处理其召唤物；
+     *     · 右键召唤物 → 不产蛋，只收纳该召唤物本身。
+     *   ARMY：
+     *     · 召唤者、召唤物与所在军队组成闭包，非召唤物产蛋，
+     *       全部召唤物只作为对应根的附属清除。
+     */
+    public static RetrievalPlan buildRetrievalPlan(Mode mode, ServerLevel level,
+                                                   AABB box, Entity target) {
+        List<Entity> targets = new ArrayList<>();
+        Entity single = resolveRider(target);
+        if (single == null) single = target;
+        if (mode == Mode.ARMY) {
+            targets.addAll(collectArmyMembers(level, box, single));
+        } else {
+            targets.add(single);
+        }
+        if (targets.isEmpty()) targets.add(single);
 
-        double range = GeneralConfig.armyFollowRange * 2;
-        AABB box = player.getBoundingBox().inflate(range);
-
-        boolean isPlayerArmy = com.ohhapple.monster_conquest.player.PlayerArmyManager
-                .getIfPresent(army) != null;
-
-        if (isPlayerArmy) {
-            AbstractArmySoldier anchor = resolveRider(target);
-            if (anchor == null) return out;
-
-            int targetSquad = anchor.getSquadId();
-            for (AbstractArmySoldier s : sl.getEntitiesOfClass(AbstractArmySoldier.class, box)) {
-                if (!s.isAlive()) continue;
-                UUID su = s.getCommanderUuid().orElse(null);
-                if (!army.equals(su)) continue;
-                if (s.getSquadId() != targetSquad) continue;
-                out.add(s);
+        List<Entity> eggs = new ArrayList<>();
+        List<AbstractArmySoldier> summoned = new ArrayList<>();
+        for (Entity entity : targets) {
+            if (entity instanceof AbstractArmySoldier soldier && soldier.isSummoned()) {
+                summoned.add(soldier);
+            } else {
+                eggs.add(entity);
             }
-            return out;
         }
 
-        // NPC 军队：收整军
-        Entity cmd = sl.getEntities().get(army);
-        if (cmd instanceof AbstractArmyCommander c && c.isAlive()) {
-            out.add(c);
+        AbstractArmySoldier directSummon = mode == Mode.SINGLE
+                && single instanceof AbstractArmySoldier soldier
+                && soldier.isSummoned() ? soldier : null;
+        return new RetrievalPlan(List.copyOf(targets), List.copyOf(eggs),
+                List.copyOf(summoned), directSummon);
+    }
+
+    /**
+     * 解析每个召唤物最终归属的非召唤物根单位。
+     *   在移除任何实体前一次性计算，支持“召唤物又召唤了召唤物”的链式关系。
+     */
+    private static Map<UUID, UUID> resolveSummonRoots(List<Entity> targets,
+                                                      ServerLevel level) {
+        Map<UUID, UUID> roots = new HashMap<>();
+        for (Entity entity : targets) {
+            if (!(entity instanceof AbstractArmySoldier summoned)
+                    || !summoned.isSummoned()) continue;
+
+            Set<UUID> visited = new HashSet<>();
+            AbstractArmySoldier current = summoned;
+            while (current != null && current.isSummoned()
+                    && visited.add(current.getUUID())) {
+                UUID parentId = current.getSummonerUuid();
+                if (parentId == null) break;
+                Entity parentEntity = level.getEntities().get(parentId);
+                if (!(parentEntity instanceof AbstractArmySoldier parent)) break;
+                if (!parent.isSummoned()) {
+                    roots.put(summoned.getUUID(), parent.getUUID());
+                    break;
+                }
+                current = parent;
+            }
         }
-        for (AbstractArmySoldier s : sl.getEntitiesOfClass(AbstractArmySoldier.class, box)) {
-            if (!s.isAlive()) continue;
-            UUID su = s.getCommanderUuid().orElse(null);
-            if (!army.equals(su)) continue;
-            out.add(s);
+        return roots;
+    }
+
+    public static List<Entity> collectArmyMembers(ServerLevel sl, AABB box, Entity target) {
+        List<Entity> expanded = new ArrayList<>();
+        Set<UUID> seen = new HashSet<>();
+        AbstractArmySoldier rider = resolveRider(target);
+        addOnce(expanded, seen, rider != null ? rider : target);
+
+        for (int i = 0; i < expanded.size(); i++) {
+            Entity member = expanded.get(i);
+            if (member instanceof AbstractArmyCommander commander) {
+                addCommanderArmyPeers(expanded, seen, commander, sl, box);
+            } else if (member instanceof AbstractArmySoldier soldier) {
+                expandSummonRelations(expanded, seen, soldier, sl);
+                addArmyPeers(expanded, seen, soldier, sl, box);
+            }
         }
-        return out;
+        return expanded;
+    }
+
+    /**
+     * 整军收纳必须包含召唤关系闭包：
+     *   召唤物 → 召唤者；召唤者 → 自己登记的全部存活召唤物。
+     * 闭包可能继续扩展（召唤者本身也是被召唤单位），直到没有新实体。
+     */
+    public static List<Entity> collectSummoningClosure(List<Entity> initial, ServerLevel sl) {
+        List<Entity> expanded = new ArrayList<>();
+        Set<UUID> seen = new HashSet<>();
+        for (Entity entity : initial) addOnce(expanded, seen, entity);
+
+        for (int i = 0; i < expanded.size(); i++) {
+            if (!(expanded.get(i) instanceof AbstractArmySoldier soldier)) continue;
+            expandSummonRelations(expanded, seen, soldier, sl);
+        }
+        return expanded;
+    }
+
+    private static void expandSummonRelations(List<Entity> out, Set<UUID> seen,
+                                              AbstractArmySoldier soldier,
+                                              ServerLevel level) {
+        if (soldier.isSummoned()) {
+            addOnce(out, seen, soldier.getSummoner());
+        }
+        for (AbstractArmySoldier summoned : soldier.getLivingSummonedSoldiers(level)) {
+            addOnce(out, seen, summoned);
+        }
+        // 名单是快速路径；若 NPC 名单尚未同步，再按召唤物自身持久化的 UUID 扫附近实体。
+        for (AbstractArmySoldier nearby : level.getEntitiesOfClass(
+                AbstractArmySoldier.class,
+                    soldier.getBoundingBox().inflate(
+                            Math.max(GeneralConfig.armyFollowRange, 256.0)),
+                candidate -> candidate.isSummoned()
+                        && soldier.getUUID().equals(candidate.getSummonerUuid()))) {
+            addOnce(out, seen, nearby);
+        }
+    }
+
+    private static void addArmyPeers(List<Entity> out, Set<UUID> seen,
+                                     AbstractArmySoldier anchor, ServerLevel level,
+                                     AABB box) {
+        UUID army = AbstractArmySoldier.resolveArmyUuid(anchor, level);
+        if (army == null) return;
+
+        if (PlayerArmyManager.getIfPresent(army) != null) {
+            int squadId = anchor.getSquadId();
+            for (AbstractArmySoldier candidate : level.getEntitiesOfClass(
+                    AbstractArmySoldier.class, box)) {
+                if (candidate.isAlive()
+                        && army.equals(candidate.getCommanderUuid().orElse(null))
+                        && candidate.getSquadId() == squadId) {
+                    addOnce(out, seen, candidate);
+                }
+            }
+            return;
+        }
+
+        Entity commander = level.getEntities().get(army);
+        if (commander instanceof AbstractArmyCommander c && c.isAlive()) {
+            addOnce(out, seen, c);
+        }
+        for (AbstractArmySoldier candidate : level.getEntitiesOfClass(
+                AbstractArmySoldier.class, box)) {
+            if (candidate.isAlive()
+                    && army.equals(candidate.getCommanderUuid().orElse(null))) {
+                addOnce(out, seen, candidate);
+            }
+        }
+    }
+
+    private static void addCommanderArmyPeers(List<Entity> out, Set<UUID> seen,
+                                              AbstractArmyCommander commander,
+                                              ServerLevel level, AABB box) {
+        UUID army = commander.getUUID();
+        for (AbstractArmySoldier candidate : level.getEntitiesOfClass(
+                AbstractArmySoldier.class, box)) {
+            if (candidate.isAlive()
+                    && army.equals(candidate.getCommanderUuid().orElse(null))) {
+                addOnce(out, seen, candidate);
+            }
+        }
+    }
+
+    private static void addOnce(List<Entity> out, Set<UUID> seen, @Nullable Entity entity) {
+        if (entity == null || !entity.isAlive() || entity.isRemoved()) return;
+        if (seen.add(entity.getUUID())) out.add(entity);
     }
 
     @Nullable
@@ -210,13 +373,20 @@ public class RetrievalToolItem extends Item {
     public enum RetrieveResult { OK, FULL, INVALID }
 
     /**
-     * 收纳单个单位（收纳工具右键 / 单位界面"收纳"按钮共用同一条打包逻辑）：
+     * 收纳单个单位（单位界面"收纳"按钮等单目标入口使用同一条打包逻辑）：
      *   生成刷怪蛋 → 先确认背包放得下（空槽 / 未满堆叠都行，放不下则单位保留）
      *   → 确认成功后才移除单位与坐骑。
      */
     public static RetrieveResult retrieveUnit(Player player, Entity target) {
         if (!(player.level() instanceof ServerLevel sl)) return RetrieveResult.INVALID;
-        return retrieveSingle(player, sl, target);
+        RetrievalPlan plan = buildRetrievalPlan(Mode.SINGLE, sl,
+                target.getBoundingBox().inflate(GeneralConfig.armyFollowRange * 2), target);
+        if (plan.directSummon() != null) {
+            plan.directSummon().discardSummonedInstance();
+            return RetrieveResult.OK;
+        }
+        if (plan.eggTargets().isEmpty()) return RetrieveResult.INVALID;
+        return retrieveSingle(player, sl, plan.eggTargets().get(0));
     }
 
     /** 收纳单个单位的反馈（音效 + 提示文字），工具与界面按钮共用。 */
@@ -316,18 +486,31 @@ public class RetrievalToolItem extends Item {
         return null;
     }
 
+    /** 非创造模式只限制玩家阵营；NPC 阵营单位允许直接收纳。 */
+    public static boolean canRetrieve(Player player, Entity target) {
+        if (player.isCreative()) return true;
+        ResourceLocation faction = resolveFaction(target);
+        if (faction == null) return false;
+        if (!FactionIds.isPlayer(faction)) return true;
+        return player.getUUID().equals(FactionIds.parsePlayer(faction));
+    }
+
     // ===================== 蛋制作 =====================
 
     private static ItemStack makeEggFromSoldier(AbstractArmySoldier soldier,
                                                 @Nullable WarHorseEntity horse) {
-        DeferredItem<SoldierSpawnEggItem> eggItem = pickEggItem(soldier);
-        ItemStack stack = new ItemStack(eggItem.get());
-        SoldierSpawnEggItem.writeTierIdxStatic(stack, soldier.getTier().ordinal());
+        SoldierSpawnEggItem eggItem = pickEggItem(soldier);
+        if (eggItem == null) return ItemStack.EMPTY;
+        ItemStack stack = new ItemStack(eggItem);
+        if (!eggItem.isSingleLevel()) {
+            SoldierSpawnEggItem.writeTierIdxStatic(stack, soldier.getTier().ordinal());
+        }
 
         CompoundTag tag = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
         ResourceLocation faction = soldier.getFactionId();
         if (faction != null) tag.putString(KEY_FACTION, faction.toString());
-        tag.putBoolean(KEY_CAVALRY, horse != null || soldier.getSoldierType().isCavalry());
+        tag.putBoolean(KEY_CAVALRY, eggItem.canToggleCavalry()
+                && (horse != null || soldier.getSoldierType().isCavalry()));
         tag.putBoolean(KEY_FROM_TOOL, true);
         // 保留单位界面里手动放的装备与战术装备（自带装备不进蛋，避免无意义膨胀）
         soldier.writeGearTag(tag);
@@ -341,6 +524,7 @@ public class RetrievalToolItem extends Item {
         // 用 instanceof 判断巡逻队长，不依赖基类的任何标记
         boolean patrol = commander instanceof AbstractPatrolCaptain;
         ItemStack stack = eggForFaction(faction, patrol);
+        if (stack.isEmpty()) return ItemStack.EMPTY;
 
         CompoundTag tag = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
         if (faction != null) tag.putString(KEY_FACTION, faction.toString());
@@ -353,11 +537,12 @@ public class RetrievalToolItem extends Item {
     }
 
     private static ItemStack eggForFaction(@Nullable ResourceLocation faction, boolean patrol) {
+        if (faction == null) return ItemStack.EMPTY;
         DeferredItem<CommanderSpawnEggItem> egg;
 
         if (patrol) {
             // 巡逻队长蛋
-            if (faction == null) {
+            if (faction.equals(FactionIds.UNDEAD)) {
                 egg = Monster_conquest.UNDEAD_PATROL_CAPTAIN_EGG;
             } else if (faction.equals(FactionIds.VILLAGER)) {
                 egg = Monster_conquest.VILLAGER_PATROL_CAPTAIN_EGG;
@@ -372,11 +557,11 @@ public class RetrievalToolItem extends Item {
             } else if (faction.equals(FactionIds.NEUTRAL)) {
                 egg = Monster_conquest.NEUTRAL_PATROL_CAPTAIN_EGG;
             } else {
-                egg = Monster_conquest.UNDEAD_PATROL_CAPTAIN_EGG;
+                return ItemStack.EMPTY;
             }
         } else {
             // 首领蛋
-            if (faction == null) {
+            if (faction.equals(FactionIds.UNDEAD)) {
                 egg = Monster_conquest.UNDEAD_COMMANDER_EGG;
             } else if (faction.equals(FactionIds.VILLAGER)) {
                 egg = Monster_conquest.VILLAGER_COMMANDER_EGG;
@@ -391,7 +576,7 @@ public class RetrievalToolItem extends Item {
             } else if (faction.equals(FactionIds.NEUTRAL)) {
                 egg = Monster_conquest.NEUTRAL_COMMANDER_EGG;
             } else {
-                egg = Monster_conquest.UNDEAD_COMMANDER_EGG;
+                return ItemStack.EMPTY;
             }
         }
         return new ItemStack(egg.get());
@@ -400,135 +585,23 @@ public class RetrievalToolItem extends Item {
     // ===================== 士兵蛋选择 =====================
 
     /**
-     * 按士兵自身的实体类型选蛋。
+     * 从已注册士兵蛋中按实体类型和等级反查。
+     * 不在未知类型上回退到某个默认兵种，避免收纳后静默变成别的单位。
      */
-    private static DeferredItem<SoldierSpawnEggItem> pickEggItem(AbstractArmySoldier soldier) {
-        int t = soldier.getTier().ordinal();
-        EntityType<?> type = soldier.getType();
-
-        if (type == ModEntities.HUSK_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_HUSK_T0, Monster_conquest.EGG_HUSK_T1,
-                    Monster_conquest.EGG_HUSK_T2, Monster_conquest.EGG_HUSK_T3,
-                    Monster_conquest.EGG_HUSK_T4);
+    @Nullable
+    private static SoldierSpawnEggItem pickEggItem(AbstractArmySoldier soldier) {
+        for (Item item : BuiltInRegistries.ITEM) {
+            if (!(item instanceof SoldierSpawnEggItem egg)
+                    || !egg.isForEntityType(soldier.getType())) {
+                continue;
+            }
+            if (egg.isSingleLevel() == soldier.hasFixedTier()
+                    && (egg.isSingleLevel()
+                    || egg.getDefaultTier() == soldier.getTier())) {
+                return egg;
+            }
         }
-        if (type == ModEntities.DROWNED_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_DROWNED_T0, Monster_conquest.EGG_DROWNED_T1,
-                    Monster_conquest.EGG_DROWNED_T2, Monster_conquest.EGG_DROWNED_T3,
-                    Monster_conquest.EGG_DROWNED_T4);
-        }
-        if (type == ModEntities.ZOMBIE_VILLAGER_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_ZOMBIE_VILLAGER_T0, Monster_conquest.EGG_ZOMBIE_VILLAGER_T1,
-                    Monster_conquest.EGG_ZOMBIE_VILLAGER_T2, Monster_conquest.EGG_ZOMBIE_VILLAGER_T3,
-                    Monster_conquest.EGG_ZOMBIE_VILLAGER_T4);
-        }
-        if (type == ModEntities.SKELETON_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_SKELETON_T0, Monster_conquest.EGG_SKELETON_T1,
-                    Monster_conquest.EGG_SKELETON_T2, Monster_conquest.EGG_SKELETON_T3,
-                    Monster_conquest.EGG_SKELETON_T4);
-        }
-        if (type == ModEntities.STRAY_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_STRAY_T0, Monster_conquest.EGG_STRAY_T1,
-                    Monster_conquest.EGG_STRAY_T2, Monster_conquest.EGG_STRAY_T3,
-                    Monster_conquest.EGG_STRAY_T4);
-        }
-        if (type == ModEntities.BOGGED_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_BOGGED_T0, Monster_conquest.EGG_BOGGED_T1,
-                    Monster_conquest.EGG_BOGGED_T2, Monster_conquest.EGG_BOGGED_T3,
-                    Monster_conquest.EGG_BOGGED_T4);
-        }
-        if (type == ModEntities.WITHER_SKELETON_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_WITHER_SKELETON_T0, Monster_conquest.EGG_WITHER_SKELETON_T1,
-                    Monster_conquest.EGG_WITHER_SKELETON_T2, Monster_conquest.EGG_WITHER_SKELETON_T3,
-                    Monster_conquest.EGG_WITHER_SKELETON_T4);
-        }
-        if (type == ModEntities.WITCH_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_WITCH_T0, Monster_conquest.EGG_WITCH_T1,
-                    Monster_conquest.EGG_WITCH_T2, Monster_conquest.EGG_WITCH_T3,
-                    Monster_conquest.EGG_WITCH_T4);
-        }
-        if (type == ModEntities.RIFLE_GUNNER_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_GUNNER_RIFLE_T0, Monster_conquest.EGG_GUNNER_RIFLE_T1,
-                    Monster_conquest.EGG_GUNNER_RIFLE_T2, Monster_conquest.EGG_GUNNER_RIFLE_T3,
-                    Monster_conquest.EGG_GUNNER_RIFLE_T4);
-        }
-        if (type == ModEntities.SHOTGUN_GUNNER_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_GUNNER_SHOTGUN_T0, Monster_conquest.EGG_GUNNER_SHOTGUN_T1,
-                    Monster_conquest.EGG_GUNNER_SHOTGUN_T2, Monster_conquest.EGG_GUNNER_SHOTGUN_T3,
-                    Monster_conquest.EGG_GUNNER_SHOTGUN_T4);
-        }
-        if (type == ModEntities.ROCKET_GUNNER_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_GUNNER_ROCKET_T0, Monster_conquest.EGG_GUNNER_ROCKET_T1,
-                    Monster_conquest.EGG_GUNNER_ROCKET_T2, Monster_conquest.EGG_GUNNER_ROCKET_T3,
-                    Monster_conquest.EGG_GUNNER_ROCKET_T4);
-        }
-        if (type == ModEntities.SNIPER_GUNNER_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_GUNNER_SNIPER_T0, Monster_conquest.EGG_GUNNER_SNIPER_T1,
-                    Monster_conquest.EGG_GUNNER_SNIPER_T2, Monster_conquest.EGG_GUNNER_SNIPER_T3,
-                    Monster_conquest.EGG_GUNNER_SNIPER_T4);
-        }
-        if (type == ModEntities.VINDICATOR_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_VINDICATOR_T0, Monster_conquest.EGG_VINDICATOR_T1,
-                    Monster_conquest.EGG_VINDICATOR_T2, Monster_conquest.EGG_VINDICATOR_T3,
-                    Monster_conquest.EGG_VINDICATOR_T4);
-        }
-        if (type == ModEntities.EVOKER_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_EVOKER_T0, Monster_conquest.EGG_EVOKER_T1,
-                    Monster_conquest.EGG_EVOKER_T2, Monster_conquest.EGG_EVOKER_T3,
-                    Monster_conquest.EGG_EVOKER_T4);
-        }
-        if (type == ModEntities.VILLAGER_MACE_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_MACE_T0, Monster_conquest.EGG_MACE_T1,
-                    Monster_conquest.EGG_MACE_T2, Monster_conquest.EGG_MACE_T3,
-                    Monster_conquest.EGG_MACE_T4);
-        }
-        if (type == ModEntities.VILLAGER_ARCHER_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_VILLAGER_ARCHER_T0, Monster_conquest.EGG_VILLAGER_ARCHER_T1,
-                    Monster_conquest.EGG_VILLAGER_ARCHER_T2, Monster_conquest.EGG_VILLAGER_ARCHER_T3,
-                    Monster_conquest.EGG_VILLAGER_ARCHER_T4);
-        }
-        if (type == ModEntities.VILLAGER_PRIEST_SOLDIER.get()) {
-            return pickTier(t,
-                    Monster_conquest.EGG_VILLAGER_PRIEST_T0, Monster_conquest.EGG_VILLAGER_PRIEST_T1,
-                    Monster_conquest.EGG_VILLAGER_PRIEST_T2, Monster_conquest.EGG_VILLAGER_PRIEST_T3,
-                    Monster_conquest.EGG_VILLAGER_PRIEST_T4);
-        }
-        // 默认：僵尸士兵
-        return pickTier(t,
-                Monster_conquest.EGG_ZOMBIE_T0, Monster_conquest.EGG_ZOMBIE_T1,
-                Monster_conquest.EGG_ZOMBIE_T2, Monster_conquest.EGG_ZOMBIE_T3,
-                Monster_conquest.EGG_ZOMBIE_T4);
-    }
-
-    private static DeferredItem<SoldierSpawnEggItem> pickTier(
-            int tier,
-            DeferredItem<SoldierSpawnEggItem> t0,
-            DeferredItem<SoldierSpawnEggItem> t1,
-            DeferredItem<SoldierSpawnEggItem> t2,
-            DeferredItem<SoldierSpawnEggItem> t3,
-            DeferredItem<SoldierSpawnEggItem> t4) {
-        return switch (tier) {
-            case 4 -> t4;
-            case 3 -> t3;
-            case 2 -> t2;
-            case 1 -> t1;
-            default -> t0;
-        };
+        return null;
     }
 
     // ===================== 提示 =====================

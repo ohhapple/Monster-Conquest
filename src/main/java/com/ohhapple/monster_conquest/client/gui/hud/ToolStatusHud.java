@@ -1,17 +1,22 @@
 package com.ohhapple.monster_conquest.client.gui.hud;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.item.ControlToolItem;
 import com.ohhapple.monster_conquest.item.HatredWandItem;
+import com.ohhapple.monster_conquest.item.PathToolItem;
 import com.ohhapple.monster_conquest.item.RetrievalToolItem;
+import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.player.PlayerArmyManager;
+import com.ohhapple.monster_conquest.player.PlayerCommandState;
 import com.ohhapple.monster_conquest.util.FactionDisplay;
+
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.DeltaTracker;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
+
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -49,6 +54,8 @@ public class ToolStatusHud {
             buildControlTool(stack, lines);
         } else if (stack.getItem() instanceof RetrievalToolItem) {
             buildRetrievalTool(stack, lines);
+        } else if (stack.getItem() instanceof PathToolItem) {
+            buildPathTool(stack, lines);
         }
 
         if (lines.isEmpty()) return;
@@ -101,13 +108,12 @@ public class ToolStatusHud {
         int squad = 0;
         Minecraft mc = Minecraft.getInstance();
         if (mc.player != null) {
-            var state = com.ohhapple.monster_conquest.player.PlayerArmyManager
+            var state = PlayerArmyManager
                     .getIfPresent(mc.player.getUUID());
             if (state != null) squad = state.getControlToolSelectedSquad();
         }
         Component squadText;
-        if (squad == com.ohhapple.monster_conquest.player
-                .PlayerCommandState.CONTROL_TOOL_LONE) {
+        if (squad == PlayerCommandState.CONTROL_TOOL_LONE) {
             // 中键选中的是无小队单兵：显示"单兵"，不要显示成"全选"
             squadText = Component.translatable("hud.monster_conquest.squad.lone");
         } else if (squad == 0) {
@@ -131,6 +137,38 @@ public class ToolStatusHud {
             lines.add(Component.translatable("hud.monster_conquest.faction",
                     FactionDisplay.displayName(f)));
         }
+    }
+
+    // ===================== 路径点工具 =====================
+
+    private static void buildPathTool(ItemStack stack, List<Component> lines) {
+        lines.add(Component.translatable("hud.monster_conquest.path_tool.title")
+                .withStyle(ChatFormatting.GREEN));
+        lines.add(Component.translatable("hud.monster_conquest.mode",
+                PathToolItem.getPathMode(stack).getDisplayName()));
+        lines.add(Component.translatable("msg.monster_conquest.path_tool.select_switched",
+                PathToolItem.getSelectMode(stack).getDisplayName()));
+
+        int kind = PathToolItem.getSelKind(stack);
+        Component label;
+        switch (kind) {
+            case PathToolItem.SEL_ARMY ->
+                    label = Component.translatable("msg.monster_conquest.path_tool.army");
+            case PathToolItem.SEL_SQUAD ->
+                    label = Component.translatable("msg.monster_conquest.path_tool.player_squad",
+                            PathToolItem.getSelSquad(stack));
+            case PathToolItem.SEL_SPAWNER ->
+                    label = Component.translatable("msg.monster_conquest.path_tool.spawner");
+            default -> label = Component.translatable("msg.monster_conquest.path_tool.unit");
+        }
+        String id = PathToolItem.getSelId(stack);
+        if (!id.isEmpty()) {
+            label = Component.empty().append(label)
+                    .append(Component.literal(" " + id.substring(0, 8) + "..."));
+        }
+        lines.add(Component.translatable("hud.monster_conquest.selected", label));
+        lines.add(Component.translatable("hud.monster_conquest.path_points",
+                String.valueOf(PathToolItem.getSelPoints(stack))));
     }
 
     // ===================== 收纳工具 =====================

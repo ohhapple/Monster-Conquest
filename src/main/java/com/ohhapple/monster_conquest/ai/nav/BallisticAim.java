@@ -1,18 +1,16 @@
 package com.ohhapple.monster_conquest.ai.nav;
 
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.function.Predicate;
 
 /**
  * 抛射物弹道规划：
  *  - 目标：命中移动中的目标（迭代预判）
- *  - 同时保证飞行路径上不被方块或友军阻挡
+ *  - 保证飞行路径上不被方块阻挡；友军不参与碰撞，箭矢可以穿过友军
  *  - 通过枚举不同速度系数（越低 → 抛物线越高），找到第一条畅通的弹道
  * 物理常量与 Arrow / ThrownTrident 一致：
  *   水平：vx *= 0.99
@@ -43,7 +41,6 @@ public final class BallisticAim {
 
     private static final int    MAX_FLIGHT_TICKS    = 600;
     private static final double HIT_REACH_SQ        = 1.6 * 1.6;
-    private static final double ENTITY_CHECK_RADIUS = 0.3;
     private static final int    PREDICT_ITERATIONS  = 5;
 
     /** 解出的弹道：方向单位向量 + 初速 + 预计飞行 tick 数。 */
@@ -54,9 +51,9 @@ public final class BallisticAim {
     public static Solution solve(Level level,
                                  LivingEntity shooter,
                                  LivingEntity target,
-                                 double baseSpeed,
-                                 Predicate<Entity> isFriendly) {
-        Vec3 vel = target.getDeltaMovement();
+                                 double baseSpeed) {
+        // 紧急后撤会直接位移并清掉水平 delta；用相邻 tick 的真实位移才能继续预判逃跑目标。
+        Vec3 vel = AiNavUtil.observedMovement(target);
 
         // ============================================================
         // 1) 先求一个"瞄准当前位置"的弹道作为兜底。
@@ -64,7 +61,7 @@ public final class BallisticAim {
         // ============================================================
         Vec3 aimAtCurrent = target.position();
         Solution fallback = solveInternal(level, shooter, target, aimAtCurrent,
-                baseSpeed, isFriendly);
+                baseSpeed);
         if (fallback == null) return null;
 
         // 目标静止 → 不需要预判
@@ -85,7 +82,7 @@ public final class BallisticAim {
             if (next.distanceToSqr(target.position()) < 0.04) break;
 
             Solution attempt = solveInternal(level, shooter, target, next,
-                    baseSpeed, isFriendly);
+                    baseSpeed);
 
             // 预判点不可达时保留上一次成功的解，不退回"瞄准当前位置"
             if (attempt == null) break;
@@ -101,14 +98,14 @@ public final class BallisticAim {
                                           LivingEntity shooter,
                                           LivingEntity target,
                                           Vec3 aimAt,
-                                          double baseSpeed,
-                                          Predicate<Entity> isFriendly) {
+                                          double baseSpeed) {
         double sx = shooter.getX();
         double sy = shooter.getEyeY() - 0.1;
         double sz = shooter.getZ();
 
         double tx = aimAt.x;
-        double ty = aimAt.y + target.getEyeHeight();
+        // 瞄躯干中部，避免远距离预判后擦着头部或脚边判定。
+        double ty = aimAt.y + target.getBbHeight() * 0.55;
         double tz = aimAt.z;
 
         double dx = tx - sx;
@@ -119,7 +116,7 @@ public final class BallisticAim {
         if (horiz < 0.001) {
             double dirY = dy >= 0 ? 1.0 : -1.0;
             Solution s = new Solution(0, dirY, 0, baseSpeed, 1.0);
-            return pathClear(level, shooter, aimAt, target, s, isFriendly) ? s : null;
+            return pathClear(level, shooter, aimAt, target, s) ? s : null;
         }
 
         double dirX = dx / horiz;
@@ -136,7 +133,7 @@ public final class BallisticAim {
             double cosP = Math.cos(pitch);
             Solution s = new Solution(dirX * cosP, Math.sin(pitch), dirZ * cosP, speed, flightTicks);
 
-            if (pathClear(level, shooter, aimAt, target, s, isFriendly)) {
+            if (pathClear(level, shooter, aimAt, target, s)) {
                 return s;
             }
         }
@@ -228,8 +225,7 @@ public final class BallisticAim {
                                      LivingEntity shooter,
                                      Vec3 aimAt,
                                      LivingEntity target,
-                                     Solution s,
-                                     Predicate<Entity> isFriendly) {
+                                     Solution s) {
         double x = shooter.getX();
         double y = shooter.getEyeY() - 0.1;
         double z = shooter.getZ();
@@ -238,7 +234,7 @@ public final class BallisticAim {
         double vz = s.dirZ() * s.speed();
 
         double tx = aimAt.x;
-        double ty = aimAt.y + target.getEyeHeight();
+        double ty = aimAt.y + target.getBbHeight() * 0.55;
         double tz = aimAt.z;
 
         AABB selfBox = shooter.getBoundingBox().inflate(0.3);
@@ -273,18 +269,6 @@ public final class BallisticAim {
 
             if (y < ty - 30 && vy < 0) return false;
 
-            // 友军碰撞检测：0.3 格膨胀（原 0.6 太保守，友军稍近就误判）
-            //   且跳过离射手 2 格以内的友军——箭刚从眼睛发出时必然紧贴射手。
-            double dxFromShooter = x - shooter.getX();
-            double dzFromShooter = z - shooter.getZ();
-            if (dxFromShooter * dxFromShooter + dzFromShooter * dzFromShooter > 4.0) {
-                AABB box = new AABB(
-                        x - ENTITY_CHECK_RADIUS, y - ENTITY_CHECK_RADIUS, z - ENTITY_CHECK_RADIUS,
-                        x + ENTITY_CHECK_RADIUS, y + ENTITY_CHECK_RADIUS, z + ENTITY_CHECK_RADIUS);
-                var blockedE = level.getEntities(shooter, box,
-                        e -> e != shooter && e != target && e.isAlive() && isFriendly.test(e));
-                if (!blockedE.isEmpty()) return false;
-            }
         }
         return false;
     }

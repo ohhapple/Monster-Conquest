@@ -2,17 +2,20 @@ package com.ohhapple.monster_conquest.player;
 
 import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.MinecraftServer;
+
 import org.jetbrains.annotations.Nullable;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 所有玩家指挥状态的全局管理器。每个玩家独立。
@@ -88,7 +91,7 @@ public final class PlayerArmyManager {
         }
 
         // 单兵隐藏小队自动解散（只剩 1 人且空闲时），避免占用隐藏队号
-        if (player.level() instanceof net.minecraft.server.level.ServerLevel sl) {
+        if (player.level() instanceof ServerLevel sl) {
             state.normalizeLoneHiddenSquads(player, sl, now);
         }
 

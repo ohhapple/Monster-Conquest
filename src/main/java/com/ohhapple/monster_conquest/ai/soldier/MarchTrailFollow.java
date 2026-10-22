@@ -1,10 +1,15 @@
 package com.ohhapple.monster_conquest.ai.soldier;
 
+import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
-import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
+
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
+
+import java.util.List;
 
 /**
  * 行军路线跟随：士兵沿首领走过的路点依次前进（绕墙 / 穿门走首领同一条路），
@@ -63,8 +68,7 @@ public final class MarchTrailFollow {
         if (soldier.tickCount < bailUntilTick) return false;
         // 正在按方块级 A* 绕路（迷宫 / 隔墙）前进 → 移动交给绕路跟随
         if (soldier.isFollowingMarchRoute()) return true;
-
-        java.util.List<Vec3> trail = commander.getMarchTrail();
+        List<Vec3> trail = commander.getMarchTrail();
         int size = trail.size();
         if (size < MIN_TRAIL_POINTS) {
             reset();
@@ -151,11 +155,13 @@ public final class MarchTrailFollow {
         if (changed || soldier.tickCount >= reissueTick) {
             reissueTick = soldier.tickCount + (idle ? 5 : REISSUE_INTERVAL);
             issuedTarget = target;
+            // 走完的旧路径会因节点相同被原版拒绝重发；骑乘时导航属于坐骑。
+            if (idle) soldier.getNavigation().stop();
             soldier.getNavigation().moveTo(target.x, target.y, target.z, speed);
             // 普通导航只给出"半路路径"或没有路（迷宫 / 隔墙）→ 用 A* 算一条真正的绕路。
             //   只在目标较近时才启用：目标很远时的"半路路径"只是寻路半径限制，
             //   沿它走本来就在接近目标，不需要额外 A*（避免大规模军队的额外开销）。
-            net.minecraft.world.level.pathfinder.Path path = soldier.getNavigation().getPath();
+            Path path = soldier.getNavigation().getPath();
             if ((path == null || !path.canReach())
                     && soldier.position().distanceToSqr(target) <= 48.0 * 48.0) {
                 soldier.startMarchRouteAround(target);

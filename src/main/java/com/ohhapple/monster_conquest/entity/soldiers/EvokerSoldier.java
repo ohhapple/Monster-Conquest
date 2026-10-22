@@ -1,10 +1,14 @@
 package com.ohhapple.monster_conquest.entity.soldiers;
 
+import com.ohhapple.monster_conquest.ai.soldier.EvokerSpellGoal;
+import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import com.ohhapple.monster_conquest.army.EquipmentTier;
 import com.ohhapple.monster_conquest.army.SoldierType;
 import com.ohhapple.monster_conquest.effect.GrievousWoundEffect;
 import com.ohhapple.monster_conquest.effect.ModEffects;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
+import com.ohhapple.monster_conquest.entity.AbstractFlyingSoldier;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -16,17 +20,19 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.projectile.EvokerFangs;
-import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import net.minecraft.world.phys.Vec3;
 
 /**
  * 唤魔者士兵（魔法师，灾厄阵营；也有骑兵模式）。
  *
- *   · 召唤幻魔者尖牙：目标在 20 格内时，直接在目标脚下召唤尖牙，
+ *   · 召唤幻魔者尖牙：目标在 20 格内时，在目标脚下（飞行目标为预判高度）召唤尖牙，
  *     尖牙的 owner = 本士兵 → 伤害归属、仇恨吸引全部记在士兵身上。
- *   · 技能冷却：由 {@link com.ohhapple.monster_conquest.ai.soldier.EvokerSpellGoal}
+ *   · 技能冷却：由 {@link EvokerSpellGoal}
  *     由 {@code EvokerSpellGoal.FANG_COOLDOWN_TICKS} 控制（2 秒）。
  *   · 重伤：被尖牙命中 / 被近战命中的敌人获得"重伤"buff，
  *     等级 = 士兵装备等级（0 级 -10% 治疗，每级 +10%，上限 100%）。
@@ -57,10 +63,19 @@ public class EvokerSoldier extends AbstractArmySoldier {
     private static final int WOUND_BASE_DURATION = 200;
     private static final int WOUND_DURATION_PER_TIER = 60;
 
+    /** 每个唤魔者同时维持的恼鬼上限。 */
+    private static final int MAX_SUMMONED_UNITS = 3;
+    /** 补足一只恼鬼后的间隔，60 tick = 3 秒。 */
+    private static final int SUMMON_INTERVAL_TICKS = 60;
+
     public EvokerSoldier(EntityType<? extends PathfinderMob> type, Level level) { super(type, level); }
 
     @Override public SoldierType getDefaultSoldierType() { return SoldierType.MAGE_INFANTRY; }
     @Override public int getRenderIndex() { return 14; }
+
+    /** 子类可覆盖这些 getter 建立不同等级的唤魔者召唤节奏。 */
+    public int getMaxSummonedUnits() { return MAX_SUMMONED_UNITS; }
+    public int getSummonIntervalTicks() { return SUMMON_INTERVAL_TICKS; }
 
     // ===================== 装备等级基础数值 =====================
 
@@ -142,17 +157,20 @@ public class EvokerSoldier extends AbstractArmySoldier {
         //   如果不检查就会隔墙命中，是唯一能穿墙的"施法"）
         Vec3 from = position().add(0, getBbHeight() * 0.5, 0);
         Vec3 to = target.position().add(0, target.getBbHeight() * 0.5, 0);
-        if (level().clip(new net.minecraft.world.level.ClipContext(from, to,
-                net.minecraft.world.level.ClipContext.Block.COLLIDER,
-                net.minecraft.world.level.ClipContext.Fluid.NONE, this))
-                .getType() != net.minecraft.world.phys.HitResult.Type.MISS) {
+        if (level().clip(new ClipContext(from, to,
+                ClipContext.Block.COLLIDER,
+                ClipContext.Fluid.NONE, this))
+                .getType() != HitResult.Type.MISS) {
             return false;
         }
 
-        // 简单预判：按目标当前速度提前"尖牙触发延迟"个 tick 求落点
-        Vec3 velocity = target.getDeltaMovement();
+        // 按相邻 tick 的真实位移预判；飞行单位通过移动控制器 / 直接位移时
+        //   deltaMovement 经常为零，不能只读速度向量。
+        Vec3 velocity = AiNavUtil.observedMovement(target);
         double centerX = target.getX()
                 + Mth.clamp(velocity.x * FANG_TRIGGER_DELAY_TICKS, -MAX_LEAD, MAX_LEAD);
+        double centerY = target.getY()
+                + Mth.clamp(velocity.y * FANG_TRIGGER_DELAY_TICKS, -1.5, 1.5);
         double centerZ = target.getZ()
                 + Mth.clamp(velocity.z * FANG_TRIGGER_DELAY_TICKS, -MAX_LEAD, MAX_LEAD);
 
@@ -163,10 +181,18 @@ public class EvokerSoldier extends AbstractArmySoldier {
                 target.getX() - this.getX());
 
         int spawned = 0;
-        for (double[] offset : FANG_FEET_OFFSETS) {
-            if (createFang(serverLevel, centerX + offset[0], centerZ + offset[1],
-                    minY, maxY, yRot, 0)) {
-                spawned++;
+        if (target instanceof AbstractFlyingSoldier) {
+            // 单位伤害统一忽略无敌帧；空中目标只生成一颗预判尖牙，
+            //   避免同一簇多颗尖牙同 tick 重复结算把小体型目标秒杀。
+            if (createAirFang(serverLevel, centerX, centerY, centerZ, yRot, 0)) {
+                spawned = 1;
+            }
+        } else {
+            for (double[] offset : FANG_FEET_OFFSETS) {
+                if (createFang(serverLevel, centerX + offset[0], centerZ + offset[1],
+                        minY, maxY, yRot, 0)) {
+                    spawned++;
+                }
             }
         }
 
@@ -175,6 +201,19 @@ public class EvokerSoldier extends AbstractArmySoldier {
                     SoundEvents.EVOKER_PREPARE_ATTACK, SoundSource.HOSTILE, 1.0f, 1.0f);
         }
         return spawned > 0;
+    }
+
+    /**
+     * 对飞行目标把尖牙生成在预判高度，而不是地面。
+     *   尖牙碰撞盒从生成点向上延伸，与小体型飞行目标的下半身相交；
+     *   高度限制在目标位置上下 1.5 格内，避免错误命中其他楼层。
+     */
+    private boolean createAirFang(ServerLevel level, double x, double y, double z,
+                                  float yRot, int warmupTicks) {
+        if (!level.isLoaded(BlockPos.containing(x, y, z))) return false;
+        EvokerFangs fangs = new EvokerFangs(level, x, y, z, yRot, warmupTicks, this);
+        level.addFreshEntity(fangs);
+        return true;
     }
 
     /** 在 (x,z) 附近找一块可站立地面，并在其上生成尖牙。 */

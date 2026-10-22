@@ -19,5 +19,6 @@ public final class ModMenuClientEvents {
         event.register(ModMenus.TACTICAL_EQUIPMENT_SLOTS.get(), TacticalEquipmentSlotsScreen::new);
         event.register(ModMenus.BACKPACK.get(), BackpackScreen::new);
         event.register(ModMenus.UNIT.get(), UnitScreen::new);
+        event.register(ModMenus.SPAWN_POINT.get(), SpawnPointScreen::new);
     }
 }

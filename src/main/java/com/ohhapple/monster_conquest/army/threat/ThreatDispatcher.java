@@ -1,22 +1,33 @@
 package com.ohhapple.monster_conquest.army.threat;
 
+import com.ohhapple.monster_conquest.army.CombatRules;
+import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
 import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.config.PlayerConfig;
-import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
-import com.ohhapple.monster_conquest.army.relation.FactionAlly;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.player.PlayerArmyManager;
+import com.ohhapple.monster_conquest.player.PlayerCommandState;
 import com.ohhapple.monster_conquest.util.PeacefulUtil;
+
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
+
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -45,7 +56,7 @@ public final class ThreatDispatcher {
      *   第一次命中已建立仇恨与目标，后续命中只做便宜的刷新。
      */
     private static final int PROPAGATE_THROTTLE_TICKS = 20;
-    private static final java.util.Map<UUID, Integer> lastPropagateTick = new java.util.HashMap<>();
+    private static final Map<UUID, Integer> lastPropagateTick = new HashMap<>();
 
     public static long hatredResetStamp() { return hatredResetStamp; }
 
@@ -82,25 +93,27 @@ public final class ThreatDispatcher {
         long nowGT = victim.level().getGameTime();
         if (nowGT < truceUntilGameTime) return;
 
-        // 限流：同一个受害者 20 tick 内只做一次完整仇恨传播
-        int nowTick = (int) (nowGT % Integer.MAX_VALUE);
-        Integer last = lastPropagateTick.get(victim.getUUID());
-        if (last != null && nowTick - last < PROPAGATE_THROTTLE_TICKS) return;
-        lastPropagateTick.put(victim.getUUID(), nowTick);
-        if (lastPropagateTick.size() > 256) {
-            lastPropagateTick.entrySet().removeIf(e -> nowTick - e.getValue() > 1200);
-        }
-
         if (attacker instanceof Player p
                 && (p.isCreative() || p.isSpectator())) return;
 
-        // 单向结盟：任一方向结盟 → 视为友军摩擦，不传播、不建立敌对
-        ResourceLocation vf = ArmyThreatUtil.factionOf(victim);
-        ResourceLocation af = ArmyThreatUtil.factionOf(attacker);
-        if (vf != null && af != null
-                && (FactionAlly.isAlly(vf, af)
-                || FactionAlly.isAlly(af, vf))) {
+        // 同军队 / 同阵营 / 任一方向结盟都属于友军摩擦：不传播仇恨、不写共享名单。
+        if (CombatRules.isFriendly(victim, attacker)) return;
+
+        // 限流只节流大范围广播；同一窗口内的后续攻击者仍必须写入
+        // 点对点仇恨与玩家共享名单，否则群殴时只有第一个攻击者会被记住。
+        int nowTick = (int) (nowGT % Integer.MAX_VALUE);
+        Integer last = lastPropagateTick.get(victim.getUUID());
+        if (last != null && nowTick - last < PROPAGATE_THROTTLE_TICKS) {
+            tryEstablishArmyHostility(victim, attacker);
+            markArmyLeaderHatredOnly(victim, attacker);
+            markArmyLeaderHatredOnly(attacker, victim);
+            markPlayerSharedHatredIfApplicable(victim, attacker);
+            markPlayerSharedHatredIfApplicable(attacker, victim);
             return;
+        }
+        lastPropagateTick.put(victim.getUUID(), nowTick);
+        if (lastPropagateTick.size() > 256) {
+            lastPropagateTick.entrySet().removeIf(e -> nowTick - e.getValue() > 1200);
         }
 
         tryEstablishArmyHostility(victim, attacker);
@@ -115,6 +128,74 @@ public final class ThreatDispatcher {
 
         markPlayerSharedHatredIfApplicable(victim, attacker);
         markPlayerSharedHatredIfApplicable(attacker, victim);
+    }
+
+    /**
+     * 仇恨目标与召唤关系双向展开：
+     *   召唤者 → 全部存活召唤物；召唤物 → 召唤者及其全部存活召唤物。
+     * 返回顺序保持目标本身优先，供各仇恨名单逐项登记。
+     */
+    public static List<LivingEntity> expandSummonThreatTargets(
+            LivingEntity target, ServerLevel level) {
+        List<LivingEntity> out = new ArrayList<>();
+        Set<UUID> seen = new HashSet<>();
+        addThreatTarget(out, seen, target);
+
+        for (int i = 0; i < out.size(); i++) {
+            if (!(out.get(i) instanceof AbstractArmySoldier soldier)) continue;
+            if (soldier.isSummoned()) {
+                addThreatTarget(out, seen, soldier.getSummoner());
+            }
+            for (AbstractArmySoldier summoned : soldier.getLivingSummonedSoldiers(level)) {
+                addThreatTarget(out, seen, summoned);
+            }
+            for (AbstractArmySoldier nearby : level.getEntitiesOfClass(
+                    AbstractArmySoldier.class,
+                    soldier.getBoundingBox().inflate(GeneralConfig.armyFollowRange),
+                    candidate -> candidate.isSummoned()
+                            && soldier.getUUID().equals(candidate.getSummonerUuid()))) {
+                addThreatTarget(out, seen, nearby);
+            }
+        }
+        return out;
+    }
+
+    private static void addThreatTarget(List<LivingEntity> out, Set<UUID> seen,
+                                        @Nullable LivingEntity target) {
+        if (target == null || !target.isAlive() || target.isRemoved()) return;
+        if (seen.add(target.getUUID())) out.add(target);
+    }
+
+    /** 玩家共享仇恨同样登记召唤关系闭包；军队名单覆盖整军，实体名单覆盖召唤链接。 */
+    public static void markPlayerSharedHatred(PlayerCommandState state,
+                                              LivingEntity target,
+                                              ServerLevel level) {
+        if (state == null || target == null) return;
+        long nowGT = level.getGameTime();
+        for (LivingEntity enemy : expandSummonThreatTargets(target, level)) {
+            UUID enemyArmy = resolveArmyUuidOrphanFriendly(enemy);
+            if (enemyArmy != null && !enemyArmy.equals(state.getOwnerUuid())) {
+                state.markSharedHatredArmy(enemyArmy, nowGT);
+            }
+            state.markSharedHatredEntity(enemy.getUUID(), nowGT);
+        }
+        state.tickSharedHatred(nowGT);
+        state.tickSharedHatredEntities(nowGT);
+    }
+
+    /** 节流窗口内的便宜刷新：只写首领仇恨表，不做整军广播或目标重设。 */
+    private static void markArmyLeaderHatredOnly(LivingEntity member, LivingEntity enemy) {
+        if (enemy == null || !enemy.isAlive()) return;
+        if (member instanceof AbstractArmyCommander commander) {
+            if (commander.canAttack(enemy)) commander.markAsHatred(enemy);
+            return;
+        }
+        if (member instanceof AbstractArmySoldier soldier) {
+            AbstractArmyCommander commander = soldier.getCommander();
+            if (commander != null && commander.isAlive() && commander.canAttack(enemy)) {
+                commander.markAsHatred(enemy);
+            }
+        }
     }
 
     // ===================== NPC 军队共享 =====================
@@ -141,6 +222,17 @@ public final class ThreatDispatcher {
         //   不需要再做一次大范围实体扫描（群殴 / 连续命中时开销很大）。
         if (leaderKnows) return;
 
+        if (leader instanceof AbstractArmyCommander commander) {
+            // 首领已有编制缓存，直接通知自己的士兵，不再以受害者为中心扫世界。
+            for (AbstractArmySoldier s : commander.getSoldiers()) {
+                if (!s.isAlive() || s.isAttackStopped()) continue;
+                if (!s.canAttack(enemy)) continue;
+                LivingEntity cur = s.getTarget();
+                if (cur == null || !cur.isAlive()) s.setTarget(enemy);
+            }
+            return;
+        }
+
         double range = GeneralConfig.armyFollowRange * 2;
         AABB box = member.getBoundingBox().inflate(range);
         for (AbstractArmySoldier s : sl.getEntitiesOfClass(AbstractArmySoldier.class, box)) {
@@ -163,24 +255,15 @@ public final class ThreatDispatcher {
 
     private static void markPlayerSharedHatredIfApplicable(LivingEntity owner, LivingEntity enemy) {
         if (owner == null || enemy == null) return;
+        if (CombatRules.isFriendly(owner, enemy)) return;
         if (!(owner.level() instanceof ServerLevel sl)) return;
 
         Player playerOwner = resolvePlayerOwner(owner);
         if (playerOwner == null) return;
 
-        var st = com.ohhapple.monster_conquest.player.PlayerArmyManager
+        var st = PlayerArmyManager
                 .get(playerOwner.getUUID());
-        long nowGT = sl.getGameTime();
-
-        UUID enemyArmy = resolveArmyUuidOrphanFriendly(enemy);
-        if (enemyArmy != null && !enemyArmy.equals(playerOwner.getUUID())) {
-            st.markSharedHatredArmy(enemyArmy, nowGT);
-        } else if (enemyArmy == null) {
-            st.markSharedHatredEntity(enemy.getUUID(), nowGT);
-        }
-
-        st.tickSharedHatred(nowGT);
-        st.tickSharedHatredEntities(nowGT);
+        markPlayerSharedHatred(st, enemy, sl);
     }
 
     @Nullable
@@ -215,7 +298,15 @@ public final class ThreatDispatcher {
                 cmd.markAsHatred(enemy);
             }
             if (cmd == null || !cmd.isAlive()) {
-                if (s.canAttack(enemy)) s.setTarget(enemy);
+                if (s.canAttack(enemy)) {
+                    // 点对点仇恨必须记录，但不能让每一次新命中都抢走正在追击的目标。
+                    // 否则一圈远程单位轮流射击时，近战兵会不断转身，最终谁都追不上。
+                    s.markPersonalHatred(enemy);
+                    LivingEntity current = s.getTarget();
+                    if (current == null || !current.isAlive()) {
+                        s.setTarget(enemy);
+                    }
+                }
             }
 
         } else if (member instanceof WarHorseEntity h) {
@@ -274,7 +365,7 @@ public final class ThreatDispatcher {
         return null;
     }
 
-    private static boolean isPlayerArmyUuid(UUID army, net.minecraft.world.level.Level level) {
+    private static boolean isPlayerArmyUuid(UUID army, Level level) {
         if (army == null) return false;
         if (!(level instanceof ServerLevel sl)) return false;
         if (sl.getServer().getPlayerList().getPlayer(army) != null) return true;

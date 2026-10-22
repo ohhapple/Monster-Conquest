@@ -13,8 +13,11 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.storage.loot.LootParams;
 import net.minecraft.world.phys.BlockHitResult;
 import net.neoforged.neoforge.network.PacketDistributor;
+
+import java.util.List;
 
 /**
  * 交易站方块：右键打开交易 GUI（出售子弹 / 枪械 / 各种战术工具，可批量购买）。
@@ -55,5 +58,11 @@ public class TradeStationBlock extends Block {
         if (level instanceof ServerLevel && player instanceof ServerPlayer sp) {
             PacketDistributor.sendToPlayer(sp, new OpenTradeGuiPayload(pos));
         }
+    }
+
+    /** 挖掉时掉自己（方块没有战利品表，掉落在这里给出）。 */
+    @Override
+    protected List<ItemStack> getDrops(BlockState state, LootParams.Builder builder) {
+        return List.of(new ItemStack(this));
     }
 }

@@ -1,11 +1,13 @@
 package com.ohhapple.monster_conquest.entity.projectile;
 
-import com.ohhapple.monster_conquest.config.CombatConfig;
+import com.ohhapple.monster_conquest.army.CombatRules;
 import com.ohhapple.monster_conquest.army.FactionIds;
+import com.ohhapple.monster_conquest.config.CombatConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.ModEntities;
 import com.ohhapple.monster_conquest.item.WarmClothesItem;
+
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.syncher.EntityDataAccessor;
@@ -21,13 +23,14 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Arrow;
 import net.minecraft.world.entity.projectile.ProjectileDeflection;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
@@ -200,11 +203,11 @@ public class ArmyArrow extends Arrow {
      * 不处理 deflect(REVERSE) —— 因为走到这里一定是敌人。
      */
     private void selfHandleHit(LivingEntity living) {
-        // 清零无敌帧（保持原版行为，让箭矢必定造成伤害）
-        living.invulnerableTime = 0;
-
-        double base = this.getBaseDamage();
         Entity owner = this.getOwner();
+        // 非单位射出的箭矢保持原版必中伤害；单位射出的箭矢由受击事件统一处理。
+        CombatRules
+                .clearInvulnerabilityForNonManagedAttacker(living, owner);
+        double base = this.getBaseDamage();
         DamageSource source = this.damageSources().arrow(
                 this, owner != null ? owner : this);
 

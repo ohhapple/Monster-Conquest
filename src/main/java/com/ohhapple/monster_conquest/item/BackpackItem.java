@@ -1,24 +1,28 @@
 package com.ohhapple.monster_conquest.item;
 
-import com.ohhapple.monster_conquest.Monster_conquest;
 import com.ohhapple.monster_conquest.equipment.TacticalEquipmentSlotsData;
 import com.ohhapple.monster_conquest.gun.GunAmmoType;
 import com.ohhapple.monster_conquest.menu.BackpackMenu;
+import com.ohhapple.monster_conquest.Monster_conquest;
+
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.InteractionResultHolder;
-import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResultHolder;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.component.ItemContainerContents;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
-import net.minecraft.world.item.component.ItemContainerContents;
+import net.minecraft.world.level.block.ShulkerBoxBlock;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.SimpleMenuProvider;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -97,7 +101,7 @@ public class BackpackItem extends Item {
     public static boolean slotAccepts(ItemStack stack) {
         if (stack.isEmpty()) return true;
         if (stack.getItem() instanceof BackpackItem) return false;          // 自己的背包：禁止
-        boolean vanillaContainer = isShulkerBox(stack) || stack.is(net.minecraft.world.item.Items.BUNDLE);
+        boolean vanillaContainer = isShulkerBox(stack) || stack.is(Items.BUNDLE);
         if (vanillaContainer) return true;
         if (stack.getItem() instanceof AmmoBoxItem) return true;            // 本模组弹药箱
         // 其它"看起来是容器"的物品（带容器 / 收纳袋数据，例如别的模组的背包）→ 不放
@@ -106,8 +110,8 @@ public class BackpackItem extends Item {
     }
 
     public static boolean isShulkerBox(ItemStack stack) {
-        return stack.getItem() instanceof net.minecraft.world.item.BlockItem bi
-                && bi.getBlock() instanceof net.minecraft.world.level.block.ShulkerBoxBlock;
+        return stack.getItem() instanceof BlockItem bi
+                && bi.getBlock() instanceof ShulkerBoxBlock;
     }
 
     // ===================== 内容读写 =====================
