@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.egg;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.item.CommanderSpawnEggItem;
 import com.ohhapple.monster_conquest.item.RetrievalToolItem;
 import com.ohhapple.monster_conquest.item.SoldierSpawnEggItem;
@@ -37,6 +38,7 @@ public record ToggleEggCavalryPayload() implements CustomPacketPayload {
     public static void handle(ToggleEggCavalryPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             ItemStack stack = player.getMainHandItem();
 
             boolean isSoldier = stack.getItem() instanceof SoldierSpawnEggItem;

@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.faction;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.network.FactionGuiNetwork;
 import com.ohhapple.monster_conquest.network.clientbound.faction.OpenFactionGuiPayload;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -32,6 +33,7 @@ public record RequestOpenFactionGuiPayload() implements CustomPacketPayload {
     public static void handle(RequestOpenFactionGuiPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             FactionGuiNetwork.sendSnapshot(player);
             PacketDistributor.sendToPlayer(player, new OpenFactionGuiPayload());
         });

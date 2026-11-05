@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.rts;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncRtsSelectionPayload;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -55,6 +56,7 @@ public record RtsSquadClickPayload(int squadId, boolean additive, @Nullable UUID
     public static void handle(RtsSquadClickPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             var state = PlayerArmyManager.get(player.getUUID());
             state.applyRtsSquadClick(player, payload.squadId(), payload.additive(),
                     payload.soldierUuid());

@@ -1,5 +1,6 @@
 package com.ohhapple.monster_conquest.army;
 
+import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.InteractionHand;
@@ -63,8 +64,11 @@ public final class ShieldGuardController {
             }
         }
 
-        if (user.getShieldGuardStance() == GuardStance.BRACING
-                || user.getShieldGuardStance() == GuardStance.READY) {
+        boolean arenaUnit = entity instanceof AbstractArmySoldier soldier
+                && soldier.isArenaUnit();
+        if (!arenaUnit
+                && (user.getShieldGuardStance() == GuardStance.BRACING
+                || user.getShieldGuardStance() == GuardStance.READY)) {
             entity.startUsingItem(InteractionHand.OFF_HAND);
         }
     }
@@ -93,6 +97,9 @@ public final class ShieldGuardController {
     /** 格挡成功后播放反馈；斧类等可破盾武器会让单位进入恢复阶段。 */
     public static void onBlocked(ShieldGuardUser user, DamageSource source) {
         LivingEntity entity = user.shieldGuardEntity();
+        if (entity instanceof AbstractArmySoldier soldier) {
+            soldier.markShieldGuardKnockbackImmunity(10);
+        }
         entity.level().playSound(null, entity.getX(), entity.getY(), entity.getZ(),
                 SoundEvents.SHIELD_BLOCK, entity.getSoundSource(),
                 1.0F, 0.8F + entity.getRandom().nextFloat() * 0.4F);

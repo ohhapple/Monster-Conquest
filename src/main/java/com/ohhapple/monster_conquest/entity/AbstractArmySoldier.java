@@ -12,6 +12,13 @@ import com.ohhapple.monster_conquest.ai.nav.PathProbe;
 import com.ohhapple.monster_conquest.ai.nav.RoutePlanner;
 import com.ohhapple.monster_conquest.ai.soldier.*;
 import com.ohhapple.monster_conquest.ai.target.AttackConfiguredEnemyGoal;
+import com.ohhapple.monster_conquest.arena.game.ArenaEquipmentRuntime;
+import com.ohhapple.monster_conquest.arena.game.ArenaMatchManager;
+import com.ohhapple.monster_conquest.arena.game.ArenaSkillRuntime;
+import com.ohhapple.monster_conquest.arena.game.ArenaStatusFlags;
+import com.ohhapple.monster_conquest.arena.game.ArenaUnitSounds;
+import com.ohhapple.monster_conquest.arena.trait.ArenaTraitRuntime;
+import com.ohhapple.monster_conquest.arena.unit.ArenaSkillType;
 import com.ohhapple.monster_conquest.army.*;
 import com.ohhapple.monster_conquest.army.FactionShield;
 import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
@@ -27,6 +34,7 @@ import com.ohhapple.monster_conquest.entity.projectile.ArmyArrow;
 import com.ohhapple.monster_conquest.entity.projectile.ArmyGunProjectile;
 import com.ohhapple.monster_conquest.entity.soldiers.EvokerSoldier;
 import com.ohhapple.monster_conquest.entity.soldiers.VillagerPriestSoldier;
+import com.ohhapple.monster_conquest.entity.soldiers.WitchSoldier;
 import com.ohhapple.monster_conquest.gun.GunSpec;
 import com.ohhapple.monster_conquest.item.LanceItem;
 import com.ohhapple.monster_conquest.Monster_conquest;
@@ -39,8 +47,10 @@ import com.ohhapple.monster_conquest.util.UnitGearRules;
 import com.ohhapple.monster_conquest.world.ArmyChunkLoader;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.HolderLookup;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.core.Vec3i;
 import net.minecraft.nbt.CompoundTag;
@@ -62,8 +72,12 @@ import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.DifficultyInstance;
+import net.minecraft.world.effect.MobEffect;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.goal.*;
@@ -79,6 +93,7 @@ import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
@@ -104,6 +119,34 @@ public abstract class AbstractArmySoldier extends PathfinderMob
     protected static final EntityDataAccessor<Integer> DATA_SOLDIER_TYPE =
             SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.INT);
     protected static final EntityDataAccessor<String> DATA_FACTION =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.STRING);
+    protected static final EntityDataAccessor<Boolean> DATA_ARENA_VISUAL =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.BOOLEAN);
+    protected static final EntityDataAccessor<Boolean> DATA_ARENA_COMBAT =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.BOOLEAN);
+    protected static final EntityDataAccessor<Integer> DATA_ARENA_SIDE =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.INT);
+    protected static final EntityDataAccessor<Integer> DATA_ARENA_BOARD_INDEX =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.INT);
+    protected static final EntityDataAccessor<Boolean> DATA_ARENA_WILD =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.BOOLEAN);
+    protected static final EntityDataAccessor<Integer> DATA_ARENA_STAR =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.INT);
+    protected static final EntityDataAccessor<Integer> DATA_ARENA_EQUIPMENT =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.INT);
+    protected static final EntityDataAccessor<Float> DATA_ARENA_SHIELD =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.FLOAT);
+    protected static final EntityDataAccessor<Float> DATA_ARENA_MAX_HEALTH =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.FLOAT);
+    protected static final EntityDataAccessor<Float> DATA_ARENA_CURRENT_HEALTH =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.FLOAT);
+    protected static final EntityDataAccessor<Integer> DATA_ARENA_SKILL_CHARGE =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.INT);
+    protected static final EntityDataAccessor<Integer> DATA_ARENA_SKILL_REQUIRED =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.INT);
+    protected static final EntityDataAccessor<Integer> DATA_ARENA_STATUS_FLAGS =
+            SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.INT);
+    protected static final EntityDataAccessor<String> DATA_ARENA_VISIBLE_EFFECTS =
             SynchedEntityData.defineId(AbstractArmySoldier.class, EntityDataSerializers.STRING);
 
     protected static final EntityDataAccessor<Integer> DATA_SQUAD_ID =
@@ -147,6 +190,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
     private int shieldGuardBraceTicks;
     private int shieldGuardRecoveryTicks;
     private int shieldGuardAttackLockTicks;
+    private int shieldGuardKnockbackImmunityTicks;
     protected double lastChargeSpeed = 0;
 
     private int stuckCheckTimer = 0;
@@ -180,6 +224,8 @@ public abstract class AbstractArmySoldier extends PathfinderMob
      *   冷却期内不自动重新上马，避免站在窄道口"下马→上马→再下马"来回循环。
      */
     private int terrainDismountCooldown = 0;
+    /** 骑兵战马染色 id；-1 表示未染色。骑兵下马销毁旧马后会复制到新马。 */
+    private int cavalryHorseDyeColor = -1;
 
     /**
      * 40 tick 窗口内实际移动少于该距离（格）→ 判定为"真的卡住没动"（撞墙 / 被地形卡住）。
@@ -266,6 +312,47 @@ public abstract class AbstractArmySoldier extends PathfinderMob
     private final Set<UUID> summonedUnitIds = new LinkedHashSet<>();
     /** 可选召唤物属性；与飞行、装备等级、骑乘形态和阵型完全独立。 */
     private final SummonedUnitState summonedUnitState = new SummonedUnitState();
+
+    /** 自走棋战斗绑定。只在服务端内存中有效，棋盘区块在整个对局期间强制加载。 */
+    @Nullable private UUID arenaMatchId;
+    @Nullable private UUID arenaSourcePieceId;
+    @Nullable private UUID arenaNextDamageSourcePieceId;
+    @Nullable private UUID arenaDotSourcePieceId;
+    @Nullable private UUID arenaHealingSourcePieceId;
+    private int arenaSide = -1;
+    private int arenaBoardIndex = -1;
+    private boolean arenaPresentationMode;
+    private double arenaRangedDamage = -1.0;
+    private double arenaAttackSpeed = -1.0;
+    private double arenaBaseAttackSpeed = -1.0;
+    private double arenaTraitAttackRangeBonus;
+    private double arenaShieldEffectiveness = 1.0;
+    private double arenaSkillAttackSpeedBonus;
+    private double arenaEquipmentAttackSpeedBonus;
+    private double arenaSupportAttackSpeedBonus;
+    private double arenaAuraAttackSpeedBonus;
+    private double arenaExternalAttackSpeedFlatBonus;
+    private double arenaMagicResistance;
+    private double arenaMagicPower;
+    private double arenaSkillLifesteal;
+    private int arenaEffectDamageDepth;
+    private int arenaTrueDamageDepth;
+    private float arenaTrueDamageAmount;
+    private int arenaIgnoreShieldTicks;
+    @Nullable private ArenaSkillType arenaSkillType;
+    @Nullable private ArenaSkillRuntime arenaSkillRuntime;
+    @Nullable private ArenaEquipmentRuntime arenaEquipmentRuntime;
+    @Nullable private ArenaTraitRuntime arenaTraitRuntime;
+
+    private static final ResourceLocation ARENA_EQUIPMENT_ARMOR_MODIFIER =
+            ResourceLocation.fromNamespaceAndPath(
+                    Monster_conquest.MODID, "arena_equipment_armor");
+    private static final ResourceLocation ARENA_EQUIPMENT_MOVEMENT_MODIFIER =
+            ResourceLocation.fromNamespaceAndPath(
+                    Monster_conquest.MODID, "arena_equipment_movement");
+    private static final ResourceLocation ARENA_FROZEN_MOVEMENT_MODIFIER =
+            ResourceLocation.fromNamespaceAndPath(
+                    Monster_conquest.MODID, "arena_frozen_movement");
 
     private static final float CAVALRY_MAX_TURN_PER_TICK = 12f;
 
@@ -372,6 +459,9 @@ public abstract class AbstractArmySoldier extends PathfinderMob
      */
     public Item getMeleeWeaponForTier(EquipmentTier tier) { return tier.getWeapon(); }
 
+    /** 竞技代理单位只保留角色所需的基础武器外观，不读取主世界装备等级。 */
+    protected Item getArenaMeleeWeapon() { return Items.IRON_SWORD; }
+
     /**
      * 骑兵形态是否改用骑枪。默认 true（普通近战兵骑马拿骑枪）。
      *   卫道士士兵覆盖为 false：骑兵形态仍然只拿斧子 + 盾牌。
@@ -395,6 +485,30 @@ public abstract class AbstractArmySoldier extends PathfinderMob
 
     protected double getProjectileSpeed() { return CombatConfig.arrowSpeed; }
     protected SoundEvent getShootSound() { return SoundEvents.SKELETON_SHOOT; }
+
+    /**
+     * 竞技形态复用对应原版生物的受击声。竞技实体注册在独立类型上，
+     * 不能依赖原版 Mob 子类自带的 getHurtSound。
+     */
+    @Override
+    protected SoundEvent getHurtSound(DamageSource source) {
+        ArenaSkillType type = getArenaSkillType();
+        if (isArenaUnit() && type == null) {
+            if (getType() == ModEntities.ARENA_WOLF.get()) {
+                return SoundEvents.WOLF_HURT;
+            }
+            if (getType() == ModEntities.ARENA_SLIME.get()) {
+                return SoundEvents.SLIME_HURT;
+            }
+            if (getType() == ModEntities.ARENA_MAGMA_CUBE.get()) {
+                return SoundEvents.MAGMA_CUBE_HURT;
+            }
+        }
+        if (!isArenaUnit() || type == null) {
+            return super.getHurtSound(source);
+        }
+        return ArenaUnitSounds.hurtSound(type);
+    }
 
     /**
      * 是否使用枪械直瞄弹道（弹速极快、几乎无下坠、可穿过友军）。
@@ -576,6 +690,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
      *   小队"前往"命令 → 由小队状态里的命令目标判断（到达目标点附近或超时后恢复自主索敌）。
      */
     public boolean isMoveOrderPriorityActive() {
+        if (isArenaUnit()) return false;
         // NPC 控制工具的直接移动没有小队状态，手动目标本身就是命令。
         // 玩家士兵的 manualMoveTarget 也可能来自路径点工具，不能当成玩家移动命令；
         // 否则巡逻路线会和"前往"命令互相清目标。
@@ -1014,15 +1129,11 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         }
         ItemStack previous = manualGear[index];
         manualGear[index] = stack.isEmpty() ? ItemStack.EMPTY : stack.copy();
-        ItemStack worn = this.getItemBySlot(gearSlot(index));
         ItemStack want;
         if (!manualGear[index].isEmpty()) {
             want = wornManualStack(index);
         } else if (!defaultGear[index].isEmpty()) {
             want = defaultGear[index];
-        } else if (!previous.isEmpty() && !ItemStack.isSameItem(worn, previous)) {
-            // 快照缺失（老存档）、身上穿的已经不是刚取下的那件：当成自带装备保留
-            want = worn;
         } else {
             // 自带装备本来就是空的（枪手 / 双形态 / 弓手的副手等）：取下手动装备 = 空手
             want = ItemStack.EMPTY;
@@ -1087,15 +1198,6 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         this.entityData.set(DATA_MANUAL_GEAR, (byte) mask);
     }
 
-    /** 兼容老存档：没有自带装备快照时，把当前身上（未被手动覆盖的）装备记为自带装备。 */
-    public void ensureDefaultGear() {
-        for (int i = 0; i < GEAR_SLOTS; i++) {
-            if (defaultGear[i].isEmpty() && manualGear[i].isEmpty()) {
-                defaultGear[i] = this.getItemBySlot(gearSlot(i)).copy();
-            }
-        }
-    }
-
     /** 主手是否被玩家手动指定（手动指定时双持自动换武器让位）。 */
     public boolean hasManualMainHand() { return !manualGear[4].isEmpty(); }
 
@@ -1134,7 +1236,6 @@ public abstract class AbstractArmySoldier extends PathfinderMob
 
     /** 清空全部手动装备与战术装备，并把自带装备还原到身上。 */
     public void clearManualEquipment() {
-        ensureDefaultGear();
         for (int i = 0; i < GEAR_SLOTS; i++) setManualGear(i, ItemStack.EMPTY);
         for (int i = 0; i < TACTICAL_SLOTS; i++) manualTactical[i] = ItemStack.EMPTY;
         refreshManualGearMask();
@@ -1287,6 +1388,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
     public void setManualFacingAnchor(@Nullable Vec3 v) { this.manualFacingAnchor = v; }
 
     public boolean isAttackStopped() {
+        if (isArenaUnit()) return false;
         if (!isPlayerArmy()) return false;
         Player p = getCommanderPlayer();
         if (p == null) return false;
@@ -1486,6 +1588,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
      *     - 远程兵在 AttackConfiguredEnemyGoal 里索敌范围翻倍
      */
     public boolean isHardStationed() {
+        if (isArenaUnit()) return false;
         if (!isPlayerArmy()) return false;
         Player p = getCommanderPlayer();
         if (p == null) return false;
@@ -1577,6 +1680,20 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         builder.define(DATA_TIER, 0);
         builder.define(DATA_SOLDIER_TYPE, getDefaultSoldierType().ordinal());
         builder.define(DATA_FACTION, "");
+        builder.define(DATA_ARENA_VISUAL, false);
+        builder.define(DATA_ARENA_COMBAT, false);
+        builder.define(DATA_ARENA_WILD, false);
+        builder.define(DATA_ARENA_SIDE, -1);
+        builder.define(DATA_ARENA_BOARD_INDEX, -1);
+        builder.define(DATA_ARENA_STAR, 1);
+        builder.define(DATA_ARENA_EQUIPMENT, 0x3FFFF);
+        builder.define(DATA_ARENA_SHIELD, 0.0f);
+        builder.define(DATA_ARENA_MAX_HEALTH, 0.0f);
+        builder.define(DATA_ARENA_CURRENT_HEALTH, 0.0f);
+        builder.define(DATA_ARENA_SKILL_CHARGE, 0);
+        builder.define(DATA_ARENA_SKILL_REQUIRED, 1);
+        builder.define(DATA_ARENA_STATUS_FLAGS, 0);
+        builder.define(DATA_ARENA_VISIBLE_EFFECTS, "");
         // 默认无小队（0）：刷怪蛋 / 指令召唤出来的己方士兵不会自动占用 1 分队，
         //   由玩家用轮盘"编入附近单兵"或 RTS 命令收编；存档中的队号仍按 NBT 恢复。
         builder.define(DATA_SQUAD_ID, 0);
@@ -1597,6 +1714,10 @@ public abstract class AbstractArmySoldier extends PathfinderMob
 
     @Override
     public void remove(RemovalReason reason) {
+        if (!level().isClientSide && isArenaUnit()
+                && arenaSkillRuntime != null) {
+            arenaSkillRuntime.discardArenaSummons();
+        }
         if ((reason == RemovalReason.KILLED || reason == RemovalReason.DISCARDED)
                 && !level().isClientSide
                 && isSummoned()
@@ -1674,6 +1795,816 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         this.targetSelector.addGoal(0, new AttackConfiguredEnemyGoal(this));
     }
 
+    /**
+     * 切入自走棋 AI：保留普通攻击 Goal，移除军队阵型、跟随、游走和普通仇恨目标。
+     * 这一模式只属于当前临时战斗实体，不写入普通军队编制。
+     */
+    public void enterArenaMode(UUID matchId, int side, int boardIndex) {
+        this.arenaMatchId = matchId;
+        this.arenaSide = side;
+        this.arenaBoardIndex = boardIndex;
+        this.entityData.set(DATA_ARENA_VISUAL, true);
+        this.entityData.set(DATA_ARENA_COMBAT, true);
+        this.entityData.set(DATA_ARENA_WILD, false);
+        this.entityData.set(DATA_ARENA_SIDE, side);
+        this.entityData.set(DATA_ARENA_BOARD_INDEX, boardIndex);
+        // 自走棋单位默认以步兵形态入场；未来需要骑乘的特殊弈子应通过
+        // 独立能力显式覆盖，不能复用主世界的自动上马逻辑。
+        switchToInfantry();
+        this.setTarget(null);
+        this.setLastHurtByMob(null);
+        this.setPersistenceRequired();
+        this.goalSelector.removeAllGoals(goal -> true);
+        this.targetSelector.removeAllGoals(goal -> true);
+        this.goalSelector.addGoal(0, new FloatGoal(this));
+        if (this instanceof EvokerSoldier evoker) {
+            // 魔法师角色会被通用近战 / 远程 Goal 主动拒绝；竞技唤魔者
+            // 必须使用“保持中距、对目标召唤尖牙”的施法行为。
+            this.goalSelector.addGoal(1, new EvokerSpellGoal(evoker));
+        } else if (this instanceof WitchSoldier witch) {
+            this.goalSelector.addGoal(1, new WitchSupportGoal(witch));
+        } else if (this instanceof AbstractFlyingSoldier flying) {
+            this.goalSelector.addGoal(1, new FlyingMeleeAttackGoal(flying));
+        } else {
+            this.goalSelector.addGoal(1, new SoldierMeleeAttackGoal(this));
+            this.goalSelector.addGoal(2, new SoldierRangedAttackGoal(this));
+        }
+        this.goalSelector.addGoal(3, new RandomLookAroundGoal(this));
+        this.targetSelector.addGoal(0, new AttackConfiguredEnemyGoal(this));
+    }
+
+    /**
+     * 非战斗展示实体只固定为步兵形态，不加入竞技敌我关系，
+     * 避免准备阶段和备战席单位继续运行主世界的自动上马评估。
+     */
+    public void enterArenaPresentationMode(int side, int boardIndex) {
+        arenaPresentationMode = true;
+        this.arenaSide = side;
+        this.arenaBoardIndex = boardIndex;
+        this.entityData.set(DATA_ARENA_VISUAL, true);
+        this.entityData.set(DATA_ARENA_COMBAT, false);
+        this.entityData.set(DATA_ARENA_WILD, false);
+        this.entityData.set(DATA_ARENA_SIDE, side);
+        this.entityData.set(DATA_ARENA_BOARD_INDEX, boardIndex);
+        switchToInfantry();
+        setNoAi(true);
+    }
+
+    public void setArenaRangedDamage(double damage) {
+        arenaRangedDamage = Math.max(0.0, damage);
+    }
+
+    public void setArenaAttackSpeed(double attacksPerSecond) {
+        arenaAttackSpeed = Math.max(0.01, attacksPerSecond);
+    }
+
+    public void setArenaTraitAttackRangeBonus(double bonus) {
+        arenaTraitAttackRangeBonus = Math.max(0.0, bonus);
+    }
+
+    public double getArenaEffectiveMaxAttackRange(boolean mounted) {
+        return getMaxAttackRange(mounted)
+                + (isArenaUnit() ? arenaTraitAttackRangeBonus : 0.0);
+    }
+
+    public void setArenaBaseAttackSpeed(double attacksPerSecond) {
+        arenaBaseAttackSpeed = Math.max(0.01, attacksPerSecond);
+    }
+
+    public double getArenaBaseAttackSpeed() {
+        return arenaBaseAttackSpeed > 0.0
+                ? arenaBaseAttackSpeed : arenaAttackSpeed;
+    }
+
+    public double getArenaAttackSpeed() {
+        return arenaAttackSpeed;
+    }
+
+    public double getArenaEffectiveAttackSpeed() {
+        // 静态装备已包含在 arenaAttackSpeed 中；动态装备与技能百分比
+        // 都按卡面基础攻速换算后相加，避免不同来源互相乘算。
+        double effective = Math.max(0.01,
+                arenaAttackSpeed
+                        + getArenaBaseAttackSpeed()
+                        * arenaEquipmentAttackSpeedBonus
+                        + getArenaBaseAttackSpeed()
+                        * arenaSkillAttackSpeedBonus
+                        + getArenaBaseAttackSpeed()
+                        * arenaSupportAttackSpeedBonus
+                        + getArenaBaseAttackSpeed()
+                        * arenaAuraAttackSpeedBonus
+                        + arenaExternalAttackSpeedFlatBonus);
+        return isArenaFrozen()
+                ? Math.max(0.01, effective * 0.5) : effective;
+    }
+
+    public boolean isArenaFrozen() {
+        return isArenaUnit() && getTicksFrozen() > 0;
+    }
+
+    public double getArenaFreezeSpeedMultiplier() {
+        return isArenaFrozen() ? 0.5 : 1.0;
+    }
+
+    public void setArenaSkillAttackSpeedBonus(double bonus) {
+        arenaSkillAttackSpeedBonus = Math.max(0.0, bonus);
+    }
+
+    public double getArenaSkillAttackSpeedBonus() {
+        return arenaSkillAttackSpeedBonus;
+    }
+
+    public void setArenaSupportAttackSpeedBonus(double bonus) {
+        arenaSupportAttackSpeedBonus = Math.max(0.0, bonus);
+    }
+
+    public double getArenaSupportAttackSpeedBonus() {
+        return arenaSupportAttackSpeedBonus;
+    }
+
+    public void setArenaAuraAttackSpeedBonus(double bonus) {
+        arenaAuraAttackSpeedBonus = Math.max(0.0, bonus);
+    }
+
+    public double getArenaAuraAttackSpeedBonus() {
+        return arenaAuraAttackSpeedBonus;
+    }
+
+    public void setArenaExternalAttackSpeedFlatBonus(double bonus) {
+        arenaExternalAttackSpeedFlatBonus = bonus;
+    }
+
+    public double getArenaExternalAttackSpeedFlatBonus() {
+        return arenaExternalAttackSpeedFlatBonus;
+    }
+
+    public void setArenaEquipmentAttackSpeedBonus(double bonus) {
+        arenaEquipmentAttackSpeedBonus = Math.max(0.0, bonus);
+    }
+
+    public void setArenaMagicResistance(double resistance) {
+        arenaMagicResistance = Math.max(0.0, resistance);
+    }
+
+    public double getArenaMagicResistance() {
+        return arenaMagicResistance;
+    }
+
+    public void setArenaMagicPower(double magicPower) {
+        arenaMagicPower = Math.max(0.0, magicPower);
+    }
+
+    public double getArenaMagicPower() {
+        return arenaMagicPower;
+    }
+
+    public void setArenaSkillLifesteal(double lifesteal) {
+        arenaSkillLifesteal = Math.max(0.0, lifesteal);
+    }
+
+    public double getArenaSkillLifesteal() {
+        return arenaSkillLifesteal;
+    }
+
+    /**
+     * 竞技攻速统一换算为 20 tick/秒的攻击间隔。主世界仍使用兵种自己的
+     * 冷却覆盖，竞技属性不会写回这些兵种的普通行为。
+     */
+    public int getArenaRangedAttackCooldownTicks() {
+        int interval = arenaAttackIntervalTicks();
+        return interval > 0 ? interval : getRangedAttackCooldownTicks();
+    }
+
+    public int getArenaMeleeAttackIntervalTicks() {
+        int interval = arenaAttackIntervalTicks();
+        return interval > 0 ? interval : getMeleeAttackIntervalTicks();
+    }
+
+    private int arenaAttackIntervalTicks() {
+        if (!isArenaUnit() || arenaAttackSpeed <= 0.0) return -1;
+        return Math.max(1, (int) Math.round(
+                20.0 / getArenaEffectiveAttackSpeed()));
+    }
+
+    public void configureArenaSkill(ArenaSkillType type, int required) {
+        int safeRequired = Math.max(1, required);
+        if (arenaSkillType == type
+                && this.entityData.get(DATA_ARENA_SKILL_REQUIRED)
+                == safeRequired) {
+            return;
+        }
+        arenaSkillType = type;
+        this.entityData.set(DATA_ARENA_SKILL_REQUIRED,
+                safeRequired);
+        this.entityData.set(DATA_ARENA_SKILL_CHARGE, 0);
+    }
+
+    @Nullable
+    public ArenaSkillType getArenaSkillType() {
+        return arenaSkillType;
+    }
+
+    public int getArenaSkillCharge() {
+        return this.entityData.get(DATA_ARENA_SKILL_CHARGE);
+    }
+
+    public int getArenaSkillRequired() {
+        return this.entityData.get(DATA_ARENA_SKILL_REQUIRED);
+    }
+
+    public void addArenaSkillCharge(int amount) {
+        if (!isArenaUnit() || arenaSkillType == null || amount <= 0) return;
+        if (arenaSkillRuntime != null
+                && arenaSkillRuntime.blocksSkillChargeGain()) {
+            return;
+        }
+        int adjusted = arenaEquipment().modifySkillChargeGain(amount);
+        if (adjusted <= 0) return;
+        int required = getArenaSkillRequired();
+        this.entityData.set(DATA_ARENA_SKILL_CHARGE,
+                Math.min(required, getArenaSkillCharge() + adjusted));
+    }
+
+    public void addArenaSkillChargeRaw(int amount) {
+        if (!isArenaUnit() || arenaSkillType == null || amount <= 0) return;
+        if (arenaSkillRuntime != null
+                && arenaSkillRuntime.blocksSkillChargeGain()) {
+            return;
+        }
+        int required = getArenaSkillRequired();
+        this.entityData.set(DATA_ARENA_SKILL_CHARGE,
+                Math.min(required, getArenaSkillCharge() + amount));
+    }
+
+    public void resetArenaSkillCharge() {
+        this.entityData.set(DATA_ARENA_SKILL_CHARGE, 0);
+    }
+
+    public int getArenaStatusFlags() {
+        return this.entityData.get(DATA_ARENA_STATUS_FLAGS);
+    }
+
+    public void setArenaStatusFlag(int flag, boolean enabled) {
+        int flags = getArenaStatusFlags();
+        this.entityData.set(DATA_ARENA_STATUS_FLAGS,
+                enabled ? flags | flag : flags & ~flag);
+    }
+
+    public void clearArenaStatusFlags() {
+        this.entityData.set(DATA_ARENA_STATUS_FLAGS, 0);
+    }
+
+    /**
+     * 客户端只能可靠读取自己的状态效果；其他竞技单位由服务端把可见效果
+     * 编码进实体数据，供头顶状态栏绘制。每项为 (registryId + 1) << 8 | amplifier。
+     */
+    public String getArenaVisibleEffects() {
+        return this.entityData.get(DATA_ARENA_VISIBLE_EFFECTS);
+    }
+
+    private void syncArenaVisibleEffects() {
+        if (level().isClientSide) return;
+        StringJoiner encoded = new StringJoiner(",");
+        List<MobEffectInstance> effects = getActiveEffects().stream()
+                .filter(MobEffectInstance::isVisible)
+                .sorted(Comparator.comparingInt(effect ->
+                        BuiltInRegistries.MOB_EFFECT.getId(
+                                effect.getEffect().value())))
+                .toList();
+        for (MobEffectInstance effect : effects) {
+            int id = BuiltInRegistries.MOB_EFFECT.getId(
+                    effect.getEffect().value());
+            if (id < 0) continue;
+            encoded.add(Integer.toString(
+                    ((id + 1) << 8) | (effect.getAmplifier() & 0xFF)));
+        }
+        this.entityData.set(DATA_ARENA_VISIBLE_EFFECTS, encoded.toString());
+    }
+
+    public float getArenaShield() {
+        return this.entityData.get(DATA_ARENA_SHIELD);
+    }
+
+    public void setArenaDisplayMaxHealth(double maxHealth) {
+        this.entityData.set(DATA_ARENA_MAX_HEALTH,
+                (float) Math.max(0.0, maxHealth));
+    }
+
+    public float getArenaDisplayMaxHealth() {
+        return this.entityData.get(DATA_ARENA_MAX_HEALTH);
+    }
+
+    public void setArenaCurrentHealth(double currentHealth) {
+        this.entityData.set(DATA_ARENA_CURRENT_HEALTH,
+                (float) Math.max(0.0, currentHealth));
+    }
+
+    public float getArenaCurrentHealth() {
+        return this.entityData.get(DATA_ARENA_CURRENT_HEALTH);
+    }
+
+    public float getArenaHealthRatio() {
+        float maxHealth = getArenaDisplayMaxHealth();
+        return maxHealth <= 0.0f
+                ? 0.0f
+                : Math.max(0.0f, Math.min(1.0f,
+                getArenaCurrentHealth() / maxHealth));
+    }
+
+    /**
+     * 原版 MAX_HEALTH 属性的最终值会被限制在 1024。竞技生命以独立字段作为
+     * 唯一真值，实际实体生命/吸收只作保持实体存活和受击动画的镜像。
+     */
+    public void syncArenaHealthMirror() {
+        if (level().isClientSide) return;
+        float current = Math.max(0.0f, getArenaCurrentHealth());
+        float shield = Math.max(0.0f, getArenaShield());
+        super.setHealth(Math.min(1024.0f, current));
+        float extra = Math.max(0.0f, current - 1024.0f) + shield;
+        super.setAbsorptionAmount(Math.min(1024.0f, extra));
+    }
+
+    public float applyArenaDamage(float damage) {
+        if (damage <= 0.0f) return getArenaCurrentHealth();
+        float shield = getArenaShield();
+        float absorbed = Math.min(shield, damage);
+        setArenaShield(shield - absorbed);
+        if (shield > 0.0f && getArenaShield() <= 0.0f
+                && !level().isClientSide && isArenaUnit()) {
+            arenaSkills().onArenaTraitShieldBroken();
+        }
+        float remaining = Math.max(0.0f, damage - absorbed);
+        float current = Math.max(0.0f, getArenaCurrentHealth() - remaining);
+        setArenaCurrentHealth(current);
+        return current;
+    }
+
+    /**
+     * 真实伤害只扣竞技逻辑生命，不经过竞技护盾或任何减伤计算。
+     */
+    public float applyArenaTrueDamage(float damage) {
+        if (damage <= 0.0f) return getArenaCurrentHealth();
+        float current = Math.max(
+                0.0f, getArenaCurrentHealth() - damage);
+        setArenaCurrentHealth(current);
+        return current;
+    }
+
+    public void prepareArenaDamageMirror(float remainingLogicalHealth) {
+        if (level().isClientSide) return;
+        super.setAbsorptionAmount(0.0f);
+        super.setHealth(remainingLogicalHealth <= 0.0f
+                ? Math.max(0.0f, getHealth())
+                : Math.max(2.0f, Math.min(
+                1024.0f, remainingLogicalHealth)));
+    }
+
+    public void setArenaShield(double amount) {
+        this.entityData.set(DATA_ARENA_SHIELD,
+                (float) Math.max(0.0, amount));
+        if (!level().isClientSide && isArenaUnit()) {
+            syncArenaHealthMirror();
+        }
+    }
+
+    public void setArenaShieldEffectiveness(double multiplier) {
+        arenaShieldEffectiveness = Math.max(0.0, multiplier);
+    }
+
+    public void grantArenaShield(double amount) {
+        grantArenaShieldFrom(null, amount);
+    }
+
+    public void grantArenaShieldFrom(
+            @Nullable AbstractArmySoldier source, double amount) {
+        if (amount <= 0.0) return;
+        amount = arenaSkills().modifyIncomingShield(
+                amount * arenaShieldEffectiveness);
+        float before = getArenaShield();
+        setArenaShield(Math.max(getArenaShield(),
+                amount));
+        recordArenaShieldGain(source,
+                Math.max(0.0f, getArenaShield() - before));
+    }
+
+    public float addArenaShield(double amount) {
+        return addArenaShieldFrom(null, amount);
+    }
+
+    public float addArenaShieldFrom(
+            @Nullable AbstractArmySoldier source, double amount) {
+        if (amount <= 0.0) return 0.0f;
+        amount = arenaSkills().modifyIncomingShield(
+                amount * arenaShieldEffectiveness);
+        float before = getArenaShield();
+        setArenaShield(before + amount);
+        float gained = Math.max(0.0f, getArenaShield() - before);
+        recordArenaShieldGain(source, gained);
+        return gained;
+    }
+
+    private void recordArenaShieldGain(
+            @Nullable AbstractArmySoldier source, float amount) {
+        if (amount <= 0.0f || level().isClientSide) return;
+        UUID sourcePieceId = source == null
+                ? arenaSourcePieceId
+                : source.getArenaSourcePieceId();
+        ArenaMatchManager.recordArenaShieldGain(
+                sourcePieceId, this, amount);
+    }
+
+    public float absorbArenaShield(float damage) {
+        if (damage <= 0.0f) return 0.0f;
+        float shield = getArenaShield();
+        float absorbed = Math.min(shield, damage);
+        setArenaShield(shield - absorbed);
+        if (shield > 0.0f && getArenaShield() <= 0.0f
+                && !level().isClientSide && isArenaUnit()) {
+            arenaSkills().onArenaTraitShieldBroken();
+        }
+        return absorbed;
+    }
+
+    @Override
+    public void heal(float amount) {
+        if (!isArenaUnit() || amount <= 0.0f) {
+            super.heal(amount);
+            return;
+        }
+        if (getArenaCurrentHealth() <= 0.0f) return;
+        float adjusted = arenaSkills().modifyIncomingHealing(
+                arenaEquipment().modifyHealing(amount));
+        if (adjusted <= 0.0f) return;
+        float before = getArenaCurrentHealth();
+        float max = getArenaDisplayMaxHealth();
+        float after = Math.min(max, before + adjusted);
+        setArenaCurrentHealth(after);
+        float actual = Math.max(0.0f, after - before);
+        arenaEquipment().onHeal(actual, adjusted);
+        ArenaMatchManager.recordArenaHealing(
+                arenaHealingSourcePieceId != null
+                        ? arenaHealingSourcePieceId
+                        : arenaSourcePieceId,
+                this, actual);
+        syncArenaHealthMirror();
+    }
+
+    public void healFrom(
+            @Nullable AbstractArmySoldier source, float amount) {
+        healFromPieceId(source == null
+                ? null : source.getArenaSourcePieceId(), amount);
+    }
+
+    public void healFromPieceId(
+            @Nullable UUID sourcePieceId, float amount) {
+        UUID previous = arenaHealingSourcePieceId;
+        arenaHealingSourcePieceId = sourcePieceId;
+        try {
+            heal(amount);
+        } finally {
+            arenaHealingSourcePieceId = previous;
+        }
+    }
+
+    @Override
+    public void setTicksFrozen(int ticks) {
+        int current = getTicksFrozen();
+        if (isArenaUnit() && ticks > current) {
+            ticks = current
+                    + arenaSkills().modifyIncomingControlTicks(
+                    ticks - current);
+        }
+        super.setTicksFrozen(ticks);
+        if (!level().isClientSide) {
+            syncArenaFrozenMovementModifier();
+        }
+    }
+
+    private void syncArenaFrozenMovementModifier() {
+        AttributeInstance speed = getAttribute(Attributes.MOVEMENT_SPEED);
+        if (speed == null) return;
+        if (!isArenaFrozen()) {
+            speed.removeModifier(ARENA_FROZEN_MOVEMENT_MODIFIER);
+            return;
+        }
+        speed.addOrUpdateTransientModifier(new AttributeModifier(
+                ARENA_FROZEN_MOVEMENT_MODIFIER, -0.5,
+                AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL));
+    }
+
+    @Override
+    public boolean addEffect(MobEffectInstance effect,
+                             @Nullable Entity source) {
+        AbstractArmySoldier effectOwner =
+                source instanceof AbstractArmySoldier sourceSoldier
+                        ? sourceSoldier
+                        : source instanceof net.minecraft.world.entity.projectile.Projectile projectile
+                        && projectile.getOwner()
+                        instanceof AbstractArmySoldier projectileOwner
+                        ? projectileOwner : null;
+        if (isArenaUnit()
+                && effectOwner != null
+                && (effect.getEffect() == MobEffects.POISON
+                || effect.getEffect() == MobEffects.WITHER)) {
+            arenaDotSourcePieceId =
+                    effectOwner.getArenaSourcePieceId();
+        }
+        if (isArenaUnit()
+                && isArenaControlEffect(effect.getEffect())) {
+            int duration = arenaSkills()
+                    .modifyIncomingControlTicks(
+                            effect.getDuration());
+            effect = new MobEffectInstance(
+                    effect.getEffect(), duration,
+                    effect.getAmplifier(),
+                    effect.isAmbient(), effect.isVisible(),
+                    effect.showIcon());
+        }
+        return super.addEffect(effect, source);
+    }
+
+    private static boolean isArenaControlEffect(
+            Holder<MobEffect> effect) {
+        return effect == MobEffects.MOVEMENT_SLOWDOWN
+                || effect == MobEffects.DIG_SLOWDOWN
+                || effect == MobEffects.CONFUSION
+                || effect == MobEffects.BLINDNESS
+                || effect == MobEffects.LEVITATION;
+    }
+
+    public ArenaSkillRuntime arenaSkills() {
+        if (arenaSkillRuntime == null) {
+            arenaSkillRuntime = new ArenaSkillRuntime(this);
+        }
+        return arenaSkillRuntime;
+    }
+
+    public ArenaEquipmentRuntime arenaEquipment() {
+        if (arenaEquipmentRuntime == null) {
+            arenaEquipmentRuntime = new ArenaEquipmentRuntime(this);
+            arenaEquipmentRuntime.setEquipment(getArenaEquipmentIds());
+        }
+        return arenaEquipmentRuntime;
+    }
+
+    public ArenaTraitRuntime arenaTraits() {
+        if (arenaTraitRuntime == null) {
+            arenaTraitRuntime = new ArenaTraitRuntime(
+                    this, arenaSkills());
+        }
+        return arenaTraitRuntime;
+    }
+
+    public boolean isDealingArenaEffectDamage() {
+        return arenaEffectDamageDepth > 0;
+    }
+
+    public void beginArenaEffectDamage() {
+        arenaEffectDamageDepth++;
+    }
+
+    public void endArenaEffectDamage() {
+        if (arenaEffectDamageDepth > 0) arenaEffectDamageDepth--;
+    }
+
+    public boolean isDealingArenaTrueDamage() {
+        return arenaTrueDamageDepth > 0;
+    }
+
+    public float getArenaTrueDamageAmount() {
+        return arenaTrueDamageAmount;
+    }
+
+    public void beginArenaTrueDamage(float amount) {
+        if (arenaTrueDamageDepth == 0) {
+            arenaTrueDamageAmount = Math.max(0.0f, amount);
+        }
+        arenaTrueDamageDepth++;
+    }
+
+    public void endArenaTrueDamage() {
+        if (arenaTrueDamageDepth <= 0) return;
+        arenaTrueDamageDepth--;
+        if (arenaTrueDamageDepth == 0) arenaTrueDamageAmount = 0.0f;
+    }
+
+    public void markArenaAttackIgnoresShield(int ticks) {
+        arenaIgnoreShieldTicks = Math.max(arenaIgnoreShieldTicks, ticks);
+    }
+
+    public boolean ignoresArenaShieldBlock() {
+        return arenaIgnoreShieldTicks > 0;
+    }
+
+    public void clearArenaShieldIgnore() {
+        arenaIgnoreShieldTicks = 0;
+    }
+
+    public double getArenaEffectiveMagicResistance() {
+        return arenaEquipmentRuntime == null
+                ? arenaMagicResistance
+                : arenaEquipmentRuntime.effectiveMagicResistance();
+    }
+
+    public boolean isArenaControlImmune() {
+        return arenaEquipmentRuntime != null
+                && arenaEquipmentRuntime.isControlImmune()
+                || arenaSkillRuntime != null
+                && arenaSkillRuntime.isDebuffImmune();
+    }
+
+    public boolean isArenaDebuffImmune() {
+        return arenaSkillRuntime != null
+                && arenaSkillRuntime.isDebuffImmune();
+    }
+
+    public void setArenaEquipmentArmorModifier(double amount) {
+        AttributeInstance armor = getAttribute(Attributes.ARMOR);
+        if (armor == null) return;
+        if (Math.abs(amount) < 0.001) {
+            armor.removeModifier(ARENA_EQUIPMENT_ARMOR_MODIFIER);
+            return;
+        }
+        armor.addOrUpdateTransientModifier(new AttributeModifier(
+                ARENA_EQUIPMENT_ARMOR_MODIFIER, amount,
+                AttributeModifier.Operation.ADD_VALUE));
+    }
+
+    public void setArenaEquipmentMovementMultiplier(double amount) {
+        AttributeInstance speed = getAttribute(Attributes.MOVEMENT_SPEED);
+        if (speed == null) return;
+        if (Math.abs(amount) < 0.001) {
+            speed.removeModifier(ARENA_EQUIPMENT_MOVEMENT_MODIFIER);
+            return;
+        }
+        speed.addOrUpdateTransientModifier(new AttributeModifier(
+                ARENA_EQUIPMENT_MOVEMENT_MODIFIER, amount,
+                AttributeModifier.Operation.ADD_MULTIPLIED_BASE));
+    }
+
+    @Nullable
+    public LivingEntity getArenaTauntTarget() {
+        return arenaSkillRuntime == null
+                ? null : arenaSkillRuntime.arenaTauntTarget();
+    }
+
+    public boolean isArenaUnit() {
+        return arenaMatchId != null && arenaSide >= 0;
+    }
+
+    /** 战斗代理和准备阶段展示体都不属于主世界阵营展示。 */
+    public boolean usesArenaPresentationRules() {
+        return isArenaUnit() || arenaPresentationMode
+                || this.entityData.get(DATA_ARENA_VISUAL);
+    }
+
+    /**
+     * 同步竞技装备的实际模型。所有物品都清空属性修正，数值仅由竞技层计算。
+     */
+    public void clearArenaEquipmentAppearance() {
+        applyArenaProxyLoadout();
+    }
+
+    public void applyArenaEquipmentAppearance(
+            @Nullable Item helmet,
+            @Nullable Item chestplate,
+            @Nullable Item leggings,
+            @Nullable Item boots,
+            boolean shield) {
+        // 每次装备变化都从空外观重新构建，散件合成后不会残留旧槽位模型。
+        clearArenaEquipmentAppearance();
+        if (helmet != null) {
+            this.setItemSlot(EquipmentSlot.HEAD,
+                    arenaPresentationItem(helmet));
+        }
+        if (chestplate != null) {
+            this.setItemSlot(EquipmentSlot.CHEST,
+                    arenaPresentationItem(chestplate));
+        }
+        if (leggings != null) {
+            this.setItemSlot(EquipmentSlot.LEGS,
+                    arenaPresentationItem(leggings));
+        }
+        if (boots != null) {
+            this.setItemSlot(EquipmentSlot.FEET,
+                    arenaPresentationItem(boots));
+        }
+        if (shield) {
+            this.setItemSlot(EquipmentSlot.OFFHAND,
+                    arenaPresentationItem(Items.SHIELD));
+        }
+    }
+
+    public void setArenaStar(int star) {
+        this.entityData.set(DATA_ARENA_STAR,
+                Math.max(1, Math.min(3, star)));
+    }
+
+    public int getArenaStar() {
+        return this.entityData.get(DATA_ARENA_STAR);
+    }
+
+    /**
+     * 将最多三件竞技装备压入一个同步整数。这里只传输界面上要显示的装备，
+     * 实体本身仍不计算竞技属性；属性继续由 ArenaStatCalculator 作为唯一真值。
+     */
+    public void setArenaEquipmentIds(List<Integer> equipmentIds) {
+        int packed = 0x3FFFF;
+        int count = Math.min(3, equipmentIds.size());
+        for (int i = 0; i < count; i++) {
+            int id = Math.max(0, Math.min(63, equipmentIds.get(i)));
+            packed &= ~(0x3F << (i * 6));
+            packed |= id << (i * 6);
+        }
+        this.entityData.set(DATA_ARENA_EQUIPMENT, packed);
+        if (arenaEquipmentRuntime != null) {
+            arenaEquipmentRuntime.setEquipment(equipmentIds);
+        }
+    }
+
+    public List<Integer> getArenaEquipmentIds() {
+        int packed = this.entityData.get(DATA_ARENA_EQUIPMENT);
+        List<Integer> result = new ArrayList<>(3);
+        for (int i = 0; i < 3; i++) {
+            int id = packed >>> (i * 6) & 0x3F;
+            if (id != 0x3F) result.add(id);
+        }
+        return result;
+    }
+
+    public boolean isArenaCombatPresentation() {
+        return isArenaUnit() || this.entityData.get(DATA_ARENA_COMBAT);
+    }
+
+    @Nullable
+    public UUID getArenaMatchId() {
+        return arenaMatchId;
+    }
+
+    public void setArenaSourcePieceId(@Nullable UUID pieceId) {
+        arenaSourcePieceId = pieceId;
+    }
+
+    @Nullable
+    public UUID getArenaSourcePieceId() {
+        return arenaSourcePieceId;
+    }
+
+    public void copyArenaSourcePiece(
+            @Nullable AbstractArmySoldier source) {
+        arenaSourcePieceId = source == null
+                ? null : source.getArenaSourcePieceId();
+    }
+
+    public void setNextArenaDamageSourcePieceId(
+            @Nullable UUID pieceId) {
+        arenaNextDamageSourcePieceId = pieceId;
+    }
+
+    public void clearNextArenaDamageSourcePieceId() {
+        arenaNextDamageSourcePieceId = null;
+    }
+
+    @Nullable
+    public UUID consumeNextArenaDamageSourcePieceId() {
+        UUID pieceId = arenaNextDamageSourcePieceId;
+        arenaNextDamageSourcePieceId = null;
+        return pieceId;
+    }
+
+    @Nullable
+    public UUID getArenaDotSourcePieceId() {
+        return arenaDotSourcePieceId;
+    }
+
+    public int getArenaSide() {
+        return level().isClientSide
+                ? this.entityData.get(DATA_ARENA_SIDE) : arenaSide;
+    }
+
+    public void setArenaWild(boolean wild) {
+        this.entityData.set(DATA_ARENA_WILD, wild);
+    }
+
+    public boolean isArenaWildUnit() {
+        return this.entityData.get(DATA_ARENA_WILD);
+    }
+
+    public boolean isArenaEnemy(@Nullable LivingEntity target) {
+        return isArenaUnit()
+                && target instanceof AbstractArmySoldier other
+                && other.isArenaUnit()
+                && arenaMatchId.equals(other.getArenaMatchId())
+                && arenaBoardIndex == other.getArenaBoardIndex()
+                && arenaSide != other.getArenaSide();
+    }
+
+    public int getArenaBoardIndex() {
+        return level().isClientSide
+                ? this.entityData.get(DATA_ARENA_BOARD_INDEX)
+                : arenaBoardIndex;
+    }
+
     /** 走梯子的寻路：原版寻路不认梯子，路线里永远不会有梯子。 */
     @Override
     protected PathNavigation createNavigation(Level level) {
@@ -1739,6 +2670,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
     public boolean canAttack(LivingEntity target) {
         // 和平模式：不索敌、不反击
         if (PeacefulUtil.isPeaceful(this)) return false;
+        if (isArenaUnit()) return isArenaEnemy(target);
         if (!isPatrolTargetAllowed(target)) return false;
         // 硬驻守同样限制反击：否则刚被攻击时，立即反击分支会绕过驻守半径。
         if (!allowsHardStationAttack(target)) return false;
@@ -1918,16 +2850,43 @@ public abstract class AbstractArmySoldier extends PathfinderMob
 
     @Override
     public void tick() {
+        UUID factionOwner = FactionIds.parsePlayer(getFactionId());
+        boolean ownerInArena = getCommanderUuid()
+                .map(ArenaMatchManager::isPlayerInArenaMatch).orElse(false)
+                || (factionOwner != null
+                && ArenaMatchManager.isPlayerInArenaMatch(factionOwner));
+        if (!level().isClientSide && !isArenaUnit() && ownerInArena) {
+            if (getTarget() != null) super.setTarget(null);
+            if (isFollowingRoute()) clearRoute();
+            if (isFollowingMarchRoute()) clearMarchRoute();
+            getNavigation().stop();
+            AiNavUtil.stopMovementInput(this);
+            return;
+        }
         // 先读取玩家命令，再跑 AI Goal：新移动命令必须在同一 tick 清掉旧目标 /
         //   旧路线，否则 Goal 选择会先执行一次旧战斗或旧路线。
-        if (!level().isClientSide) {
+        boolean arenaLocked = isArenaUnit() || arenaPresentationMode;
+        if (!level().isClientSide && !arenaLocked) {
             syncPlayerMoveOrder();
             tickSummonBinding();
+        }
+        if (!level().isClientSide && isArenaUnit() && isAlive()) {
+            arenaEquipment().tick();
+            arenaTraits().tick();
+            arenaSkills().tick();
+            if (arenaIgnoreShieldTicks > 0) arenaIgnoreShieldTicks--;
         }
         // 必须在 AI Goal 发起攻击之前递减旧窗口：本 tick 新设置的 5 tick 锁盾
         //   不能在同一个 tick 内被减成 4 tick。
         ShieldGuardController.tick(this);
+        if (shieldGuardKnockbackImmunityTicks > 0) {
+            shieldGuardKnockbackImmunityTicks--;
+        }
         super.tick();
+        if (!level().isClientSide && usesArenaPresentationRules()) {
+            syncArenaVisibleEffects();
+        }
+        if (arenaLocked && !level().isClientSide) return;
 
         if (getVehicle() instanceof WarHorseEntity horse) {
             Float locked = horse.getLockedYaw();
@@ -2373,6 +3332,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
     private void applySeparation() {
 
         if (isPassenger()) return;
+        if (isArenaPolarFormActive()) return;
         // 窄通道 / 门口不做同阵营分离：两侧都是墙时互相推开只会把彼此顶死。
         if (AiNavUtil.isNarrowPassage(level(), blockPosition())) return;
 
@@ -2727,6 +3687,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         if (role.isMelee() || role.isDual()) {
             double reach = isPassenger() ? getMountedMeleeReach()
                     : SoldierMeleeAttackGoal.MELEE_REACH;
+            reach = MeleeReach.horizontalReach(this, target, reach);
             double withMargin = reach + 1.5;
             // 高度差同样受限：墙头 / 高台上的目标不算"打得到"
             if (distSq <= withMargin * withMargin
@@ -4977,6 +5938,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
 
         horse.moveTo(getX(), mountY, getZ(), getYRot(), 0);
         horse.setOwner(this);
+        horse.setDyeColorId(cavalryHorseDyeColor);
         horse.getInventory().setItem(0, new ItemStack(Items.SADDLE));
         horse.setItemSlot(EquipmentSlot.BODY, new ItemStack(getCavalryHorseArmor()));
 
@@ -5045,7 +6007,11 @@ public abstract class AbstractArmySoldier extends PathfinderMob
             if (vehicle != null) vehicle.discard();
         }
         if (getSoldierType().isCavalry()) setSoldierType(getSoldierType().toggleMounted());
-        applyEquipment(getTier());
+        if (isArenaUnit() || arenaPresentationMode) {
+            applyArenaProxyLoadout();
+        } else {
+            applyEquipment(getTier());
+        }
         // 形态变了（骑乘 → 步兵）：作废按坐骑净空算的绕路路线
         clearMarchRoute();
 
@@ -5063,6 +6029,18 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         lastRoutePlanTick = -10000;
         resetStuckTracking();
         if (wasMounted) logFormSwitch(false);
+    }
+
+    public int getCavalryHorseDyeColor() {
+        return cavalryHorseDyeColor;
+    }
+
+    public void setCavalryHorseDyeColor(int colorId) {
+        cavalryHorseDyeColor = colorId >= 0 && colorId < 16
+                ? colorId : -1;
+        if (getVehicle() instanceof WarHorseEntity horse) {
+            horse.setDyeColorId(cavalryHorseDyeColor);
+        }
     }
 
     private void logFormSwitch(boolean mounted) {
@@ -5203,6 +6181,64 @@ public abstract class AbstractArmySoldier extends PathfinderMob
     }
 
     // ===================== 装备 =====================
+    /**
+     * 竞技单位不是主世界装备体系的一部分：护甲槽保持空白，避免物品属性叠回
+     * 竞技层计算的生命、攻击和护甲；主手只保留兵种攻击 Goal 所需的普通外观。
+     */
+    private void applyArenaProxyLoadout() {
+        for (EquipmentSlot slot : EquipmentSlot.values()) {
+            this.setItemSlot(slot, ItemStack.EMPTY);
+            this.setDropChance(slot, 0.0f);
+        }
+        for (int i = 0; i < GEAR_SLOTS; i++) {
+            manualGear[i] = ItemStack.EMPTY;
+            defaultGear[i] = ItemStack.EMPTY;
+        }
+        for (int i = 0; i < TACTICAL_SLOTS; i++) manualTactical[i] = ItemStack.EMPTY;
+        dualBowStack = ItemStack.EMPTY;
+        dualMeleeSwordStack = ItemStack.EMPTY;
+        dualMeleeLanceStack = ItemStack.EMPTY;
+
+        SoldierRole role = getRole();
+        if (isDualWeapon()) {
+            if (usesTridentForDual()) {
+                ItemStack trident = arenaPresentationItem(Items.TRIDENT);
+                dualBowStack = trident;
+                dualMeleeSwordStack = trident;
+                dualMeleeLanceStack = trident;
+                this.setItemSlot(EquipmentSlot.MAINHAND, trident.copy());
+            } else {
+                dualBowStack = arenaPresentationItem(Items.BOW);
+                dualMeleeSwordStack =
+                        arenaPresentationItem(getArenaMeleeWeapon());
+                dualMeleeLanceStack = dualMeleeSwordStack.copy();
+                this.setItemSlot(EquipmentSlot.MAINHAND, dualBowStack.copy());
+            }
+        } else if (role.isThrower() || role.isMage()) {
+            this.setItemSlot(EquipmentSlot.MAINHAND,
+                    arenaPresentationItem(Items.STICK));
+        } else if (role.isGunner()) {
+            Item gun = getGunItem();
+            this.setItemSlot(EquipmentSlot.MAINHAND,
+                    arenaPresentationItem(
+                            gun != null ? gun : Items.CROSSBOW));
+        } else if (role.isArcher()) {
+            this.setItemSlot(EquipmentSlot.MAINHAND,
+                    arenaPresentationItem(Items.BOW));
+        } else {
+            this.setItemSlot(EquipmentSlot.MAINHAND,
+                    arenaPresentationItem(getArenaMeleeWeapon()));
+        }
+        refreshManualGearMask();
+    }
+
+    private static ItemStack arenaPresentationItem(Item item) {
+        ItemStack stack = new ItemStack(item);
+        stack.set(DataComponents.ATTRIBUTE_MODIFIERS,
+                ItemAttributeModifiers.EMPTY);
+        return stack;
+    }
+
     public void applyEquipment(EquipmentTier tier) {
         if (!usesArmyEquipment()) {
             for (EquipmentSlot slot : EquipmentSlot.values()) {
@@ -5453,6 +6489,10 @@ public abstract class AbstractArmySoldier extends PathfinderMob
                 && !hasMeleeLineOfSight(livingTarget)) {
             return false;
         }
+        if (isArenaUnit()) {
+            arenaEquipment().beforeBasicAttack();
+            arenaTraits().beforeBasicAttack();
+        }
         ItemStack weapon = this.getMainHandItem();
         if (weapon.getItem() instanceof LanceItem lance && this.isPassenger()
                 && target instanceof LivingEntity living) {
@@ -5521,6 +6561,9 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         if (target == null || !target.isAlive()) return null;
         double reach = getVehicle() instanceof WarHorseEntity
                 ? getMountedMeleeReach() : SoldierMeleeAttackGoal.MELEE_REACH;
+        if (!(getVehicle() instanceof WarHorseEntity)) {
+            reach = MeleeReach.horizontalReach(this, target, reach);
+        }
         double base = Math.atan2(getZ() - target.getZ(), getX() - target.getX());
         double radius = reach * 0.72;
         double torso = getBbHeight() * 0.5;
@@ -5614,7 +6657,8 @@ public abstract class AbstractArmySoldier extends PathfinderMob
 
         // 枪械弹道几乎无下坠，不会像弓箭那样自然失效 → 显式限制射程。
         if (usesDirectFire()) {
-            double maxRange = getMaxAttackRange(getSoldierType().isCavalry());
+            double maxRange = getArenaEffectiveMaxAttackRange(
+                    getSoldierType().isCavalry());
             if (target.distanceTo(this) > maxRange + 2.0) return false;
 
             // 射界检查：直射武器前方被方块（掩体 / 墙 / 地形）挡住时不开火，
@@ -5679,6 +6723,14 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         }
 
         if (fired) {
+            if (isArenaUnit()) {
+                arenaEquipment().beforeBasicAttack();
+                arenaTraits().beforeBasicAttack();
+            }
+            if (isArenaUnit()) {
+                setShieldGuardAttackLockTicks(
+                        ShieldGuardController.ATTACK_LOCK_TICKS);
+            }
             markAttackSuccess();
             SoundEvent sound = getShootSound();
             if (sound != null) {
@@ -5689,6 +6741,54 @@ public abstract class AbstractArmySoldier extends PathfinderMob
             }
         }
         return fired;
+    }
+
+    /**
+     * 竞技技能的强化箭保留真实弹道和命中表现，但伤害由箭头携带的固定值
+     * 结算。普通箭矢的原版速度倍率只适用于普攻，不能直接用来表达技能倍率。
+     */
+    public boolean tryPerformArenaSkillArrow(LivingEntity target,
+                                             double damage,
+                                             int poisonTicks,
+                                             int poisonAmplifier) {
+        if (!(level() instanceof ServerLevel)
+                || !isArenaUnit()
+                || target == null
+                || !target.isAlive()
+                || damage <= 0.0) {
+            return false;
+        }
+
+        double baseSpeed = getProjectileSpeed();
+        double speedJitter = 0.85 + this.getRandom().nextDouble() * 0.30;
+        BallisticAim.Solution solution = BallisticAim.solve(
+                level(), this, target, baseSpeed * speedJitter);
+        if (solution == null) return false;
+
+        ArmyArrow arrow = new ArmyArrow(
+                this.level(), this, new ItemStack(Items.ARROW), null);
+        arrow.setBaseDamage(damage);
+        arrow.setArenaSkillDamage((float) damage);
+        if (poisonTicks > 0) {
+            arrow.addEffect(new MobEffectInstance(
+                    net.minecraft.world.effect.MobEffects.POISON,
+                    poisonTicks, Math.max(0, poisonAmplifier)));
+        }
+        arrow.shoot(solution.dirX(), solution.dirY(), solution.dirZ(),
+                (float) solution.speed(), 0.0f);
+        this.level().addFreshEntity(arrow);
+        setShieldGuardAttackLockTicks(
+                ShieldGuardController.ATTACK_LOCK_TICKS);
+        markAttackSuccess();
+        SoundEvent sound = getShootSound();
+        if (sound != null) {
+            this.level().playSound(null, this, sound,
+                    this.getSoundSource(), 1.0F,
+                    1.0F / (this.getRandom().nextFloat() * 0.4F + 0.8F)
+                            * getShootSoundPitch());
+        }
+        this.swing(InteractionHand.MAIN_HAND, true);
+        return true;
     }
 
     public void performVolleyShot(Vec3 targetPos) {
@@ -5755,6 +6855,10 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         }
 
         if (fired) {
+            if (isArenaUnit()) {
+                setShieldGuardAttackLockTicks(
+                        ShieldGuardController.ATTACK_LOCK_TICKS);
+            }
             SoundEvent sound = getShootSound();
             if (sound != null) {
                 this.level().playSound(null, this, sound, this.getSoundSource(), 1.0F,
@@ -5774,10 +6878,19 @@ public abstract class AbstractArmySoldier extends PathfinderMob
      */
     private void applyProjectileDamage(Projectile proj) {
         GunSpec spec = getGunSpec();
+        double rangedDamage = arenaRangedDamage >= 0.0
+                ? arenaRangedDamage
+                : (spec != null ? spec.damage()
+                : getRangedDamageForTier(getTier()));
+        if (isArenaUnit() && spec != null
+                && spec.pellets() > 1) {
+            // 竞技霰弹的总攻击力按弹丸均分，避免每颗弹丸重复吃满面板攻击。
+            rangedDamage /= spec.pellets();
+        }
         if (proj instanceof AbstractArrow arrow) {
-            arrow.setBaseDamage(spec != null ? spec.damage() : getRangedDamageForTier(getTier()));
+            arrow.setBaseDamage(rangedDamage);
         } else if (proj instanceof ArmyGunProjectile gun) {
-            gun.setBaseDamage(spec != null ? spec.damage() : getRangedDamageForTier(getTier()));
+            gun.setBaseDamage((float) rangedDamage);
             if (spec != null) {
                 // 穿甲 / 爆头 / 最大飞行距离与玩家枪械一致
                 gun.setArmorPenetration(spec.armorPenetration());
@@ -5785,6 +6898,12 @@ public abstract class AbstractArmySoldier extends PathfinderMob
                 gun.setMaxRange(spec.rangeBlocks() * 1.2);
             }
         }
+        applyArenaProjectileDamage(proj, rangedDamage);
+    }
+
+    /** 竞技专属投射物可在此接收统一计算的攻击伤害。 */
+    protected void applyArenaProjectileDamage(Projectile projectile,
+                                              double damage) {
     }
 
     /** 在基准方向上叠加一个圆锥内随机偏移（霰弹枪 / 玩家枪械散布共用）。 */
@@ -5871,6 +6990,38 @@ public abstract class AbstractArmySoldier extends PathfinderMob
     }
 
     /**
+     * 竞技死亡先结算死亡触发，再尝试图腾和亡灵复活。复活必须在原版
+     * die() 之前完成，否则战斗方会在同一 tick 把单位视为已死亡。
+     */
+    @Override
+    public void die(DamageSource source) {
+        if (!level().isClientSide && isArenaUnit()) {
+            arenaSkills().onArenaDeath();
+            arenaTraits().onDeath();
+            boolean revived =
+                    arenaEquipment().tryTotemRevive();
+            if (!revived) {
+                revived = arenaTraits().tryRevive();
+            }
+            if (revived) {
+                arenaTraits().onRevive();
+                arenaSkills().cleanseArenaDebuffs();
+                syncArenaHealthMirror();
+                return;
+            }
+            onArenaPermanentDeath(source);
+        }
+        super.die(source);
+    }
+
+    /**
+     * 仅在图腾、亡灵复活等死亡保护全部失败后触发。
+     * 死亡分裂等不可逆效果必须从这里进入，不能早于复活判定。
+     */
+    protected void onArenaPermanentDeath(DamageSource source) {
+    }
+
+    /**
      * 单位不接管原版举盾的整段免伤；举盾物品状态只用于动画和第三方兼容，
      * 实际挡伤统一交给 LivingShieldBlockEvent。
      */
@@ -5930,8 +7081,53 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         }
     }
 
+    public void markShieldGuardKnockbackImmunity(int ticks) {
+        shieldGuardKnockbackImmunityTicks = Math.max(
+                shieldGuardKnockbackImmunityTicks, Math.max(0, ticks));
+    }
+
+    public boolean hasShieldGuardKnockbackImmunity() {
+        return shieldGuardKnockbackImmunityTicks > 0;
+    }
+
+    public boolean isArenaKnockbackImmune() {
+        return hasShieldGuardKnockbackImmunity()
+                || isArenaPolarFormActive()
+                || arenaSkillRuntime != null
+                && arenaSkillRuntime.blocksKnockback();
+    }
+
+    public boolean isArenaPolarFormActive() {
+        return isArenaUnit()
+                && (getArenaStatusFlags()
+                & ArenaStatusFlags.POLAR_FORM) != 0;
+    }
+
+    @Override
+    public void push(double x, double y, double z) {
+        if (isArenaPolarFormActive()) return;
+        super.push(x, y, z);
+    }
+
+    public boolean applyArenaKnockback(double strength,
+                                       double xRatio, double zRatio) {
+        if (isArenaKnockbackImmune()) return false;
+        knockback(strength, xRatio, zRatio);
+        return true;
+    }
+
+    public boolean addArenaImpulse(Vec3 impulse) {
+        if (isArenaKnockbackImmune() || impulse.lengthSqr() < 1.0E-8) {
+            return false;
+        }
+        setDeltaMovement(getDeltaMovement().add(impulse));
+        hasImpulse = true;
+        return true;
+    }
+
     @Override
     public boolean isShieldGuardRoleEligible() {
+        if (isArenaUnit()) return true;
         return getRole().isMelee();
     }
 
@@ -5944,6 +7140,12 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         }
         if (!(attacker instanceof LivingEntity livingAttacker)) return false;
         if (livingAttacker == this) return true;
+        if (isArenaUnit()
+                && livingAttacker instanceof AbstractArmySoldier arenaAttacker
+                && arenaAttacker.isArenaUnit()
+                && !isArenaEnemy(arenaAttacker)) {
+            return true;
+        }
 
         if (isFactionOrArmyFriendly(livingAttacker)) return true;
 
@@ -6025,6 +7227,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         if (movementOverride != null) tag.putInt("MoveOverride", movementOverride.getId());
         if (attackOverride != null) tag.putInt("AttackOverride", attackOverride.getId());
         if (rideOverride != null) tag.putInt("RideOverride", rideOverride.getId());
+        tag.putInt("CavalryHorseDyeColor", cavalryHorseDyeColor);
         if (formationOverride != null) tag.putInt("FormationOverride", formationOverride.getId());
         // 募兵站"待命"状态（编入队伍 / 接命令前强制步兵）
         tag.putBoolean("RecruitStandby", recruitStandby);
@@ -6062,10 +7265,10 @@ public abstract class AbstractArmySoldier extends PathfinderMob
                 ? PlayerCommandState.AttackMode.byId(tag.getInt("AttackOverride")) : null;
         rideOverride = tag.contains("RideOverride")
                 ? PlayerCommandState.RideMode.byId(tag.getInt("RideOverride")) : null;
+        setCavalryHorseDyeColor(tag.contains("CavalryHorseDyeColor")
+                ? tag.getInt("CavalryHorseDyeColor") : -1);
         formationOverride = tag.contains("FormationOverride")
                 ? PlayerCommandState.FormationMode.byId(tag.getInt("FormationOverride")) : null;
-        // 老存档没有自带装备快照：用身上现有的补一份（否则取下手动装备会把单位扒空）
-        ensureDefaultGear();
         refreshManualGearMask();
         this.entityData.set(DATA_FACTION, tag.getString("Faction"));
 

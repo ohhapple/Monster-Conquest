@@ -111,6 +111,8 @@ public class VillagerMaceSoldier extends AbstractArmySoldier {
     @Override
     public Item getMeleeWeaponForTier(EquipmentTier tier) { return Items.MACE; }
 
+    @Override protected Item getArenaMeleeWeapon() { return Items.MACE; }
+
     /** 重锤不换：落地冲击 / 碎甲都绑定在重锤上，换别的武器会破坏这套攻击逻辑。 */
     @Override
     public boolean allowsCustomWeapons() { return false; }

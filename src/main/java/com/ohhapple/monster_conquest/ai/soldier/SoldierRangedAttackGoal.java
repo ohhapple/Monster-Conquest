@@ -178,6 +178,10 @@ public class SoldierRangedAttackGoal extends Goal {
         //   避免齐射 / 走位继续占用 MOVE 旗标。
         if (soldier.isMoveOrderPriorityActive()) return;
 
+        if (soldier.isArenaUnit()) {
+            int interval = soldier.getArenaRangedAttackCooldownTicks();
+            if (cooldown > interval) cooldown = interval;
+        }
         if (cooldown > 0) cooldown--;
         if (repositionTicks > 0) repositionTicks--;
 
@@ -214,7 +218,7 @@ public class SoldierRangedAttackGoal extends Goal {
                     if (holdBowDraw(null)) return;
                     soldier.performVolleyShot(vt);
                     playShotFinishAnimation();
-                    cooldown = soldier.getRangedAttackCooldownTicks();
+                    cooldown = soldier.getArenaRangedAttackCooldownTicks();
                 }
                 return;
             }
@@ -249,7 +253,7 @@ public class SoldierRangedAttackGoal extends Goal {
         }
 
         double min = soldier.getMinAttackRange(mounted);
-        double max = soldier.getMaxAttackRange(mounted);
+        double max = soldier.getArenaEffectiveMaxAttackRange(mounted);
         // 理想站位距离（默认 = 最大射程；霰弹枪兵更近）
         double hold = soldier.getPreferredAttackRange(mounted);
         double dist = soldier.distanceTo(target);
@@ -270,7 +274,7 @@ public class SoldierRangedAttackGoal extends Goal {
                 boolean fired = soldier.tryPerformRangedAttack(target);
                 if (fired) {
                     playShotFinishAnimation();
-                    cooldown = soldier.getRangedAttackCooldownTicks();
+                    cooldown = soldier.getArenaRangedAttackCooldownTicks();
                 } else {
                     cooldown = 5;
                 }
@@ -304,7 +308,7 @@ public class SoldierRangedAttackGoal extends Goal {
                 if (fired) {
                     failedShots = 0;
                     playShotFinishAnimation();
-                    cooldown = soldier.getRangedAttackCooldownTicks();
+                    cooldown = soldier.getArenaRangedAttackCooldownTicks();
                 } else {
                     cooldown = 5;
                     onShotFailed(mover, target);
@@ -325,7 +329,7 @@ public class SoldierRangedAttackGoal extends Goal {
                 if (fired) {
                     failedShots = 0;
                     playShotFinishAnimation();
-                    cooldown = soldier.getRangedAttackCooldownTicks();
+                    cooldown = soldier.getArenaRangedAttackCooldownTicks();
                 } else {
                     cooldown = 5;
                     onShotFailed(mover, target);
@@ -381,7 +385,10 @@ public class SoldierRangedAttackGoal extends Goal {
             Vec3 frameMovement = AiNavUtil.observedHorizontalMovement(mover);
             boolean routeStalled = routedWithdraw
                     && (mover.horizontalCollision || frameMovement.lengthSqr() < 1.0E-4);
-            boolean allowDirectEscape = !routedWithdraw || routeStalled;
+            // 主世界的紧急后撤是固定 1.2 格/tick 的直接位移，不读取实体移速。
+            // 竞技单位必须走导航/移动控制器，否则远程兵会永久快于近战追击者。
+            boolean allowDirectEscape = !soldier.isArenaUnit()
+                    && (!routedWithdraw || routeStalled);
             if (allowDirectEscape && AiNavUtil.applyFullSpeedBackstep(
                     mover, soldier.isPassenger() ? soldier : null, target)) {
                 spacingDestination = null;
@@ -505,6 +512,10 @@ public class SoldierRangedAttackGoal extends Goal {
             sidestepDirection = soldier.getRandom().nextBoolean() ? 1 : -1;
             sidestepFlipTick = now + SIDESTEP_FLIP_MIN_TICKS
                     + soldier.getRandom().nextInt(SIDESTEP_FLIP_RANDOM_TICKS + 1);
+        }
+        if (soldier.isArenaUnit()) {
+            AiNavUtil.haltMovement(mover);
+            return;
         }
         LivingEntity rider = soldier.isPassenger() ? soldier : null;
         if (!AiNavUtil.applyFullSpeedSidestep(mover, rider, target, sidestepDirection)) {
@@ -646,6 +657,10 @@ public class SoldierRangedAttackGoal extends Goal {
     }
 
     private boolean isDualLowHealth() {
+        if (soldier.isArenaUnit()
+                && soldier.getArenaDisplayMaxHealth() > 0.0f) {
+            return soldier.getArenaHealthRatio() < DUAL_LOW_HP_THRESHOLD;
+        }
         return soldier.getHealth() < soldier.getMaxHealth() * DUAL_LOW_HP_THRESHOLD;
     }
 

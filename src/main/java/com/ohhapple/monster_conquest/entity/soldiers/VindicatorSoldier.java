@@ -101,6 +101,8 @@ public class VindicatorSoldier extends AbstractArmySoldier {
         };
     }
 
+    @Override protected Item getArenaMeleeWeapon() { return Items.IRON_AXE; }
+
     /** 骑兵形态不拿骑枪：骑马也只用斧子。 */
     @Override
     public boolean usesLanceInCavalry() { return false; }

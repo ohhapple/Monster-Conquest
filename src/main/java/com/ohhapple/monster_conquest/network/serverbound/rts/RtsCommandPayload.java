@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.rts;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncRtsSelectionPayload;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -54,6 +55,7 @@ public record RtsCommandPayload(double x, double y, double z,
     public static void handle(RtsCommandPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             var state = PlayerArmyManager.get(player.getUUID());
 
             LivingEntity target = null;

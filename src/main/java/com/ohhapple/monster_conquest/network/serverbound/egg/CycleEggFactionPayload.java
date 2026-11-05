@@ -6,6 +6,7 @@ import com.ohhapple.monster_conquest.army.PlayerFactionRegistry;
 import com.ohhapple.monster_conquest.item.RetrievalToolItem;
 import com.ohhapple.monster_conquest.item.SoldierSpawnEggItem;
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.util.FactionDisplay;
 
 import net.minecraft.core.component.DataComponents;
@@ -60,6 +61,7 @@ public record CycleEggFactionPayload(int direction) implements CustomPacketPaylo
     public static void handle(CycleEggFactionPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             ItemStack stack = player.getMainHandItem();
             if (!(stack.getItem() instanceof SoldierSpawnEggItem)) return;
 

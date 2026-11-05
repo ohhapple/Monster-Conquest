@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.spawn;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.item.SpawnPointBlockItem;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -26,6 +27,7 @@ public record OpenSpawnPointEditorPayload() implements CustomPacketPayload {
     public static void handle(OpenSpawnPointEditorPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (ctx.player() instanceof ServerPlayer player) {
+                if (ArenaDimensions.isArena(player)) return;
                 SpawnPointBlockItem.openEditor(player, InteractionHand.MAIN_HAND);
             }
         });

@@ -76,7 +76,9 @@ public class FlyingMeleeAttackGoal extends Goal {
     }
 
     private void attack(LivingEntity target) {
-        int interval = Math.max(1, flyingUnit.getMeleeAttackIntervalTicks());
+        int interval = Math.max(1, flyingUnit.isArenaUnit()
+                ? flyingUnit.getArenaMeleeAttackIntervalTicks()
+                : flyingUnit.getMeleeAttackIntervalTicks());
         if (attackCooldown > interval) attackCooldown = interval;
         if (--attackCooldown > 0) return;
         attackCooldown = interval;

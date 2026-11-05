@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.faction;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.army.relation.FactionAlly;
 import com.ohhapple.monster_conquest.army.FactionIds;
 import com.ohhapple.monster_conquest.army.PlayerFactionRegistry;
@@ -38,6 +39,7 @@ public record ToggleFactionAllyPayload(String a, String b) implements CustomPack
     public static void handle(ToggleFactionAllyPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             try {
                 ResourceLocation a = ResourceLocation.tryParse(payload.a());
                 ResourceLocation b = ResourceLocation.tryParse(payload.b());

@@ -1,8 +1,10 @@
 package com.ohhapple.monster_conquest.event;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.army.CombatRules;
 import com.ohhapple.monster_conquest.army.ShieldGuardController;
 import com.ohhapple.monster_conquest.army.ShieldGuardUser;
+import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import net.minecraft.world.damagesource.DamageSource;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -31,11 +33,32 @@ public final class ShieldGuardEvents {
         event.setShieldDamage(0.0F);
 
         DamageSource source = event.getDamageSource();
+        if (CombatRules.damageAttacker(source)
+                instanceof AbstractArmySoldier attacker
+                && attacker.isDealingArenaTrueDamage()) {
+            event.setBlocked(false);
+            event.setBlockedDamage(0.0F);
+            return;
+        }
+        if (source.getEntity() instanceof AbstractArmySoldier attacker
+                && attacker.ignoresArenaShieldBlock()) {
+            attacker.clearArenaShieldIgnore();
+            return;
+        }
         if (!ShieldGuardController.canBlock(guard, source)) return;
+        boolean arenaFullBlock = guard instanceof AbstractArmySoldier soldier
+                && soldier.isArenaUnit();
 
         // 其他模组或原版已经判定为格挡时，不再叠加本模组的概率减伤；
         // 耐久已经在上面统一清零。
         if (event.getBlocked()) {
+            if (guard instanceof AbstractArmySoldier soldier) {
+                soldier.markShieldGuardKnockbackImmunity(10);
+            }
+            if (arenaFullBlock) {
+                event.setBlockedDamage(event.getOriginalBlockedDamage());
+                ShieldGuardController.onBlocked(guard, source);
+            }
             return;
         }
 
@@ -47,7 +70,9 @@ public final class ShieldGuardEvents {
         float incoming = event.getOriginalBlockedDamage();
         double reduction = guard.getShieldGuardReduction();
         double limit = guard.getShieldGuardLimit();
-        float blocked = (float) Math.min(incoming * reduction, limit);
+        float blocked = arenaFullBlock
+                ? incoming
+                : (float) Math.min(incoming * reduction, limit);
         if (blocked <= 0.0F) return;
 
         event.setBlocked(true);

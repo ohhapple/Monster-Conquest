@@ -655,7 +655,7 @@ public final class MarchRouteFollower {
                 planned.reachedGoal(), nowTick);
     }
 
-    /** 安装一段已经验证过的逐格路线；nextLeg 由调用方在成功后补上。 */
+    /** 安装一段通过碰撞检查的逐格路线；nextLeg 由调用方在成功后补上。 */
     private boolean installPath(List<BlockPos> points, Vec3 target, Mob mover,
                                 boolean reachesGoal, int nowTick) {
         if (points.size() < 2) {

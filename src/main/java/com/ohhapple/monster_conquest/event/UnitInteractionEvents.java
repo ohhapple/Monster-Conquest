@@ -15,6 +15,7 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.DyeItem;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -41,6 +42,11 @@ public final class UnitInteractionEvents {
         Player player = event.getEntity();
         if (!player.isSecondaryUseActive()) return;           // 要求蹲下
         if (isTool(event.getItemStack())) return;              // 工具优先
+        // 战马自身负责染色；不能先把目标解析成骑手并抢开单位界面。
+        if (event.getTarget() instanceof WarHorseEntity
+                && event.getItemStack().getItem() instanceof DyeItem) {
+            return;
+        }
 
         ManagedUnit unit = resolveUnit(event.getTarget());
         if (unit == null) return;

@@ -3,6 +3,7 @@ package com.ohhapple.monster_conquest.entity.projectile;
 import com.ohhapple.monster_conquest.army.threat.ArmyThreatUtil;
 import com.ohhapple.monster_conquest.army.relation.FactionAlly;
 import com.ohhapple.monster_conquest.army.relation.NativePeace;
+import com.ohhapple.monster_conquest.arena.game.ArenaSkillBalance;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.ModEntities;
@@ -34,7 +35,7 @@ import java.util.UUID;
 
 public class WitchPotionEntity extends ThrowableItemProjectile {
 
-    public enum Kind { HEAL, POISON, HARM, WEAKEN }
+    public enum Kind { HEAL, POISON, HARM, WEAKEN, LINGERING }
 
     /**
      * 投掷者：决定药水结算走哪套"效果入口"。
@@ -44,18 +45,26 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
     public enum Caster { WITCH, PRIEST }
 
     public static final double SPLASH_RADIUS = 4.0;
+    private static final double ARENA_SPLASH_RADIUS = 5.0;
+    public static final float ARENA_ATTACK_RATIO = 1.50f;
     private static final double PROXIMITY_RADIUS = 2.0;
     private static final int MIN_FLIGHT_TICKS = 3;
 
     public static final double FLIGHT_GRAVITY = 0.03;
     public static final double FLIGHT_DRAG    = 0.99;
+    public static final double THROW_SPEED = 1.5;
 
     private Kind kind = Kind.HARM;
     private Caster caster = Caster.WITCH;
     private int tier = 0;
     @Nullable private UUID commanderUuid;
     @Nullable private UUID intendedTargetUuid;
+    @Nullable private UUID arenaMatchId;
     @Nullable private ResourceLocation factionId;
+    private boolean arenaCombat;
+    private float arenaDamage;
+    private float arenaHeal;
+    private boolean arenaLingeringSkill;
 
     public WitchPotionEntity(EntityType<? extends WitchPotionEntity> type, Level level) {
         super(type, level);
@@ -66,6 +75,7 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
         if (shooter instanceof AbstractArmySoldier s) {
             this.commanderUuid = s.getCommanderUuid().orElse(null);
             this.factionId = s.getFactionId();
+            this.arenaMatchId = s.getArenaMatchId();
             if (s instanceof VillagerPriestSoldier) this.caster = Caster.PRIEST;
         }
     }
@@ -83,6 +93,28 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
 
     public Caster getCaster() { return caster; }
 
+    @Nullable
+    public UUID getArenaMatchId() {
+        return arenaMatchId;
+    }
+
+    /** 竞技女巫的普攻数值由召唤时攻击力快照决定。 */
+    public void configureArenaCombat(double attackDamage) {
+        arenaCombat = true;
+        arenaDamage = (float) Math.max(0.0, attackDamage)
+                * ARENA_ATTACK_RATIO;
+        arenaHeal = (float) Math.max(0.0, attackDamage)
+                * ARENA_ATTACK_RATIO;
+    }
+
+    public void configureArenaLingeringSkill(double attackDamage) {
+        arenaCombat = true;
+        arenaLingeringSkill = true;
+        arenaDamage = (float) (Math.max(0.0, attackDamage)
+                * ArenaSkillBalance.WITCH_LINGERING_ATTACK_RATIO);
+        arenaHeal = 0.0f;
+    }
+
     /** 治疗药水的目标；只在该目标附近提前结算，避免被路上的友军截胡。 */
     public void setIntendedTarget(@Nullable UUID targetUuid) {
         this.intendedTargetUuid = targetUuid;
@@ -94,7 +126,10 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
     }
 
     @Override
-    protected Item getDefaultItem() { return Items.SPLASH_POTION; }
+    protected Item getDefaultItem() {
+        return kind == Kind.LINGERING
+                ? Items.LINGERING_POTION : Items.SPLASH_POTION;
+    }
 
     /**
      * 判定"是否为阵营体系内的战斗单位"。
@@ -188,7 +223,9 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
     private void applySplash() {
         if (!(level() instanceof ServerLevel sl)) return;
 
-        AABB box = getBoundingBox().inflate(SPLASH_RADIUS, 2.0, SPLASH_RADIUS);
+        double radius = arenaCombat
+                ? ARENA_SPLASH_RADIUS : SPLASH_RADIUS;
+        AABB box = getBoundingBox().inflate(radius, 2.0, radius);
 
         sl.playSound(null, getX(), getY(), getZ(),
                 SoundEvents.SPLASH_POTION_BREAK, SoundSource.HOSTILE, 1.0f, 1.0f);
@@ -197,11 +234,41 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
                 8, 0.6, 0.4, 0.6, 0.0);
 
         Entity owner = getOwner();
+        if (arenaLingeringSkill
+                && owner instanceof AbstractArmySoldier caster
+                && caster.isArenaUnit()) {
+            caster.arenaSkills().spawnWitchLingeringPotion(
+                    sl, position(), arenaDamage,
+                    ArenaSkillBalance.WITCH_LINGERING_RADIUS,
+                    ArenaSkillBalance
+                            .WITCH_LINGERING_DURATION_TICKS);
+            return;
+        }
         for (LivingEntity target : sl.getEntitiesOfClass(LivingEntity.class, box, e -> e.isAlive())) {
             // 不允许穿墙：爆点与目标之间被方块挡住时不结算效果
             if (!hasLineOfSight(target)) continue;
             // 同族和平：原版灾厄生物 / 村民 / 铁傀儡按友军处理（只吃治疗，不吃减益）。
-            if (isAlly(target) || NativePeace.isPeacefulPair(owner, target)) {
+            boolean ally = isAlly(target)
+                    || NativePeace.isPeacefulPair(owner, target);
+            if (arenaCombat && caster == Caster.WITCH
+                    && owner instanceof AbstractArmySoldier arenaOwner
+                    && arenaOwner.isArenaUnit()) {
+                if (!(target instanceof AbstractArmySoldier arenaTarget)
+                        || !arenaTarget.isArenaUnit()) {
+                    continue;
+                }
+                boolean arenaAlly = !arenaOwner.isArenaEnemy(arenaTarget);
+                if (arenaAlly && kind == Kind.HEAL) {
+                    arenaTarget.healFrom(arenaOwner, arenaHeal);
+                } else if (!arenaAlly) {
+                    arenaTarget.hurt(
+                            damageSources().indirectMagic(
+                                    this, arenaOwner),
+                            arenaDamage);
+                }
+                continue;
+            }
+            if (ally) {
                 if (caster == Caster.PRIEST) {
                     VillagerPriestSoldier.applyToAlly(target, tier, kind, this);
                 } else {
@@ -230,6 +297,13 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
     }
 
     private boolean isAlly(LivingEntity e) {
+        Entity projectileOwner = getOwner();
+        if (projectileOwner instanceof AbstractArmySoldier arenaOwner
+                && arenaOwner.isArenaUnit()
+                && e instanceof AbstractArmySoldier arenaTarget
+                && arenaTarget.isArenaUnit()) {
+            return !arenaOwner.isArenaEnemy(arenaTarget);
+        }
         if (commanderUuid != null) {
             if (e instanceof Player p && p.getUUID().equals(commanderUuid)) return true;
             if (e instanceof AbstractArmyCommander c && c.getUUID().equals(commanderUuid)) return true;
@@ -274,6 +348,11 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
         if (commanderUuid != null) tag.putUUID("Cmd", commanderUuid);
         if (intendedTargetUuid != null) tag.putUUID("IntendedTarget", intendedTargetUuid);
         if (factionId != null) tag.putString("Faction", factionId.toString());
+        tag.putBoolean("ArenaCombat", arenaCombat);
+        if (arenaMatchId != null) tag.putUUID("ArenaMatch", arenaMatchId);
+        tag.putBoolean("ArenaLingeringSkill", arenaLingeringSkill);
+        tag.putFloat("ArenaDamage", arenaDamage);
+        tag.putFloat("ArenaHeal", arenaHeal);
     }
 
     @Override
@@ -287,5 +366,11 @@ public class WitchPotionEntity extends ThrowableItemProjectile {
         if (tag.hasUUID("Cmd")) commanderUuid = tag.getUUID("Cmd");
         if (tag.hasUUID("IntendedTarget")) intendedTargetUuid = tag.getUUID("IntendedTarget");
         if (tag.contains("Faction")) factionId = ResourceLocation.tryParse(tag.getString("Faction"));
+        arenaCombat = tag.getBoolean("ArenaCombat");
+        arenaMatchId = tag.hasUUID("ArenaMatch")
+                ? tag.getUUID("ArenaMatch") : null;
+        arenaLingeringSkill = tag.getBoolean("ArenaLingeringSkill");
+        arenaDamage = tag.getFloat("ArenaDamage");
+        arenaHeal = tag.getFloat("ArenaHeal");
     }
 }

@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.gun;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.menu.TacticalEquipmentSlotsMenu;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.chat.Component;
@@ -27,6 +28,7 @@ public record OpenTacticalEquipmentSlotsPayload() implements CustomPacketPayload
     public static void handle(OpenTacticalEquipmentSlotsPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             player.openMenu(new SimpleMenuProvider(
                             (id, inv, p) -> new TacticalEquipmentSlotsMenu(id, inv),
                             Component.translatable("gui.monster_conquest.tactical_equipment_slots")),

@@ -45,13 +45,7 @@ public final class TacticalEquipmentSlotsData {
 
     public static List<ItemStack> get(Player player) {
         if (player.level().isClientSide) return clientTacticalSlots;
-        List<ItemStack> list = player.getData(ModAttachments.TACTICAL_EQUIPMENT_SLOTS.get());
-        if (list.size() == SLOT_COUNT) return list;
-        // 老存档槽位数不同（例如扩栏前是 6 格）：保留原有内容，缺的补空，不丢装备
-        List<ItemStack> migrated = newTacticalSlotsList();
-        for (int i = 0; i < Math.min(list.size(), SLOT_COUNT); i++) migrated.set(i, list.get(i));
-        player.setData(ModAttachments.TACTICAL_EQUIPMENT_SLOTS.get(), migrated);
-        return migrated;
+        return player.getData(ModAttachments.TACTICAL_EQUIPMENT_SLOTS.get());
     }
 
     public static void set(ServerPlayer player, List<ItemStack> list) {

@@ -39,6 +39,9 @@ import net.minecraft.world.phys.Vec3;
  */
 public class EvokerSoldier extends AbstractArmySoldier {
 
+    public static final String ARENA_SKILL_FANG_TAG =
+            "monster_conquest_arena_skill_fang";
+
     /** 可在目标脚下召唤尖牙的最大距离（格）：目标在此距离内直接砸脚下。 */
     public static final double FANG_CAST_RANGE = 20.0;
 
@@ -150,18 +153,35 @@ public class EvokerSoldier extends AbstractArmySoldier {
      * @return 是否至少召唤出一颗尖牙
      */
     public boolean castFangsAtTarget(LivingEntity target) {
+        return castFangsAtTarget(target, true, false, false);
+    }
+
+    /**
+     * 竞技尖牙只结算该弈子的技能：每名敌人一颗，由技能条统一驱动，
+     * 因此不沿用主世界施法冷却，也不要求施法前已有视线。
+     */
+    public boolean castArenaFangAtTarget(LivingEntity target) {
+        return castFangsAtTarget(target, false, true, true);
+    }
+
+    private boolean castFangsAtTarget(LivingEntity target,
+                                      boolean requireLineOfSight,
+                                      boolean singleFang,
+                                      boolean arenaSkillFang) {
         if (!(level() instanceof ServerLevel serverLevel)) return false;
         if (target == null || !target.isAlive()) return false;
 
         // 不穿墙：目标被方块挡住时不召唤尖牙（尖牙直接砸目标脚下，
         //   如果不检查就会隔墙命中，是唯一能穿墙的"施法"）
-        Vec3 from = position().add(0, getBbHeight() * 0.5, 0);
-        Vec3 to = target.position().add(0, target.getBbHeight() * 0.5, 0);
-        if (level().clip(new ClipContext(from, to,
-                ClipContext.Block.COLLIDER,
-                ClipContext.Fluid.NONE, this))
-                .getType() != HitResult.Type.MISS) {
-            return false;
+        if (requireLineOfSight) {
+            Vec3 from = position().add(0, getBbHeight() * 0.5, 0);
+            Vec3 to = target.position().add(0, target.getBbHeight() * 0.5, 0);
+            if (level().clip(new ClipContext(from, to,
+                    ClipContext.Block.COLLIDER,
+                    ClipContext.Fluid.NONE, this))
+                    .getType() != HitResult.Type.MISS) {
+                return false;
+            }
         }
 
         // 按相邻 tick 的真实位移预判；飞行单位通过移动控制器 / 直接位移时
@@ -184,13 +204,19 @@ public class EvokerSoldier extends AbstractArmySoldier {
         if (target instanceof AbstractFlyingSoldier) {
             // 单位伤害统一忽略无敌帧；空中目标只生成一颗预判尖牙，
             //   避免同一簇多颗尖牙同 tick 重复结算把小体型目标秒杀。
-            if (createAirFang(serverLevel, centerX, centerY, centerZ, yRot, 0)) {
+            if (createAirFang(serverLevel, centerX, centerY, centerZ,
+                    yRot, 0, arenaSkillFang)) {
+                spawned = 1;
+            }
+        } else if (singleFang) {
+            if (createFang(serverLevel, centerX, centerZ,
+                    minY, maxY, yRot, 0, arenaSkillFang)) {
                 spawned = 1;
             }
         } else {
             for (double[] offset : FANG_FEET_OFFSETS) {
                 if (createFang(serverLevel, centerX + offset[0], centerZ + offset[1],
-                        minY, maxY, yRot, 0)) {
+                        minY, maxY, yRot, 0, arenaSkillFang)) {
                     spawned++;
                 }
             }
@@ -209,16 +235,19 @@ public class EvokerSoldier extends AbstractArmySoldier {
      *   高度限制在目标位置上下 1.5 格内，避免错误命中其他楼层。
      */
     private boolean createAirFang(ServerLevel level, double x, double y, double z,
-                                  float yRot, int warmupTicks) {
+                                  float yRot, int warmupTicks,
+                                  boolean arenaSkillFang) {
         if (!level.isLoaded(BlockPos.containing(x, y, z))) return false;
         EvokerFangs fangs = new EvokerFangs(level, x, y, z, yRot, warmupTicks, this);
+        if (arenaSkillFang) fangs.addTag(ARENA_SKILL_FANG_TAG);
         level.addFreshEntity(fangs);
         return true;
     }
 
     /** 在 (x,z) 附近找一块可站立地面，并在其上生成尖牙。 */
     private boolean createFang(ServerLevel level, double x, double z,
-                               double minY, double maxY, float yRot, int warmupTicks) {
+                               double minY, double maxY, float yRot,
+                               int warmupTicks, boolean arenaSkillFang) {
         BlockPos pos = BlockPos.containing(x, maxY, z);
         boolean foundGround = false;
         double yOffset = 0.0;
@@ -243,6 +272,7 @@ public class EvokerSoldier extends AbstractArmySoldier {
 
         EvokerFangs fangs = new EvokerFangs(level, x, pos.getY() + yOffset, z,
                 yRot, warmupTicks, this);
+        if (arenaSkillFang) fangs.addTag(ARENA_SKILL_FANG_TAG);
         level.addFreshEntity(fangs);
         return true;
     }

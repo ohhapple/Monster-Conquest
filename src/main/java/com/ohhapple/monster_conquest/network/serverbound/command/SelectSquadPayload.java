@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.command;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncSquadPayload;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -36,6 +37,7 @@ public record SelectSquadPayload(int squad) implements CustomPacketPayload {
     public static void handle(SelectSquadPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             var state = PlayerArmyManager.get(player.getUUID());
             state.setSelectedSquad(payload.squad());
 

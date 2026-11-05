@@ -116,27 +116,14 @@ public class BackpackItem extends Item {
 
     // ===================== 内容读写 =====================
 
-    /**
-     * 背包组件里"实际存着的"全部槽位：旧存档槽位数更多时，多出来的内容
-     *   靠它做迁移搬运，不能直接当没有。
-     */
-    public static List<ItemStack> rawContents(ItemStack backpack) {
-        List<ItemStack> list = new ArrayList<>();
-        if (!(backpack.getItem() instanceof BackpackItem)) return list;
-        ItemContainerContents contents = backpack.get(DataComponents.CONTAINER);
-        if (contents == null) return list;
-        for (int i = 0; i < contents.getSlots(); i++) {
-            list.add(contents.getStackInSlot(i));
-        }
-        return list;
-    }
-
     public static List<ItemStack> contents(ItemStack backpack) {
         List<ItemStack> list = new ArrayList<>(SLOTS);
         for (int i = 0; i < SLOTS; i++) list.add(ItemStack.EMPTY);
-        List<ItemStack> stored = rawContents(backpack);
-        for (int i = 0; i < Math.min(SLOTS, stored.size()); i++) {
-            list.set(i, stored.get(i));
+        if (!(backpack.getItem() instanceof BackpackItem)) return list;
+        ItemContainerContents contents = backpack.get(DataComponents.CONTAINER);
+        if (contents == null) return list;
+        for (int i = 0; i < Math.min(SLOTS, contents.getSlots()); i++) {
+            list.set(i, contents.getStackInSlot(i));
         }
         return list;
     }

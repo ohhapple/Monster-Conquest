@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.gun;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.equipment.TacticalEquipmentSlotsData;
 import com.ohhapple.monster_conquest.item.AmmoBoxItem;
 import com.ohhapple.monster_conquest.menu.AmmoBoxMenu;
@@ -34,6 +35,7 @@ public record OpenAmmoBoxFromSlotPayload(int source, int index) implements Custo
     public static void handle(OpenAmmoBoxFromSlotPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             ItemStack box = TacticalEquipmentSlotsData.resolveBox(player, payload.source(), payload.index());
             if (!(box.getItem() instanceof AmmoBoxItem)) return;
 

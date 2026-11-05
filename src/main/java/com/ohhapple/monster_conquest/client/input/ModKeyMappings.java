@@ -38,6 +38,13 @@ public class ModKeyMappings {
             GLFW.GLFW_KEY_B,
             "key.categories.monster_conquest");
 
+    /** 打开自走棋大厅（默认 X，可在按键设置里改）。 */
+    public static final KeyMapping OPEN_ARENA_LOBBY = new KeyMapping(
+            "key.monster_conquest.open_arena_lobby",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_X,
+            "key.categories.monster_conquest");
+
     // ===================== RTS 快捷按键 =====================
 
     public static final KeyMapping RTS_RIDE_CAVALRY = new KeyMapping(
@@ -49,7 +56,7 @@ public class ModKeyMappings {
     public static final KeyMapping RTS_RIDE_INFANTRY = new KeyMapping(
             "key.monster_conquest.rts.ride_infantry",
             InputConstants.Type.KEYSYM,
-            GLFW.GLFW_KEY_X,
+            GLFW.GLFW_KEY_C,
             "key.categories.monster_conquest");
 
     public static final KeyMapping RTS_FORMATION_1 = new KeyMapping(
@@ -94,6 +101,7 @@ public class ModKeyMappings {
         event.register(COMMAND_WHEEL);
         event.register(OPEN_EQUIPMENT);
         event.register(OPEN_BACKPACK);
+        event.register(OPEN_ARENA_LOBBY);
         event.register(RTS_RIDE_CAVALRY);
         event.register(RTS_RIDE_INFANTRY);
         event.register(RTS_FORMATION_1);

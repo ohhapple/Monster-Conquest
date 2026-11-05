@@ -61,6 +61,7 @@ public class ArmyArrow extends Arrow {
     private UUID shooterCommanderUuid;
     @Nullable
     private ResourceLocation shooterFaction;
+    private float arenaSkillDamage = -1.0f;
 
     public ArmyArrow(EntityType<? extends Arrow> type, Level level) {
         super(type, level);
@@ -116,6 +117,19 @@ public class ArmyArrow extends Arrow {
 
     public int getFreezeTicks() {
         return this.entityData.get(DATA_FREEZE_TICKS);
+    }
+
+    /** 竞技强化箭以技能结算的固定伤害；普通箭矢保持 -1。 */
+    public void setArenaSkillDamage(float damage) {
+        arenaSkillDamage = Math.max(0.0f, damage);
+    }
+
+    public boolean isArenaSkillArrow() {
+        return arenaSkillDamage >= 0.0f;
+    }
+
+    public float getArenaSkillDamage() {
+        return arenaSkillDamage;
     }
 
     // ===================== 第一层：命中判定 =====================
@@ -217,8 +231,12 @@ public class ArmyArrow extends Arrow {
                     sl, this.getWeaponItem(), living, source, (float) base);
         }
 
-        float f = (float) this.getDeltaMovement().length();
-        int dmg = Mth.ceil(Mth.clamp(f * base, 0.0, Integer.MAX_VALUE));
+        boolean arenaUnitArrow = owner instanceof AbstractArmySoldier soldier
+                && soldier.isArenaUnit();
+        float velocity = (float) this.getDeltaMovement().length();
+        int dmg = Mth.ceil(Mth.clamp(
+                arenaUnitArrow ? base : velocity * base,
+                0.0, Integer.MAX_VALUE));
 
         // 暴击
         if (this.isCritArrow()) {
@@ -353,6 +371,13 @@ public class ArmyArrow extends Arrow {
     // ===================== 友军判定 =====================
 
     private boolean isFriendly(Entity target) {
+        Entity owner = getOwner();
+        if (owner instanceof AbstractArmySoldier arenaOwner
+                && arenaOwner.isArenaUnit()
+                && target instanceof AbstractArmySoldier arenaTarget
+                && arenaTarget.isArenaUnit()) {
+            return !arenaOwner.isArenaEnemy(arenaTarget);
+        }
         return ArmyProjectileUtil.isFriendly(syncedCommander(), syncedFaction(), target);
     }
 

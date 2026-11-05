@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.faction;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
 import com.ohhapple.monster_conquest.army.relation.FactionAlly;
 import com.ohhapple.monster_conquest.army.relation.FactionHostility;
@@ -39,6 +40,7 @@ public record DeleteFactionPayload(String factionId) implements CustomPacketPayl
     public static void handle(DeleteFactionPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             if (!player.hasPermissions(2) || !player.isCreative()) {
                 player.displayClientMessage(
                         Component.translatable("gui.monster_conquest.faction.delete_no_permission"),

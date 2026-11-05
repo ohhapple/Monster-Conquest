@@ -2,8 +2,15 @@ package com.ohhapple.monster_conquest.client.input;
 
 import com.ohhapple.monster_conquest.client.gui.CommandWheelScreen;
 import com.ohhapple.monster_conquest.client.gui.GuideBookScreen;
+import com.ohhapple.monster_conquest.client.gui.arena.ArenaLobbyScreen;
+import com.ohhapple.monster_conquest.client.gui.arena.ArenaCompendiumScreen;
+import com.ohhapple.monster_conquest.client.gui.arena.ArenaPlayerScreen;
+import com.ohhapple.monster_conquest.client.gui.arena.ArenaGameClientState;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
+import com.ohhapple.monster_conquest.config.ArenaConfig;
 import com.ohhapple.monster_conquest.client.rts.RtsClientState;
 import com.ohhapple.monster_conquest.client.rts.RtsClientTicker;
+import com.ohhapple.monster_conquest.client.rts.RtsScreen;
 import com.ohhapple.monster_conquest.item.CommanderSpawnEggItem;
 import com.ohhapple.monster_conquest.item.ControlToolItem;
 import com.ohhapple.monster_conquest.item.GuideBookItem;
@@ -27,6 +34,14 @@ import com.ohhapple.monster_conquest.network.serverbound.path.PathToolSelectPayl
 import com.ohhapple.monster_conquest.network.serverbound.spawn.OpenSpawnPointEditorPayload;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.ChatScreen;
+import net.minecraft.client.gui.screens.ConnectScreen;
+import net.minecraft.client.gui.screens.DisconnectedScreen;
+import net.minecraft.client.gui.screens.PauseScreen;
+import net.minecraft.client.gui.screens.ReceivingLevelScreen;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 
@@ -34,6 +49,7 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.InputEvent;
+import net.neoforged.neoforge.client.event.ScreenEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
@@ -42,12 +58,39 @@ import org.lwjgl.glfw.GLFW;
 @EventBusSubscriber(modid = Monster_conquest.MODID, value = Dist.CLIENT)
 public class ClientInputEvents {
 
+    @SubscribeEvent
+    public static void onScreenOpening(ScreenEvent.Opening event) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player == null || minecraft.getConnection() == null) {
+            return;
+        }
+        boolean arenaContext = ArenaDimensions.isArena(
+                minecraft.player.level(), minecraft.player.blockPosition())
+                || isArenaServerConnection(minecraft);
+        if (!arenaContext) return;
+        if (isAllowedArenaScreen(event.getNewScreen())) return;
+        event.setCanceled(true);
+    }
+
+    static boolean isAllowedArenaScreen(Screen screen) {
+        return screen == null
+                || screen instanceof ArenaPlayerScreen
+                || screen instanceof ArenaCompendiumScreen
+                || screen instanceof ChatScreen
+                || screen instanceof ConnectScreen
+                || screen instanceof DisconnectedScreen
+                || screen instanceof PauseScreen
+                || screen instanceof ReceivingLevelScreen
+                || screen instanceof TitleScreen;
+    }
+
     /** 手持说明书右键 → 打开说明书界面（纯客户端）。 */
     @SubscribeEvent
     public static void onRightClickItem(
             PlayerInteractEvent.RightClickItem event) {
         if (!event.getEntity().level().isClientSide) return;
         if (!(event.getEntity() instanceof Player player)) return;
+        if (ArenaDimensions.isArena(player.level(), player.blockPosition())) return;
         if (!(player.getMainHandItem().getItem() instanceof GuideBookItem)) return;
         GuideBookScreen.open();
     }
@@ -56,22 +99,43 @@ public class ClientInputEvents {
     public static void onKeyInput(InputEvent.Key event) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) return;
+        boolean arenaContext = ArenaDimensions.isArena(
+                mc.player.level(), mc.player.blockPosition())
+                || ArenaGameClientState.isArenaSessionContext()
+                || isArenaServerConnection(mc);
+
+        while (ModKeyMappings.OPEN_ARENA_LOBBY.consumeClick()) {
+            if (mc.screen != null) continue;
+            if (arenaContext) {
+                ArenaPlayerScreen.open();
+            } else {
+                ArenaLobbyScreen.open();
+            }
+        }
 
         while (ModKeyMappings.OPEN_FACTION_GUI.consumeClick()) {
-            if (mc.screen != null) continue;
+            if (arenaContext || mc.screen != null) continue;
             PacketDistributor.sendToServer(new RequestOpenFactionGuiPayload());
         }
 
         while (ModKeyMappings.OPEN_EQUIPMENT.consumeClick()) {
-            if (mc.screen != null) continue;
+            if (arenaContext || mc.screen != null) continue;
             PacketDistributor.sendToServer(new OpenTacticalEquipmentSlotsPayload());
         }
 
         // 打开战术装备栏里的背包（默认 B，可在按键设置里改）
         while (ModKeyMappings.OPEN_BACKPACK.consumeClick()) {
-            if (mc.screen != null) continue;
+            if (arenaContext || mc.screen != null) continue;
             PacketDistributor.sendToServer(
                     new OpenEquippedBackpackPayload());
+        }
+
+        if (arenaContext) {
+            if (RtsClientState.isRtsMode()) {
+                RtsClientTicker.exitRts(mc);
+                if (mc.screen instanceof RtsScreen) mc.setScreen(null);
+            }
+            return;
         }
 
         int wheelKey = ModKeyMappings.COMMAND_WHEEL.getKey().getValue();
@@ -93,10 +157,22 @@ public class ClientInputEvents {
         }
     }
 
+    private static boolean isArenaServerConnection(Minecraft minecraft) {
+        if (minecraft.getCurrentServer() == null) return false;
+        try {
+            return ServerAddress.parseString(
+                    minecraft.getCurrentServer().ip).getPort()
+                    == ArenaConfig.arenaServerPort;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
     @SubscribeEvent
     public static void onMouseButton(InputEvent.MouseButton.Pre event) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.screen != null) return;
+        if (ArenaDimensions.isArena(mc.player.level(), mc.player.blockPosition())) return;
         if (event.getAction() != 1) return;
         if (event.getButton() != 2) return;
 
@@ -128,6 +204,7 @@ public class ClientInputEvents {
     public static void onMouseScroll(InputEvent.MouseScrollingEvent event) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.screen != null) return;
+        if (ArenaDimensions.isArena(mc.player.level(), mc.player.blockPosition())) return;
         if (!mc.options.keyShift.isDown()) return;
 
         ItemStack stack = mc.player.getMainHandItem();
@@ -148,6 +225,7 @@ public class ClientInputEvents {
 
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.screen != null) return;
+        if (ArenaDimensions.isArena(mc.player.level(), mc.player.blockPosition())) return;
 
         if (mc.crosshairPickEntity != null) return;
 

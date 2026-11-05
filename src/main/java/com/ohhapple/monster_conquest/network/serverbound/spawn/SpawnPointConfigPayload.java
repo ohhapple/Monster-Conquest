@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.spawn;
 
 import com.ohhapple.monster_conquest.item.PathToolItem;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.menu.SpawnPointMenu;
 import com.ohhapple.monster_conquest.Monster_conquest;
 
@@ -37,6 +38,7 @@ public record SpawnPointConfigPayload(int action, int value) implements CustomPa
     public static void handle(SpawnPointConfigPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             if (player.containerMenu instanceof SpawnPointMenu menu) {
                 menu.applyAction(payload.action(), payload.value());
                 // 界面里的「清空」按钮会改刷怪点路径：拿着路径点工具时同步刷新世界里的预览

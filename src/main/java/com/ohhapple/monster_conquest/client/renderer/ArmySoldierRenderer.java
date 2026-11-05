@@ -36,8 +36,10 @@ public class ArmySoldierRenderer
             ResourceLocation.withDefaultNamespace("textures/entity/skeleton/stray.png");
     private static final ResourceLocation WITHER_SKELETON =
             ResourceLocation.withDefaultNamespace("textures/entity/skeleton/wither_skeleton.png");
-    private static final ResourceLocation ZOMBIE_VILLAGER =
-            ResourceLocation.withDefaultNamespace("textures/entity/zombie_villager/zombie_villager.png");
+    private static final ResourceLocation ZOMBIE_VILLAGER_SOLDIER =
+            ResourceLocation.fromNamespaceAndPath(
+                    Monster_conquest.MODID,
+                    "textures/entity/soldier/zombie_villager_soldier.png");
     private static final ResourceLocation BOGGED =
             ResourceLocation.withDefaultNamespace("textures/entity/skeleton/bogged.png");
     private static final ResourceLocation WITCH_SOLDIER =
@@ -64,7 +66,7 @@ public class ArmySoldierRenderer
 
     private final HumanoidModel<AbstractArmySoldier> zombieModel;
     private final SkeletonModel<AbstractArmySoldier> skeletonModel;
-    /** 玩家模型：女巫 / 枪兵 / 村民系士兵使用（僵尸系仍用僵尸模型、骷髅系仍用骷髅模型）。 */
+    /** 玩家模型：女巫、僵尸村民、枪兵与村民系士兵共用。 */
     private final PlayerModel<AbstractArmySoldier> playerModel;
 
     public ArmySoldierRenderer(EntityRendererProvider.Context ctx) {
@@ -86,7 +88,7 @@ public class ArmySoldierRenderer
                        PoseStack poseStack, MultiBufferSource buffer, int packedLight) {
         int idx = entity.getRenderIndex();
         if (idx == 1 || idx == 4 || idx == 5 || idx == 7) this.model = this.skeletonModel;
-        else if (idx == 0 || idx == 2 || idx == 3 || idx == 6) this.model = this.zombieModel;
+        else if (idx == 0 || idx == 2 || idx == 3) this.model = this.zombieModel;
         else this.model = this.playerModel;
         this.model.riding = entity.isPassenger();
         super.render(entity, entityYaw, partialTicks, poseStack, buffer, packedLight);
@@ -100,7 +102,7 @@ public class ArmySoldierRenderer
             case 3 -> DROWNED;
             case 4 -> STRAY;
             case 5 -> WITHER_SKELETON;
-            case 6 -> ZOMBIE_VILLAGER;
+            case 6 -> ZOMBIE_VILLAGER_SOLDIER;
             case 7 -> BOGGED;
             case 8 -> WITCH_SOLDIER;
             case 9, 10, 11, 12 -> GUNNER_SKIN;

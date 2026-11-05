@@ -3,6 +3,7 @@ package com.ohhapple.monster_conquest.network.serverbound.item;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.item.ControlToolItem;
 import com.ohhapple.monster_conquest.item.HatredWandItem;
 import com.ohhapple.monster_conquest.item.PathToolItem;
@@ -48,6 +49,7 @@ public record CrosshairUsePayload() implements CustomPacketPayload {
     public static void handle(CrosshairUsePayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             ItemStack stack = player.getMainHandItem();
 
             if (stack.getItem() instanceof HatredWandItem wand) {

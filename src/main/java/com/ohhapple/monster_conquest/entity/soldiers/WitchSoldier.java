@@ -148,7 +148,7 @@ public class WitchSoldier extends AbstractArmySoldier {
                             effectSource);
                 }
             }
-            case POISON, HARM, WEAKEN -> { }
+            case POISON, HARM, WEAKEN, LINGERING -> { }
         }
     }
 
@@ -204,7 +204,7 @@ public class WitchSoldier extends AbstractArmySoldier {
                             effectSource);
                 }
             }
-            case HEAL -> { }
+            case HEAL, LINGERING -> { }
         }
     }
 }

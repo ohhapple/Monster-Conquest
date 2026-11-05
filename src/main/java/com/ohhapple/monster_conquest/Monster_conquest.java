@@ -10,7 +10,11 @@ import com.ohhapple.monster_conquest.block.RecruitmentStationBlock;
 import com.ohhapple.monster_conquest.block.SpawnPointBlock;
 import com.ohhapple.monster_conquest.block.SpawnPointBlockEntity;
 import com.ohhapple.monster_conquest.block.TradeStationBlock;
+import com.ohhapple.monster_conquest.arena.external.ArenaRuntime;
+import com.ohhapple.monster_conquest.arena.game.ArenaEquipmentItems;
+import com.ohhapple.monster_conquest.arena.game.ArenaDropItems;
 import com.ohhapple.monster_conquest.config.CombatConfig;
+import com.ohhapple.monster_conquest.config.ArenaConfig;
 import com.ohhapple.monster_conquest.config.FactionConfig;
 import com.ohhapple.monster_conquest.config.GeneralConfig;
 import com.ohhapple.monster_conquest.config.PlayerConfig;
@@ -22,6 +26,18 @@ import com.ohhapple.monster_conquest.gun.*;
 import com.ohhapple.monster_conquest.item.*;
 import com.ohhapple.monster_conquest.menu.ModMenus;
 import com.ohhapple.monster_conquest.network.*;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaLobbyNoticePayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaLobbySnapshotPayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaCareerPayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaCombatStatsPayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaGameNoticePayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaLaunchProgressPayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaPlayerSnapshotPayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaSpectatorSnapshotPayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaConnectToChildPayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaReconnectToMainPayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaReturnToWorldPayload;
+import com.ohhapple.monster_conquest.network.clientbound.arena.ArenaSoundPayload;
 import com.ohhapple.monster_conquest.network.clientbound.faction.FactionAllySnapshotPayload;
 import com.ohhapple.monster_conquest.network.clientbound.faction.FactionHostilitySnapshotPayload;
 import com.ohhapple.monster_conquest.network.clientbound.faction.OpenFactionGuiPayload;
@@ -32,6 +48,8 @@ import com.ohhapple.monster_conquest.network.clientbound.recruit.OpenRecruitGuiP
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncRtsSelectionPayload;
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncSquadPayload;
 import com.ohhapple.monster_conquest.network.clientbound.trade.OpenTradeGuiPayload;
+import com.ohhapple.monster_conquest.network.serverbound.arena.ArenaActionPayload;
+import com.ohhapple.monster_conquest.network.serverbound.arena.ArenaIntentPayload;
 import com.ohhapple.monster_conquest.network.serverbound.command.PlayerCommandPayload;
 import com.ohhapple.monster_conquest.network.serverbound.command.SelectSquadPayload;
 import com.ohhapple.monster_conquest.network.serverbound.backpack.OpenBackpackFromSlotPayload;
@@ -72,10 +90,14 @@ import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.material.MapColor;
 
 import net.neoforged.bus.api.IEventBus;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.fml.loading.FMLEnvironment;
+import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.fml.ModContainer;
+import net.neoforged.neoforge.network.event.RegisterConfigurationTasksEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 import net.neoforged.neoforge.registries.DeferredBlock;
@@ -83,9 +105,20 @@ import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.slf4j.Logger;
 
 import com.mojang.logging.LogUtils;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 @Mod(Monster_conquest.MODID)
 public class Monster_conquest {
@@ -895,11 +928,15 @@ public class Monster_conquest {
     // ===================== 构造 =====================
 
     public Monster_conquest(IEventBus modEventBus, ModContainer modContainer) {
+        configureArenaServerLogging();
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::registerPayloads);
+        modEventBus.addListener(this::registerConfigurationTasks);
 
         ModEntities.ENTITY_TYPES.register(modEventBus);
         BLOCKS.register(modEventBus);
+        ArenaEquipmentItems.registerAll();
+        ArenaDropItems.registerAll();
         ITEMS.register(modEventBus);
         BLOCK_ENTITIES.register(modEventBus);
         CREATIVE_MODE_TABS.register(modEventBus);
@@ -920,6 +957,8 @@ public class Monster_conquest {
                 "monster_conquest/player-common.toml");
         modContainer.registerConfig(ModConfig.Type.COMMON, RecruitConfig.SPEC,
                 "monster_conquest/recruit-common.toml");
+        modContainer.registerConfig(ModConfig.Type.COMMON, ArenaConfig.SPEC,
+                "monster_conquest/arena-common.toml");
 
         // 注册所有内置阵营
         FactionRegistry.register(UndeadFaction.INSTANCE);
@@ -931,15 +970,40 @@ public class Monster_conquest {
         FactionRegistry.register(NeutralFaction.INSTANCE);
     }
 
+    /**
+     * 独立竞技服只保留告警和错误，避免对局状态日志持续刷屏。
+     */
+    public static void configureArenaServerLogging() {
+        if (!ArenaRuntime.isArenaServer()
+                || !(LogManager.getContext(false)
+                instanceof LoggerContext context)) {
+            return;
+        }
+        LoggerConfig loggerConfig = new LoggerConfig(
+                LOGGER.getName(), Level.WARN, true);
+        context.getConfiguration().addLogger(
+                LOGGER.getName(), loggerConfig);
+        context.updateLoggers();
+        context.getLogger(LOGGER.getName()).setLevel(Level.WARN);
+    }
+
     // ===================== Payload =====================
     private void registerPayloads(RegisterPayloadHandlersEvent event) {
         PayloadRegistrar reg = event.registrar("1");
+        reg.optional().configurationToClient(
+                ModVersionHandshakePayload.TYPE,
+                ModVersionHandshakePayload.STREAM_CODEC,
+                ModVersionHandshakePayload::handle);
 
         // ===================== 客户端 → 服务端 =====================
         reg.playToServer(CrosshairSelectPayload.TYPE, CrosshairSelectPayload.STREAM_CODEC,
                 CrosshairSelectPayload::handle);
         reg.playToServer(CrosshairUsePayload.TYPE, CrosshairUsePayload.STREAM_CODEC,
                 CrosshairUsePayload::handle);
+        reg.playToServer(ArenaActionPayload.TYPE, ArenaActionPayload.STREAM_CODEC,
+                ArenaActionPayload::handle);
+        reg.playToServer(ArenaIntentPayload.TYPE, ArenaIntentPayload.STREAM_CODEC,
+                ArenaIntentPayload::handle);
 
         reg.playToServer(HatredWandModePayload.TYPE, HatredWandModePayload.STREAM_CODEC,
                 HatredWandModePayload::handle);
@@ -1045,11 +1109,97 @@ public class Monster_conquest {
                 ClientboundPayloadRouter::dispatch);
         reg.playToClient(SyncPathRoutePayload.TYPE, SyncPathRoutePayload.STREAM_CODEC,
                 ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaLobbySnapshotPayload.TYPE,
+                ArenaLobbySnapshotPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaCareerPayload.TYPE,
+                ArenaCareerPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaLobbyNoticePayload.TYPE,
+                ArenaLobbyNoticePayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaPlayerSnapshotPayload.TYPE,
+                ArenaPlayerSnapshotPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaCombatStatsPayload.TYPE,
+                ArenaCombatStatsPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaSpectatorSnapshotPayload.TYPE,
+                ArenaSpectatorSnapshotPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaGameNoticePayload.TYPE,
+                ArenaGameNoticePayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaSoundPayload.TYPE,
+                ArenaSoundPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaLaunchProgressPayload.TYPE,
+                ArenaLaunchProgressPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaConnectToChildPayload.TYPE,
+                ArenaConnectToChildPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaReconnectToMainPayload.TYPE,
+                ArenaReconnectToMainPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+        reg.playToClient(ArenaReturnToWorldPayload.TYPE,
+                ArenaReturnToWorldPayload.STREAM_CODEC,
+                ClientboundPayloadRouter::dispatch);
+    }
+
+    private void registerConfigurationTasks(
+            RegisterConfigurationTasksEvent event) {
+        if (!event.getListener().hasChannel(
+                ModVersionHandshakePayload.TYPE)) {
+            return;
+        }
+        event.register(new ModVersionConfigurationTask(
+                event.getListener()));
     }
 
     // ===================== 通用 =====================
     private void commonSetup(final FMLCommonSetupEvent event) {
+        configureArenaServerLogging();
+        ensureMainAcceptsArenaReturns();
         LOGGER.info("Monster Conquest common setup complete.");
+    }
+
+    private static void ensureMainAcceptsArenaReturns() {
+        if (ArenaRuntime.isArenaServer()
+                || FMLEnvironment.dist != Dist.DEDICATED_SERVER) {
+            return;
+        }
+        Path propertiesFile = FMLPaths.GAMEDIR.get().resolve("server.properties");
+        try {
+            List<String> lines = Files.isRegularFile(propertiesFile)
+                    ? new ArrayList<>(Files.readAllLines(
+                            propertiesFile, StandardCharsets.ISO_8859_1))
+                    : new ArrayList<>();
+            boolean found = false;
+            boolean changed = false;
+            for (int i = 0; i < lines.size(); i++) {
+                if (!lines.get(i).startsWith("accepts-transfers=")) continue;
+                found = true;
+                if (!"accepts-transfers=true".equals(lines.get(i))) {
+                    lines.set(i, "accepts-transfers=true");
+                    changed = true;
+                }
+                break;
+            }
+            if (!found) {
+                lines.add("accepts-transfers=true");
+                changed = true;
+            }
+            if (changed) {
+                Files.write(propertiesFile, lines, StandardCharsets.ISO_8859_1);
+                LOGGER.info(
+                        "[ARENA-SERVER] Enabled accepts-transfers in the main server.properties");
+            }
+        } catch (IOException exception) {
+            LOGGER.error(
+                    "[ARENA-SERVER] Failed to enable accepts-transfers; players may not return from the arena",
+                    exception);
+        }
     }
 
 }

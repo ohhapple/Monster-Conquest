@@ -3,6 +3,7 @@ package com.ohhapple.monster_conquest.network.serverbound.unit;
 import com.ohhapple.monster_conquest.entity.ManagedUnit;
 import com.ohhapple.monster_conquest.item.RetrievalToolItem;
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.codec.StreamCodec;
@@ -37,6 +38,7 @@ public record UnitRetrievePayload(int entityId) implements CustomPacketPayload {
     public static void handle(UnitRetrievePayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             Entity entity = player.serverLevel().getEntity(payload.entityId());
             if (!(entity instanceof ManagedUnit unit)) return;
 

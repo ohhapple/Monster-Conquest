@@ -17,7 +17,7 @@ import net.minecraft.world.phys.Vec3;
 /**
  * 枪兵基类。
  *
- * 伤害 / 穿甲 / 射程 / 弹丸属性（弹速、重力、弹丸数、散布）全部取自
+ * 伤害 / 穿甲 / 射程 / 弹丸属性（弹速、重力、弹丸数、散布）全部读取
  * 玩家使用的同款枪械数值（GunSpecs），并且不随士兵等级变化。
  */
 public abstract class AbstractGunnerSoldier extends AbstractArmySoldier {

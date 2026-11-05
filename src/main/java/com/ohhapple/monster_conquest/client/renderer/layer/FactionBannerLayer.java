@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.client.renderer.layer;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.ManagedUnit;
 import net.minecraft.client.model.HumanoidModel;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -31,6 +32,10 @@ public class FactionBannerLayer<T extends LivingEntity, M extends HumanoidModel<
                        T entity, float limbSwing, float limbSwingAmount,
                        float partialTick, float ageInTicks,
                        float netHeadYaw, float headPitch) {
+        if (entity instanceof AbstractArmySoldier soldier
+                && soldier.usesArenaPresentationRules()) {
+            return;
+        }
         int corner = FactionMarkPainter.cornerColor(entity);
         int cross = FactionMarkPainter.crossColor(entity);
         // 头盔 / 胸甲被玩家手动替换 → 对应部位的阵营图案让位

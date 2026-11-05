@@ -603,6 +603,13 @@ public abstract class ArmyGunProjectile extends ThrowableItemProjectile {
     // ===================== 友军判定 =====================
 
     private boolean isFriendly(Entity target) {
+        Entity owner = getOwner();
+        if (owner instanceof AbstractArmySoldier arenaOwner
+                && arenaOwner.isArenaUnit()
+                && target instanceof AbstractArmySoldier arenaTarget
+                && arenaTarget.isArenaUnit()) {
+            return !arenaOwner.isArenaEnemy(arenaTarget);
+        }
         return ArmyProjectileUtil.isFriendly(syncedCommander(), syncedFaction(), target);
     }
 

@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.faction;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.army.relation.FactionHostility;
 import com.ohhapple.monster_conquest.army.FactionIds;
 import com.ohhapple.monster_conquest.army.PlayerFactionRegistry;
@@ -40,6 +41,7 @@ public record ToggleFactionHostilityPayload(String a, String b) implements Custo
     public static void handle(ToggleFactionHostilityPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             try {
                 ResourceLocation a = ResourceLocation.tryParse(payload.a());
                 ResourceLocation b = ResourceLocation.tryParse(payload.b());

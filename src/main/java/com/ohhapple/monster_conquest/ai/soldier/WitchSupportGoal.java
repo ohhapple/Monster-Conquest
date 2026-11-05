@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.ai.soldier;
 
 import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
+import com.ohhapple.monster_conquest.army.ShieldGuardController;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.projectile.WitchPotionEntity;
@@ -12,9 +13,12 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
 
 import org.jetbrains.annotations.Nullable;
@@ -43,6 +47,7 @@ public class WitchSupportGoal extends Goal {
     private static final double POTION_SPEED = 1.5;
     private static final double PROJECTILE_GRAVITY = WitchPotionEntity.FLIGHT_GRAVITY;
     private static final double PROJECTILE_DRAG    = WitchPotionEntity.FLIGHT_DRAG;
+    private static final int ARENA_DRINK_SHIELD_LOCK_TICKS = 40;
 
     private final AbstractArmySoldier witch;
     private int cooldown = 0;
@@ -52,6 +57,10 @@ public class WitchSupportGoal extends Goal {
     private int moveCooldown = -1;
     @Nullable
     private LivingEntity cachedWounded = null;
+    /** 竞技女巫成功治疗后，必须先完成一次对敌攻击。 */
+    private boolean arenaMustAttackAfterHeal;
+    private boolean arenaSelfDrinking;
+    private ItemStack arenaSelfDrinkOriginal = ItemStack.EMPTY;
 
     public WitchSupportGoal(AbstractArmySoldier witch) {
         this.witch = witch;
@@ -89,15 +98,15 @@ public class WitchSupportGoal extends Goal {
             cachedWounded = findWoundedAlly();
         } else if (cachedWounded != null
                 && (!cachedWounded.isAlive()
-                || cachedWounded.getHealth() >= cachedWounded.getMaxHealth() * ALLY_HEAL_THRESHOLD)) {
+                || !healthBelow(cachedWounded, ALLY_HEAL_THRESHOLD))) {
             cachedWounded = findWoundedAlly();
         }
 
-        if (witch.getHealth() < witch.getMaxHealth() * ALLY_HEAL_THRESHOLD) return true;
+        if (healthBelow(witch, ALLY_HEAL_THRESHOLD)) return true;
 
         LivingEntity leader = witch.getLeaderEntity();
         if (leader != null && leader.isAlive()
-                && leader.getHealth() < leader.getMaxHealth() * LEADER_CRITICAL) return true;
+                && healthBelow(leader, LEADER_CRITICAL)) return true;
 
         LivingEntity enemy = witch.getTarget();
         if (enemy != null && enemy.isAlive()) return true;
@@ -112,10 +121,23 @@ public class WitchSupportGoal extends Goal {
     public void start() { this.cooldown = 0; this.moveCooldown = -1; }
 
     @Override
+    public void stop() {
+        cancelArenaSelfDrink();
+    }
+
+    @Override
     public void tick() {
+        if (arenaSelfDrinking) {
+            tickArenaSelfDrink();
+            return;
+        }
         if (witch.isMoveOrderPriorityActive()) {
             stopMove();
             return;
+        }
+        if (witch.isArenaUnit()) {
+            int interval = witch.getArenaRangedAttackCooldownTicks();
+            if (cooldown > interval) cooldown = interval;
         }
         if (cooldown > 0) cooldown--;
 
@@ -123,11 +145,14 @@ public class WitchSupportGoal extends Goal {
         // 玩家刚下了"前往指定点"命令 → 支援走位让路：只做原地能做的事，不往别处跑
         boolean holdingMoveOrder = witch.isMoveOrderPriorityActive();
 
+        boolean mustAttack = witch.isArenaUnit()
+                && arenaMustAttackAfterHeal;
+
         // 1. 女巫自己受伤 → 自疗
-        if (witch.getHealth() < witch.getMaxHealth() * ALLY_HEAL_THRESHOLD
-                && cooldown <= 0) {
-            applySelfHeal();
-            cooldown = HEAL_CD;
+        if (!mustAttack && healthBelow(witch, ALLY_HEAL_THRESHOLD)
+                && cooldown <= 0 && applySelfHeal()) {
+            cooldown = witch.isArenaUnit()
+                    ? 0 : HEAL_CD;
             return;
         }
 
@@ -140,7 +165,7 @@ public class WitchSupportGoal extends Goal {
         }
 
         // 3. 首领濒死 → 紧急治疗
-        if (leader.getHealth() < leader.getMaxHealth() * LEADER_CRITICAL) {
+        if (!mustAttack && healthBelow(leader, LEADER_CRITICAL)) {
             handleEmergencyHeal(leader, hardStation || holdingMoveOrder);
             return;
         }
@@ -148,12 +173,12 @@ public class WitchSupportGoal extends Goal {
         // 4. 常规治疗
         LivingEntity healTarget = cachedWounded;
         if (healTarget != null && (!healTarget.isAlive()
-                || healTarget.getHealth() >= healTarget.getMaxHealth() * ALLY_HEAL_THRESHOLD)) {
+                || !healthBelow(healTarget, ALLY_HEAL_THRESHOLD))) {
             healTarget = null;
         }
         if (healTarget == witch) healTarget = null;
 
-        if (healTarget != null) {
+        if (!mustAttack && healTarget != null) {
             double distToHeal = witch.distanceTo(healTarget);
             // 硬驻守：不靠近治疗目标，原地尝试投药
             if (!hardStation && !holdingMoveOrder && distToHeal > HEAL_APPROACH_DIST) {
@@ -164,8 +189,11 @@ public class WitchSupportGoal extends Goal {
                 return;
             }
             if (cooldown <= 0) {
-                throwPotion(healTarget, WitchPotionEntity.Kind.HEAL);
-                cooldown = HEAL_CD;
+                if (throwPotion(healTarget,
+                        WitchPotionEntity.Kind.HEAL)) {
+                    cooldown = witch.isArenaUnit()
+                            ? throwCooldown() : HEAL_CD;
+                }
                 witch.getLookControl().setLookAt(healTarget, 30f, 30f);
                 if (witch.getTarget() == null || !witch.getTarget().isAlive()) stopMove();
                 return;
@@ -178,7 +206,10 @@ public class WitchSupportGoal extends Goal {
         handleCombat(hardStation);
     }
 
-    private void applySelfHeal() {
+    private boolean applySelfHeal() {
+        if (witch.isArenaUnit()) {
+            return startArenaSelfDrink();
+        }
         // 村民牧师：净化 + 少量回血（无增益）；女巫：回血 + 再生 / 吸收。
         boolean priest = witch instanceof VillagerPriestSoldier;
         if (priest) {
@@ -192,6 +223,73 @@ public class WitchSupportGoal extends Goal {
                     priest ? SoundEvents.GENERIC_DRINK : SoundEvents.WITCH_DRINK,
                     SoundSource.HOSTILE, 1.0f, 1.0f);
         }
+        return true;
+    }
+
+    private boolean startArenaSelfDrink() {
+        if (arenaSelfDrinking) return false;
+
+        stopMove();
+        // 同一实体只能使用一手物品；喝药必须先让开副手盾牌。
+        if (witch.isUsingItem()) witch.stopUsingItem();
+        witch.setShieldGuardAttackLockTicks(
+                Math.max(witch.getShieldGuardAttackLockTicks(),
+                        ARENA_DRINK_SHIELD_LOCK_TICKS));
+
+        arenaSelfDrinkOriginal = witch.getMainHandItem().copy();
+        witch.setItemSlot(EquipmentSlot.MAINHAND,
+                new ItemStack(Items.POTION));
+        witch.startUsingItem(InteractionHand.MAIN_HAND);
+        if (!witch.isUsingItem()
+                || witch.getUsedItemHand() != InteractionHand.MAIN_HAND) {
+            restoreArenaSelfDrinkItem();
+            return false;
+        }
+        arenaSelfDrinking = true;
+        return true;
+    }
+
+    private void tickArenaSelfDrink() {
+        stopMove();
+        if (witch.isUsingItem()
+                && witch.getUsedItemHand() == InteractionHand.MAIN_HAND
+                && witch.getUseItem().is(Items.POTION)) {
+            return;
+        }
+
+        float arenaHeal = (float) Math.max(0.0,
+                witch.getAttributeValue(
+                        net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE)
+                        * WitchPotionEntity.ARENA_ATTACK_RATIO);
+        witch.heal(arenaHeal);
+        arenaMustAttackAfterHeal = true;
+        cooldown = 0;
+        restoreArenaSelfDrinkItem();
+        arenaSelfDrinking = false;
+    }
+
+    private void cancelArenaSelfDrink() {
+        if (!arenaSelfDrinking) return;
+        if (witch.isUsingItem()
+                && witch.getUsedItemHand() == InteractionHand.MAIN_HAND) {
+            witch.stopUsingItem();
+        }
+        restoreArenaSelfDrinkItem();
+        arenaSelfDrinking = false;
+    }
+
+    private void restoreArenaSelfDrinkItem() {
+        if (!arenaSelfDrinkOriginal.isEmpty()) {
+            witch.setItemSlot(EquipmentSlot.MAINHAND,
+                    arenaSelfDrinkOriginal.copy());
+        } else {
+            ItemStack current = witch.getMainHandItem();
+            if (current.is(Items.POTION)
+                    || current.is(Items.GLASS_BOTTLE)) {
+                witch.setItemSlot(EquipmentSlot.MAINHAND, ItemStack.EMPTY);
+            }
+        }
+        arenaSelfDrinkOriginal = ItemStack.EMPTY;
     }
 
     private void handleEmergencyHeal(LivingEntity leader, boolean hardStation) {
@@ -210,8 +308,10 @@ public class WitchSupportGoal extends Goal {
         }
 
         if (cooldown <= 0 && dist < 16.0) {
-            throwPotion(leader, WitchPotionEntity.Kind.HEAL);
-            cooldown = HEAL_CD;
+            if (throwPotion(leader, WitchPotionEntity.Kind.HEAL)) {
+                cooldown = witch.isArenaUnit()
+                        ? throwCooldown() : HEAL_CD;
+            }
         }
     }
 
@@ -257,8 +357,12 @@ public class WitchSupportGoal extends Goal {
 
         if (cooldown <= 0 && dist < MAX_THROW_RANGE && witch.hasClearShot(enemy)) {
             WitchPotionEntity.Kind kind = pickDebuffKind();
-            throwPotion(enemy, kind);
-            cooldown = THROW_CD;
+            if (throwPotion(enemy, kind)) {
+                cooldown = throwCooldown();
+                if (witch.isArenaUnit()) {
+                    arenaMustAttackAfterHeal = false;
+                }
+            }
         }
     }
 
@@ -281,6 +385,9 @@ public class WitchSupportGoal extends Goal {
     }
 
     private WitchPotionEntity.Kind pickDebuffKind() {
+        if (witch.isArenaUnit()) {
+            return WitchPotionEntity.Kind.HARM;
+        }
         // 村民牧师只投掷中毒药瓶；女巫在中毒 / 虚弱 / 伤害中随机。
         if (witch instanceof VillagerPriestSoldier) return WitchPotionEntity.Kind.POISON;
 
@@ -296,14 +403,14 @@ public class WitchSupportGoal extends Goal {
         LivingEntity best = null;
         double bestDist = Double.MAX_VALUE;
 
-        if (witch.getHealth() < witch.getMaxHealth() * ALLY_HEAL_THRESHOLD) {
+        if (healthBelow(witch, ALLY_HEAL_THRESHOLD)) {
             best = witch;
             bestDist = 0;
         }
 
         LivingEntity leader = witch.getLeaderEntity();
         if (leader != null && leader.isAlive()
-                && leader.getHealth() < leader.getMaxHealth() * ALLY_HEAL_THRESHOLD) {
+                && healthBelow(leader, ALLY_HEAL_THRESHOLD)) {
             double d = witch.distanceToSqr(leader);
             if (d < bestDist) { bestDist = d; best = leader; }
         }
@@ -313,7 +420,7 @@ public class WitchSupportGoal extends Goal {
             List<AbstractArmySoldier> allies = cmd.getSoldiers();
             for (AbstractArmySoldier a : allies) {
                 if (a == witch || !a.isAlive()) continue;
-                if (a.getHealth() >= a.getMaxHealth() * ALLY_HEAL_THRESHOLD) continue;
+                if (!healthBelow(a, ALLY_HEAL_THRESHOLD)) continue;
                 double d = witch.distanceToSqr(a);
                 if (d < bestDist) { bestDist = d; best = a; }
             }
@@ -333,7 +440,7 @@ public class WitchSupportGoal extends Goal {
                     UUID theirCmd = a.getCommanderUuid().orElse(null);
                     if (!myCmd.equals(theirCmd)) continue;
                     if (preciseActive && a.getSquadId() != mySquad) continue;
-                    if (a.getHealth() >= a.getMaxHealth() * ALLY_HEAL_THRESHOLD) continue;
+                    if (!healthBelow(a, ALLY_HEAL_THRESHOLD)) continue;
                     double d = witch.distanceToSqr(a);
                     if (d < bestDist) { bestDist = d; best = a; }
                 }
@@ -350,7 +457,8 @@ public class WitchSupportGoal extends Goal {
         }
     }
 
-    private void throwPotion(LivingEntity target, WitchPotionEntity.Kind kind) {
+    private boolean throwPotion(LivingEntity target,
+                                WitchPotionEntity.Kind kind) {
         WitchPotionEntity potion = new WitchPotionEntity(witch.level(), witch);
         potion.configure(kind, witch.getTier().ordinal(),
                 witch.getCommanderUuid().orElse(null),
@@ -358,6 +466,11 @@ public class WitchSupportGoal extends Goal {
                 witch instanceof VillagerPriestSoldier
                         ? WitchPotionEntity.Caster.PRIEST
                         : WitchPotionEntity.Caster.WITCH);
+        if (witch.isArenaUnit()) {
+            potion.configureArenaCombat(
+                    witch.getAttributeValue(
+                            net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE));
+        }
         potion.setIntendedTarget(target.getUUID());
 
         double startX = witch.getX();
@@ -383,11 +496,37 @@ public class WitchSupportGoal extends Goal {
         double horiz = Math.sqrt(dx * dx + dz * dz);
 
         double[] dir = solveThrow(dx, dz, dy, horiz, POTION_SPEED);
-        if (dir == null) return;
+        if (dir == null) return false;
 
         potion.shoot(dir[0], dir[1], dir[2], (float) POTION_SPEED, 0.0f);
         witch.level().addFreshEntity(potion);
+        if (witch.isArenaUnit()) {
+            if (kind == WitchPotionEntity.Kind.HEAL) {
+                arenaMustAttackAfterHeal = true;
+            }
+            witch.arenaEquipment().beforeBasicAttack();
+            witch.setShieldGuardAttackLockTicks(
+                    ShieldGuardController.ATTACK_LOCK_TICKS);
+            witch.markAttackSuccess();
+        }
         witch.swing(InteractionHand.MAIN_HAND, true);
+        return true;
+    }
+
+    private int throwCooldown() {
+        return witch.isArenaUnit()
+                ? Math.max(1, witch.getArenaRangedAttackCooldownTicks())
+                : THROW_CD;
+    }
+
+    private static boolean healthBelow(LivingEntity entity, float threshold) {
+        if (entity instanceof AbstractArmySoldier soldier
+                && soldier.isArenaUnit()
+                && soldier.getArenaDisplayMaxHealth() > 0.0f) {
+            return soldier.getArenaHealthRatio() < threshold;
+        }
+        return entity.getMaxHealth() > 0.0f
+                && entity.getHealth() < entity.getMaxHealth() * threshold;
     }
 
     private static double[] solveThrow(double dx, double dz, double dy, double horiz, double speed) {

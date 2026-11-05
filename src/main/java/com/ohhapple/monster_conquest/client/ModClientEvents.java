@@ -1,5 +1,8 @@
 package com.ohhapple.monster_conquest.client;
 
+import com.ohhapple.monster_conquest.client.gui.arena.ArenaGameClientState;
+import com.ohhapple.monster_conquest.client.gui.arena.ArenaLobbyClientState;
+import com.ohhapple.monster_conquest.client.gui.arena.ArenaUiSounds;
 import com.ohhapple.monster_conquest.client.renderer.*;
 import com.ohhapple.monster_conquest.entity.ModEntities;
 import com.ohhapple.monster_conquest.item.FactionBannerClientExtensions;
@@ -14,11 +17,30 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent;
 import net.neoforged.neoforge.client.extensions.common.RegisterClientExtensionsEvent;
 
 @EventBusSubscriber(modid = Monster_conquest.MODID, value = Dist.CLIENT)
 public class ModClientEvents {
+
+    @SubscribeEvent
+    public static void onClientTick(ClientTickEvent.Post event) {
+        ArenaUiSounds.tick();
+    }
+
+    @SubscribeEvent
+    public static void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
+        ArenaGameClientState.clear();
+        ArenaLobbyClientState.clear();
+        ModVersionClientState.clear();
+    }
+
+    @SubscribeEvent
+    public static void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
+        ModVersionClientState.showWarningIfNeeded(event.getPlayer());
+    }
 
     @SubscribeEvent
     public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
@@ -64,6 +86,84 @@ public class ModClientEvents {
         event.registerEntityRenderer(ModEntities.PIGLIN_SHIELD_SOLDIER.get(), ArmySoldierRenderer::new);
         event.registerEntityRenderer(ModEntities.VEX_FLYING.get(), VexFlyingRenderer::new);
         event.registerEntityRenderer(ModEntities.ALLAY_FLYING.get(), AllayFlyingRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_SNOW_GOLEM.get(),
+                ArenaCreatureRenderers.SnowGolemRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_SPIDER.get(),
+                ArenaCreatureRenderers.SpiderRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_WOLF.get(),
+                ArenaCreatureRenderers.WolfRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_GOAT.get(),
+                ArenaCreatureRenderers.GoatRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_BREEZE.get(),
+                ArenaHeavyCreatureRenderers.BreezeRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_RAVAGER.get(),
+                ArenaHeavyCreatureRenderers.RavagerRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_POLAR_BEAR.get(),
+                ArenaHeavyCreatureRenderers.PolarBearRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_HOGLIN.get(),
+                ArenaHeavyCreatureRenderers.HoglinRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_IRON_GOLEM.get(),
+                ArenaAdditionalRenderers.IronGolemRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_CAVE_SPIDER.get(),
+                ArenaAdditionalRenderers.CaveSpiderRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_ARMADILLO.get(),
+                ArenaAdditionalRenderers.ArmadilloRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_BLAZE.get(),
+                ArenaAdditionalRenderers.BlazeRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_SNIFFER.get(),
+                ArenaAdditionalRenderers.SnifferRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_ENDERMITE.get(),
+                ArenaAdditionalRenderers.EndermiteRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_SLIME.get(),
+                ArenaAdditionalRenderers.SlimeRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_ELDER_GUARDIAN.get(),
+                ArenaLaserGuardianRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_RABBIT.get(),
+                ArenaAnimalRenderers.RabbitRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_DONKEY.get(),
+                ArenaAnimalRenderers.DonkeyRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_SHEEP.get(),
+                ArenaAnimalRenderers.SheepRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_COW.get(),
+                ArenaAnimalRenderers.CowRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_PIG.get(),
+                ArenaAnimalRenderers.PigRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_ZOMBIFIED_PIGLIN.get(),
+                ArenaAnimalRenderers.ZombifiedPiglinRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_FROG.get(),
+                ArenaAnimalRenderers.FrogRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_FOX.get(),
+                ArenaAnimalRenderers.FoxRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_CREEPER.get(),
+                ArenaAnimalRenderers.CreeperRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_PANDA.get(),
+                ArenaAnimalRenderers.PandaRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_ENDERMAN.get(),
+                ArenaGreaterMobRenderers.ArenaEndermanRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_WARDEN.get(),
+                ArenaGreaterMobRenderers.ArenaWardenRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_WANDERING_TRADER.get(),
+                ArenaNewUnitRenderers.WanderingTraderRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_MAGMA_CUBE.get(),
+                ArenaNewUnitRenderers.MagmaCubeRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_TURTLE.get(),
+                ArenaNewUnitRenderers.TurtleRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_WITHER.get(),
+                ArenaWitherRenderers.WitherRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_SKELETON_HORSE.get(),
+                ArenaSkeletonHorseRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_GIANT_ARMADILLO.get(),
+                ArenaAdditionalRenderers.GiantArmadilloRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_ENDER_DRAGON.get(),
+                ArenaEnderDragonRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_WITHER_SKULL.get(),
+                ArenaWitherRenderers.WitherSkullRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_SKILL_TRIDENT.get(),
+                ThrownTridentRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_LOOT_DROP.get(),
+                ArenaLootDropRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_LINGERING_POTION.get(),
+                NoopRenderer::new);
 
         event.registerEntityRenderer(ModEntities.WAR_HORSE.get(), WarHorseRenderer::new);
         // 袭击锚点：永远不渲染（袭击进度条 / 敲钟高亮的载体）
@@ -75,6 +175,14 @@ public class ModClientEvents {
                 TippableArrowRenderer::new);
         event.registerEntityRenderer(ModEntities.WITCH_POTION.get(),
                 ctx -> new ThrownItemRenderer<>(ctx, 1.0f, true));
+        event.registerEntityRenderer(ModEntities.ARENA_SNOWBALL.get(),
+                ctx -> new ThrownItemRenderer<>(ctx, 1.0f, true));
+        event.registerEntityRenderer(ModEntities.ARENA_WIND_CHARGE.get(),
+                ArenaWindChargeRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_GALE_CHARGE.get(),
+                ArenaWindChargeRenderer::new);
+        event.registerEntityRenderer(ModEntities.ARENA_FIREBALL.get(),
+                ArenaAdditionalRenderers.FireballRenderer::new);
         event.registerEntityRenderer(ModEntities.ARMY_BULLET.get(),
                 ArmyBulletRenderer::new);
         event.registerEntityRenderer(ModEntities.ARMY_ROCKET.get(),

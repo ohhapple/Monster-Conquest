@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.command;
 
 import com.ohhapple.monster_conquest.config.PlayerConfig;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
 import com.ohhapple.monster_conquest.Monster_conquest;
@@ -75,6 +76,7 @@ public record PlayerCommandPayload(int action, int value) implements CustomPacke
     public static void handle(PlayerCommandPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             PlayerCommandState state = PlayerArmyManager.get(player.getUUID());
             long nowGameTime = player.level().getGameTime();
 

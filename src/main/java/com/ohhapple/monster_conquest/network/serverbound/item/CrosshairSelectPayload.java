@@ -4,6 +4,7 @@ import com.ohhapple.monster_conquest.config.PlayerConfig;
 import com.ohhapple.monster_conquest.item.ControlToolItem;
 import com.ohhapple.monster_conquest.item.HatredWandItem;
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import com.ohhapple.monster_conquest.util.RaycastUtil;
 
@@ -36,6 +37,7 @@ public record CrosshairSelectPayload() implements CustomPacketPayload {
     public static void handle(CrosshairSelectPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             ItemStack stack = player.getMainHandItem();
 
             // 控制工具 + 蹲下 + 中键 → 循环"目标小队号"

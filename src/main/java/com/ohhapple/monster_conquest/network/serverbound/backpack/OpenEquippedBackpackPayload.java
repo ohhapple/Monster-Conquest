@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.backpack;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.menu.BackpackMenu;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -25,6 +26,7 @@ public record OpenEquippedBackpackPayload() implements CustomPacketPayload {
     public static void handle(OpenEquippedBackpackPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             BackpackMenu.openEquipped(player);
         });
     }

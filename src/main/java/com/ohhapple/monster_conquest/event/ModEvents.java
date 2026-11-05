@@ -3,6 +3,15 @@ package com.ohhapple.monster_conquest.event;
 import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
 import com.ohhapple.monster_conquest.ai.nav.PathProbe;
 import com.ohhapple.monster_conquest.ai.nav.RoutePlanner;
+import com.ohhapple.monster_conquest.arena.ArenaLobbyManager;
+import com.ohhapple.monster_conquest.arena.external.ArenaRuntime;
+import com.ohhapple.monster_conquest.arena.external.ExternalArenaMainCoordinator;
+import com.ohhapple.monster_conquest.arena.external.ExternalArenaServerRuntime;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
+import com.ohhapple.monster_conquest.arena.game.ArenaMatchManager;
+import com.ohhapple.monster_conquest.arena.game.ArenaSkillBalance;
+import com.ohhapple.monster_conquest.arena.game.ArenaSkillRuntime;
+import com.ohhapple.monster_conquest.arena.game.ArenaUnitPerformance;
 import com.ohhapple.monster_conquest.army.CombatRules;
 import com.ohhapple.monster_conquest.army.FactionIds;
 import com.ohhapple.monster_conquest.army.FactionRegistry;
@@ -20,6 +29,7 @@ import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.ManagedUnit;
 import com.ohhapple.monster_conquest.entity.ModEntities;
+import com.ohhapple.monster_conquest.entity.projectile.ArmyArrow;
 import com.ohhapple.monster_conquest.entity.soldiers.EvokerSoldier;
 import com.ohhapple.monster_conquest.entity.soldiers.PiglinShieldSoldier;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
@@ -40,19 +50,24 @@ import com.ohhapple.monster_conquest.world.VillageDefense;
 import com.ohhapple.monster_conquest.world.VillagePatrolSpawner;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.Difficulty;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Pillager;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.player.Player;
@@ -67,17 +82,21 @@ import net.minecraft.world.phys.AABB;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.EntityAttributeCreationEvent;
+import net.neoforged.neoforge.event.entity.item.ItemTossEvent;
+import net.neoforged.neoforge.event.entity.living.FinalizeSpawnEvent;
 import net.neoforged.neoforge.event.entity.living.LivingChangeTargetEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDamageEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.living.LivingHealEvent;
 import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
 import net.neoforged.neoforge.event.entity.living.LivingKnockBackEvent;
+import net.neoforged.neoforge.event.entity.living.MobEffectEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerXpEvent;
 import net.neoforged.neoforge.event.entity.RegisterSpawnPlacementsEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.EntityTickEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
@@ -132,6 +151,41 @@ public class ModEvents {
         event.put(ModEntities.PIGLIN_SHIELD_SOLDIER.get(), AbstractArmySoldier.createAttributes().build());
         event.put(ModEntities.VEX_FLYING.get(), AbstractArmySoldier.createAttributes().build());
         event.put(ModEntities.ALLAY_FLYING.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_SNOW_GOLEM.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_SPIDER.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_WOLF.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_GOAT.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_BREEZE.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_RAVAGER.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_POLAR_BEAR.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_HOGLIN.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_IRON_GOLEM.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_CAVE_SPIDER.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_ARMADILLO.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_BLAZE.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_SNIFFER.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_ENDERMITE.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_SLIME.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_ELDER_GUARDIAN.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_RABBIT.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_DONKEY.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_SHEEP.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_COW.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_PIG.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_ZOMBIFIED_PIGLIN.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_FROG.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_FOX.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_CREEPER.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_PANDA.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_ENDERMAN.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_WARDEN.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_WANDERING_TRADER.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_MAGMA_CUBE.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_TURTLE.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_WITHER.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_SKELETON_HORSE.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_GIANT_ARMADILLO.get(), AbstractArmySoldier.createAttributes().build());
+        event.put(ModEntities.ARENA_ENDER_DRAGON.get(), AbstractArmySoldier.createAttributes().build());
 
         event.put(ModEntities.WAR_HORSE.get(), WarHorseEntity.createAttributes().build());
 
@@ -230,6 +284,17 @@ public class ModEvents {
 
     @SubscribeEvent
     public static void onServerStarted(ServerStartedEvent event) {
+        if (ArenaRuntime.isArenaServer()) {
+            Monster_conquest.configureArenaServerLogging();
+            ArenaMatchManager.setServer(event.getServer());
+            ExternalArenaServerRuntime.setServer(event.getServer());
+            return;
+        }
+
+        boolean resumingIntegratedArena =
+                ExternalArenaMainCoordinator.setServer(event.getServer());
+        ArenaLobbyManager.setServer(
+                event.getServer(), resumingIntegratedArena);
         ArmyRelations.setServer(event.getServer());
         FactionHostility.setServer(event.getServer());
         FactionAlly.setServer(event.getServer());
@@ -243,6 +308,21 @@ public class ModEvents {
 
     @SubscribeEvent
     public static void onServerStopped(ServerStoppedEvent event) {
+        if (ArenaRuntime.isArenaServer()) {
+            ArenaMatchManager.setServer(null);
+            ExternalArenaServerRuntime.stop();
+            RoutePlanner.clearCaches();
+            PathProbe.clearCaches();
+            AiNavUtil.clearCaches();
+            SquadObservationCache.clearAll();
+            ExternalArenaServerRuntime.scheduleProcessExit();
+            return;
+        }
+
+        boolean preserveIntegratedArena =
+                ExternalArenaMainCoordinator.hasIntegratedSessions();
+        ExternalArenaMainCoordinator.onMainServerStopped();
+        ArenaLobbyManager.setServer(null, preserveIntegratedArena);
         RoutePlanner.clearCaches();
         PathProbe.clearCaches();
         AiNavUtil.clearCaches();
@@ -262,8 +342,21 @@ public class ModEvents {
     }
 
     @SubscribeEvent
+    public static void onServerStopping(ServerStoppingEvent event) {
+        if (!ArenaRuntime.isArenaServer()) {
+            ExternalArenaMainCoordinator.onMainServerStopping(event.getServer());
+        }
+    }
+
+    @SubscribeEvent
     public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer p)) return;
+        if (ArenaRuntime.isArenaServer()) {
+            ExternalArenaServerRuntime.onPlayerLogin(p);
+            return;
+        }
+
+        ExternalArenaMainCoordinator.onPlayerLogin(p);
         FactionHostility.ensurePlayerDefaults(p.getUUID());
         var state = PlayerArmyManager
                 .get(p.getUUID());
@@ -276,9 +369,33 @@ public class ModEvents {
     @SubscribeEvent
     public static void onPlayerLeave(PlayerEvent.PlayerLoggedOutEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer p)) return;
+        if (ArenaRuntime.isArenaServer()) {
+            ExternalArenaServerRuntime.onPlayerDisconnect(p);
+            ArenaMatchManager.onPlayerDisconnect(p);
+            return;
+        }
+
+        ArenaLobbyManager.onPlayerDisconnect(p);
+        ExternalArenaMainCoordinator.onPlayerDisconnect(p);
         SquadObservationCache.clearPlayer(p.getUUID());
         TacticalMending.clear(p);
         PlayerArmyManager.saveOne(p.getUUID());
+    }
+
+    @SubscribeEvent
+    public static void onItemToss(ItemTossEvent event) {
+        if (event.getPlayer() instanceof ServerPlayer player
+                && ArenaDimensions.isArena(player)) {
+            event.setCanceled(true);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onArenaMobSpawn(FinalizeSpawnEvent event) {
+        BlockPos pos = BlockPos.containing(event.getX(), event.getY(), event.getZ());
+        if (ArenaDimensions.isArena(event.getEntity().level(), pos)) {
+            event.setSpawnCancelled(true);
+        }
     }
 
     /**
@@ -308,6 +425,13 @@ public class ModEvents {
 
     @SubscribeEvent
     public static void onServerTickPost(ServerTickEvent.Post event) {
+        if (ArenaRuntime.isArenaServer()) {
+            ArenaMatchManager.tick(event.getServer());
+            ExternalArenaServerRuntime.tick(event.getServer());
+            return;
+        }
+
+        ExternalArenaMainCoordinator.tick(event.getServer());
         // 每 tick 处理延迟的阵营结盟清理（队列空时几乎无开销）
         FactionAlly.processPendingCleanups();
 
@@ -369,6 +493,9 @@ public class ModEvents {
         if (!(event.getEntity().level() instanceof ServerLevel level)) return;
         var routes = PathRoutes.get(level);
         if (event.getEntity() instanceof AbstractArmySoldier soldier) {
+            if (soldier.isArenaUnit()) {
+                soldier.arenaTraits().onDeath();
+            }
             routes.clear(PathRoutes.unitKey(
                     soldier.getUUID()));
         } else if (event.getEntity() instanceof AbstractArmyCommander commander) {
@@ -383,9 +510,127 @@ public class ModEvents {
     public static void onLivingIncomingDamage(LivingIncomingDamageEvent event) {
         LivingEntity victim = event.getEntity();
         if (victim.level().isClientSide) return;
+        if (victim instanceof ServerPlayer arenaPlayer
+                && ArenaDimensions.isArena(arenaPlayer)) {
+            event.setCanceled(true);
+            return;
+        }
 
         var src = event.getSource();
         LivingEntity attacker = CombatRules.damageAttacker(src);
+        AbstractArmySoldier arenaAttacker = attacker instanceof AbstractArmySoldier unit
+                && unit.isArenaUnit() ? unit : null;
+        AbstractArmySoldier arenaVictim = victim instanceof AbstractArmySoldier unit
+                && unit.isArenaUnit() ? unit : null;
+        boolean arenaPair = arenaAttacker != null && arenaVictim != null;
+        if (arenaPair) {
+            if (!arenaAttacker.isArenaEnemy(arenaVictim)) {
+                event.setCanceled(true);
+                return;
+            }
+            boolean basicTrueDamage =
+                    arenaAttacker.arenaSkills()
+                            .dealsTrueDamageTo(
+                                    arenaVictim, src);
+            if (arenaAttacker.isDealingArenaTrueDamage()
+                    || basicTrueDamage) {
+                // 真实伤害跳过闪避、技能/装备减伤、护盾和魔抗。
+                float amount = arenaAttacker
+                        .isDealingArenaTrueDamage()
+                        ? arenaAttacker
+                        .getArenaTrueDamageAmount()
+                        : event.getAmount();
+                if (basicTrueDamage) {
+                    // 护盾只阻止受击方从这次命中获得技能值，不阻止攻击方。
+                    if (arenaVictim.getArenaShield() <= 0.0f) {
+                        arenaVictim.addArenaSkillCharge(1);
+                    }
+                    arenaAttacker.addArenaSkillCharge(1);
+                    amount = arenaAttacker.arenaSkills()
+                            .modifyOutgoingAttack(
+                                    arenaVictim, src, amount);
+                    amount = arenaAttacker.arenaEquipment()
+                            .modifyOutgoingAttack(
+                                    arenaVictim, src, amount);
+                    amount = arenaAttacker.arenaTraits()
+                            .modifyOutgoingDamage(
+                                    arenaVictim, src, amount);
+                    amount = applyArenaCritical(
+                            arenaAttacker, arenaVictim,
+                            src, amount);
+                    arenaAttacker.arenaSkills()
+                            .markForcedTrueDamage(
+                                    arenaVictim, amount);
+                } else {
+                    amount = arenaAttacker.arenaTraits()
+                            .modifyOutgoingDamage(
+                                    victim, src, amount);
+                    amount = applyArenaCritical(
+                            arenaAttacker, victim, src,
+                            amount);
+                }
+                event.setAmount(amount);
+                victim.invulnerableTime = 0;
+                event.setInvulnerabilityTicks(0);
+                return;
+            }
+            ArmyArrow arenaSkillArrow =
+                    src.getDirectEntity() instanceof ArmyArrow arrow
+                            && arrow.isArenaSkillArrow()
+                            ? arrow : null;
+            if (arenaSkillArrow != null) {
+                event.setAmount(arenaSkillArrow.getArenaSkillDamage());
+            }
+            if (src.getDirectEntity() instanceof EvokerFangs
+                    && arenaAttacker instanceof EvokerSoldier) {
+                event.setAmount((float) arenaAttacker.getAttributeValue(
+                        Attributes.ATTACK_DAMAGE));
+            }
+            boolean effectDamage =
+                    arenaAttacker.isDealingArenaEffectDamage();
+            if (!effectDamage
+                    && arenaVictim.arenaEquipment().tryDodge(
+                    arenaAttacker, src)) {
+                event.setAmount(0.0f);
+                event.setCanceled(true);
+                return;
+            }
+            if (!effectDamage) {
+                // 受击方的护盾阻断受击回能；攻击方仍按成功普攻获得技能值。
+                if (arenaVictim.getArenaShield() <= 0.0f) {
+                    arenaVictim.addArenaSkillCharge(1);
+                }
+                if (arenaSkillArrow == null
+                        && ArenaSkillRuntime.isBasicAttack(src)) {
+                    arenaAttacker.addArenaSkillCharge(1);
+                }
+            }
+            float amount = arenaAttacker.arenaSkills()
+                    .modifyOutgoingAttack(arenaVictim, src,
+                            event.getAmount());
+            amount = arenaAttacker.arenaEquipment()
+                    .modifyOutgoingAttack(arenaVictim, src, amount);
+            amount = arenaAttacker.arenaTraits()
+                    .modifyOutgoingDamage(
+                            arenaVictim, src, amount);
+            amount = arenaVictim.arenaEquipment()
+                    .modifyIncomingAttack(arenaAttacker, src, amount);
+            amount = arenaVictim.arenaTraits()
+                    .modifyIncomingDamage(
+                            arenaAttacker, src, amount);
+            amount = applyArenaCritical(
+                    arenaAttacker, arenaVictim, src, amount);
+            event.setAmount(amount);
+        }
+
+        if (arenaVictim != null
+                && (src.is(DamageTypes.MAGIC)
+                || src.is(DamageTypes.INDIRECT_MAGIC))) {
+            double resistance = Math.max(
+                    0.0, arenaVictim.getArenaEffectiveMagicResistance());
+            event.setAmount(event.getAmount()
+                    * (float) (100.0 / (100.0 + resistance)));
+        }
 
         // 防弹衣：被子弹 / 炮弹 / 其它弹射物击中时伤害 -70%，按减免量扣防弹衣耐久
         if (victim instanceof ServerPlayer vestPlayer
@@ -418,7 +663,7 @@ public class ModEvents {
         if (attacker == null || attacker == victim) return;
 
         // 同族和平：灾厄阵营 ↔ 原版灾厄生物、村民阵营 ↔ 原版村民 / 铁傀儡，互不伤害。
-        if (NativePeace.isPeacefulPair(victim, attacker)) {
+        if (!arenaPair && NativePeace.isPeacefulPair(victim, attacker)) {
             event.setCanceled(true);
             return;
         }
@@ -440,8 +685,187 @@ public class ModEvents {
         //   · 玩家被打 → 玩家共享仇恨
         //   · 军团单位（士兵 / 首领，含其召唤的尖牙）打人 → 受害者仇恨该单位，
         //     整个军团与玩家共享仇恨也随之联动（唤魔者尖牙的仇恨归属即此）。
-        if (managedAttacker || victim instanceof Player) {
+        if (!arenaPair && (managedAttacker || victim instanceof Player)) {
             ThreatDispatcher.propagate(victim, attacker);
+        }
+    }
+
+    private static float arenaPeriodicDamage(
+            AbstractArmySoldier victim, DamageSource source) {
+        if (source.is(DamageTypes.FREEZE)) {
+            return victim.isArenaFrozen()
+                    ? (float) ArenaSkillBalance.freezeTickDamage(
+                            ArenaSkillRuntime.arenaMaxHealth(victim))
+                    : -1.0f;
+        }
+        if (!(source.is(DamageTypes.MAGIC)
+                || source.is(DamageTypes.INDIRECT_MAGIC)
+                || source.is(DamageTypes.WITHER))) {
+            return -1.0f;
+        }
+        MobEffectInstance poison = victim.getEffect(MobEffects.POISON);
+        MobEffectInstance wither = victim.getEffect(MobEffects.WITHER);
+        if (poison == null && wither == null) return -1.0f;
+        double maxHealth = ArenaSkillRuntime.arenaMaxHealth(victim);
+        double damage;
+        if (source.is(DamageTypes.WITHER) && wither != null) {
+            damage = ArenaSkillBalance.witherTickDamage(
+                    maxHealth, wither.getAmplifier());
+        } else if (poison != null) {
+            damage = ArenaSkillBalance.poisonTickDamage(
+                    maxHealth, poison.getAmplifier());
+        } else {
+            damage = ArenaSkillBalance.witherTickDamage(
+                    maxHealth, wither.getAmplifier());
+        }
+        double resistance = Math.max(
+                0.0, victim.getArenaEffectiveMagicResistance());
+        return (float) (damage
+                * (100.0 / (100.0 + resistance)));
+    }
+
+    private static float applyArenaCritical(
+            AbstractArmySoldier attacker, LivingEntity victim,
+            DamageSource source, float amount) {
+        if (amount <= 0.0f
+                || attacker.isDealingArenaEffectDamage()
+                || source.is(DamageTypes.THORNS)) {
+            return amount;
+        }
+        boolean skillDamage =
+                ArenaSkillRuntime.isArenaSkillDamage(source);
+        boolean basicAttack = !skillDamage
+                && ArenaSkillRuntime.isBasicAttack(source);
+        if (!basicAttack && !(skillDamage
+                && attacker.arenaEquipment().canSkillCrit())) {
+            return amount;
+        }
+        if (!attacker.arenaEquipment().rollCritical()) {
+            return amount;
+        }
+        float critical = amount
+                * (float) attacker.arenaEquipment()
+                .criticalDamageMultiplier();
+        if (attacker.level() instanceof ServerLevel level) {
+            level.sendParticles(ParticleTypes.CRIT,
+                    victim.getX(),
+                    victim.getY() + victim.getBbHeight() * 0.55,
+                    victim.getZ(),
+                    14, 0.35, 0.5, 0.35, 0.12);
+        }
+        return critical;
+    }
+
+    @SubscribeEvent
+    public static void onArenaDamagePre(LivingDamageEvent.Pre event) {
+        if (!(event.getEntity() instanceof AbstractArmySoldier victim)
+                || !victim.isArenaUnit()
+                || event.getNewDamage() <= 0.0f) {
+            return;
+        }
+        float beforeHealth = victim.getArenaCurrentHealth();
+        UUID pendingSourcePieceId =
+                victim.consumeNextArenaDamageSourcePieceId();
+        LivingEntity attackerEntity =
+                CombatRules.damageAttacker(event.getSource());
+        AbstractArmySoldier attacker =
+                attackerEntity instanceof AbstractArmySoldier soldier
+                        && soldier.isArenaUnit() ? soldier : null;
+        if (attacker != null && !attacker.isArenaEnemy(victim)) {
+            event.setNewDamage(0.0f);
+            return;
+        }
+        boolean manualTrueDamage = attacker != null
+                && attacker.isDealingArenaTrueDamage();
+        float periodicDamage = attacker == null
+                ? arenaPeriodicDamage(victim, event.getSource())
+                : -1.0f;
+        float forcedTrueDamage = attacker == null
+                ? -1.0f : attacker.arenaSkills()
+                .takeForcedTrueDamage(
+                        victim, event.getSource());
+        boolean trueDamage = manualTrueDamage
+                || forcedTrueDamage >= 0.0f;
+        float appliedDamage = manualTrueDamage
+                ? attacker.getArenaTrueDamageAmount()
+                : forcedTrueDamage >= 0.0f
+                ? forcedTrueDamage
+                : periodicDamage >= 0.0f
+                ? periodicDamage : event.getNewDamage();
+        if (event.getSource().is(DamageTypes.THORNS)) {
+            appliedDamage = Math.min(appliedDamage,
+                    ArenaSkillRuntime.arenaMaxHealth(victim) * 0.20f);
+        }
+        float shieldBefore = victim.getArenaShield();
+        float remainingHealth = trueDamage
+                ? victim.applyArenaTrueDamage(appliedDamage)
+                : victim.applyArenaDamage(appliedDamage);
+        float statsHealthDamage = Math.max(
+                0.0f, beforeHealth - remainingHealth);
+        float shieldDamage = trueDamage ? 0.0f
+                : Math.max(0.0f,
+                shieldBefore - victim.getArenaShield());
+        if (remainingHealth <= 0.0f
+                && beforeHealth > 0.0f
+                && victim.arenaTraits().tryRevive()) {
+            remainingHealth = victim.getArenaCurrentHealth();
+        }
+        float healthDamage = Math.max(
+                0.0f, beforeHealth - remainingHealth);
+        UUID sourcePieceId = attacker != null
+                ? attacker.getArenaSourcePieceId()
+                : pendingSourcePieceId;
+        if (sourcePieceId == null
+                && (event.getSource().is(DamageTypes.MAGIC)
+                || event.getSource().is(DamageTypes.WITHER))
+                && (victim.hasEffect(MobEffects.POISON)
+                || victim.hasEffect(MobEffects.WITHER))) {
+            sourcePieceId = victim
+                    .getArenaDotSourcePieceId();
+        }
+        ArenaUnitPerformance.DamageKind damageKind = trueDamage
+                ? ArenaUnitPerformance.DamageKind.TRUE
+                : CombatRules.isMagicDamage(event.getSource())
+                || event.getSource().is(DamageTypeTags.IS_FIRE)
+                ? ArenaUnitPerformance.DamageKind.MAGIC
+                : ArenaUnitPerformance.DamageKind.PHYSICAL;
+        ArenaMatchManager.recordArenaDamage(
+                sourcePieceId, victim,
+                statsHealthDamage, shieldDamage,
+                damageKind);
+        if (attacker != null && healthDamage > 0.0f) {
+            victim.arenaSkills().recordKillParticipant(
+                    attacker);
+        }
+        if (attacker != null) {
+            attacker.arenaEquipment().afterDamageDealt(
+                    victim, event.getSource(), healthDamage);
+            attacker.arenaTraits().afterDamageDealt(
+                    victim, event.getSource(), healthDamage);
+        }
+        victim.arenaEquipment().afterDamageTaken(
+                attacker, event.getSource(), appliedDamage);
+        victim.arenaTraits().afterDamageTaken(
+                attacker, event.getSource(), appliedDamage);
+        victim.arenaSkills().afterDamageTaken(
+                attacker, event.getSource(), appliedDamage);
+        victim.arenaEquipment().afterDamageResolved();
+        if (remainingHealth <= 0.0f) {
+            if (beforeHealth > 0.0f) {
+                if (attacker != null) {
+                    attacker.arenaTraits().onKill();
+                }
+                victim.arenaSkills()
+                        .awardKillParticipants();
+            }
+            victim.prepareArenaDamageMirror(0.0f);
+            event.setNewDamage(victim.getHealth()
+                    + victim.getAbsorptionAmount() + 1.0f);
+        } else {
+            victim.prepareArenaDamageMirror(remainingHealth);
+            // 保留一次有效的受击事件，让动画、击退和命中后技能正常执行；
+            // Post 再把镜像生命恢复到竞技逻辑生命。
+            event.setNewDamage(1.0f);
         }
     }
 
@@ -452,9 +876,39 @@ public class ModEvents {
     @SubscribeEvent
     public static void onLivingDamagePost(LivingDamageEvent.Post event) {
         if (event.getNewDamage() <= 0f) return;
-        if (!(event.getSource().getDirectEntity() instanceof EvokerFangs)) return;
+        if (event.getEntity() instanceof AbstractArmySoldier arenaVictim
+                && arenaVictim.isArenaUnit()) {
+            arenaVictim.syncArenaHealthMirror();
+        }
+        if (CombatRules.damageAttacker(event.getSource())
+                instanceof AbstractArmySoldier arenaAttacker
+                && arenaAttacker.isArenaUnit()
+                && event.getEntity() instanceof LivingEntity victim
+                && arenaAttacker.isArenaEnemy(victim)) {
+            arenaAttacker.arenaEquipment().afterBasicAttack(
+                    victim, event.getSource());
+            arenaAttacker.arenaSkills().afterDamageDealt(
+                    victim, event.getSource());
+            arenaAttacker.clearArenaShieldIgnore();
+            if (victim instanceof AbstractArmySoldier arenaVictim
+                    && arenaVictim.getArenaCurrentHealth() <= 0.0f) {
+                arenaAttacker.arenaEquipment().onKill();
+            }
+        }
+        if (!(event.getSource().getDirectEntity()
+                instanceof EvokerFangs fangs)) {
+            return;
+        }
         if (event.getSource().getEntity() instanceof EvokerSoldier evoker) {
-            evoker.applyGrievousWound(event.getEntity());
+            if (evoker.isArenaUnit()) {
+                if (fangs.getTags().contains(
+                        EvokerSoldier.ARENA_SKILL_FANG_TAG)) {
+                    evoker.arenaSkills().afterArenaFangHit(
+                            event.getEntity());
+                }
+            } else {
+                evoker.applyGrievousWound(event.getEntity());
+            }
         }
     }
 
@@ -477,6 +931,19 @@ public class ModEvents {
         event.setAmount(amount * multiplier);
     }
 
+    @SubscribeEvent
+    public static void onArenaMobEffectApplicable(
+            MobEffectEvent.Applicable event) {
+        if (event.getEntity() instanceof AbstractArmySoldier soldier
+                && soldier.isArenaUnit()
+                && soldier.isArenaDebuffImmune()
+                && !event.getEffectInstance().getEffect()
+                .value().isBeneficial()) {
+            event.setResult(MobEffectEvent.Applicable.Result
+                    .DO_NOT_APPLY);
+        }
+    }
+
     /**
      * 同族和平：阻止原版生物把对应阵营单位设为攻击目标。
      *   （例：铁傀儡不再仇视村民阵营士兵；原版灾厄生物不再仇视灾厄阵营士兵。）
@@ -490,6 +957,12 @@ public class ModEvents {
     public static void onLivingChangeTarget(LivingChangeTargetEvent event) {
         LivingEntity newTarget = event.getNewAboutToBeSetTarget();
         if (newTarget == null) return;
+        if (event.getEntity() instanceof AbstractArmySoldier source
+                && newTarget instanceof AbstractArmySoldier target
+                && source.isArenaUnit()
+                && target.isArenaUnit()) {
+            return;
+        }
         if (NativePeace.isPeacefulPair(event.getEntity(), newTarget)) {
             event.setCanceled(true);
             return;
@@ -608,6 +1081,11 @@ public class ModEvents {
     @SubscribeEvent
     public static void onLivingKnockBack(LivingKnockBackEvent event) {
         LivingEntity entity = event.getEntity();
+        if (entity instanceof AbstractArmySoldier soldier
+                && soldier.isArenaKnockbackImmune()) {
+            event.setCanceled(true);
+            return;
+        }
         // 猪灵盾兵举盾时免疫击退；攻击放盾窗口内姿态不可见，仍会正常承受击退。
         if (entity instanceof PiglinShieldSoldier piglinShield
                 && piglinShield.hasShieldGuardStack()

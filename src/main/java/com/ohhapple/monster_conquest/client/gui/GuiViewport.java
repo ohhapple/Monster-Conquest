@@ -53,6 +53,15 @@ public record GuiViewport(float scale, int offsetX, int offsetY) {
         graphics.pose().scale(scale, scale, 1.0f);
     }
 
+    /**
+     * GuiGraphics 的裁剪框使用屏幕坐标，不经过当前 PoseStack 变换。
+     */
+    public void enableScissor(GuiGraphics graphics,
+                              int left, int top, int right, int bottom) {
+        graphics.enableScissor(screenX(left), screenY(top),
+                screenX(right), screenY(bottom));
+    }
+
     public void pop(GuiGraphics graphics) {
         graphics.pose().popPose();
     }

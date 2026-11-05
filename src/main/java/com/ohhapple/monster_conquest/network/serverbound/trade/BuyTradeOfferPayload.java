@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.trade;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.block.TradeStationService;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -32,6 +33,7 @@ public record BuyTradeOfferPayload(BlockPos pos, int offerIndex, int quantity)
     public static void handle(BuyTradeOfferPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             TradeStationService.buy(player, payload.pos(), payload.offerIndex(), payload.quantity());
         });
     }

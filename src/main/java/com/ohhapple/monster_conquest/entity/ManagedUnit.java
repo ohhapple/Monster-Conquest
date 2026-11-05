@@ -53,9 +53,6 @@ public interface ManagedUnit {
     /** 写入战术装备。 */
     void setManualTactical(int index, ItemStack stack);
 
-    /** 补一份自带装备快照（存档里没有快照时的兜底）。 */
-    void ensureDefaultGear();
-
     /** 清空全部手动装备与战术装备，并把自带装备还原到身上。 */
     void clearManualEquipment();
 

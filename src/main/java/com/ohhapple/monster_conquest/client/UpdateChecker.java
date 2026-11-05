@@ -196,7 +196,8 @@ public final class UpdateChecker {
             String loader = properties.getProperty("modLoader", "").trim();
             if (branch.isEmpty() || "HEAD".equals(branch) || "unknown".equals(branch)
                     || loader.isEmpty()) {
-                throw new IOException("Build branch or loader metadata is missing or invalid");
+                throw new IOException(
+                        "Build branch or loader metadata is missing or invalid");
             }
             return new BuildMetadata(branch, loader);
         }

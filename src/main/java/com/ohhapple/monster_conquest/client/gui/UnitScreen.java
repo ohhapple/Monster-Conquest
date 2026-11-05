@@ -1,5 +1,6 @@
 package com.ohhapple.monster_conquest.client.gui;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.commanders.patrol.AbstractPatrolCaptain;
@@ -20,8 +21,13 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.ItemStack;
 
 import net.neoforged.neoforge.network.PacketDistributor;
+
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -146,7 +152,7 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
         followArmyButton.active = menu.getSync(UnitMenu.DATA_OVERRIDE) == 1;
         // 没有策略按钮的单位（首领等）把"收纳"挪到左半边，避免留下大片空白
         retrieveButton.setPosition(leftPos + (strategy ? 100 : 8), topPos + 170);
-        super.render(g, localMouseX, localMouseY, partialTick);
+        renderContainerContent(g, localMouseX, localMouseY, partialTick);
         Dropdown hovering = null;
         for (Dropdown dropdown : dropdowns) {
             dropdown.renderPopup(g, this.font, localMouseX, localMouseY);
@@ -169,6 +175,47 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
         }
         this.renderTooltip(g, localMouseX, localMouseY);
         viewport.pop(g);
+    }
+
+    /**
+     * 只绘制本界面的容器内容，不触发 ContainerScreenEvent。
+     * 配方查看器等第三方覆盖层因此不会在槽位之间或右侧绘制。
+     */
+    private void renderContainerContent(GuiGraphics g, int mouseX, int mouseY,
+                                        float partialTick) {
+        renderBackground(g, mouseX, mouseY, partialTick);
+        for (var renderable : renderables) {
+            renderable.render(g, mouseX, mouseY, partialTick);
+        }
+
+        RenderSystem.disableDepthTest();
+        g.pose().pushPose();
+        g.pose().translate(leftPos, topPos, 0.0F);
+        hoveredSlot = null;
+        for (Slot slot : menu.slots) {
+            if (slot.isActive()) {
+                renderSlot(g, slot);
+            }
+            if (isHovering(slot.x, slot.y, 16, 16, mouseX, mouseY)
+                    && slot.isActive()) {
+                hoveredSlot = slot;
+                renderSlotHighlight(g, slot, mouseX, mouseY, partialTick);
+            }
+        }
+
+        renderLabels(g, mouseX, mouseY);
+        ItemStack carried = menu.getCarried();
+        if (!carried.isEmpty()) {
+            int itemX = mouseX - leftPos - 8;
+            int itemY = mouseY - topPos - 8;
+            g.pose().pushPose();
+            g.pose().translate(0.0F, 0.0F, 232.0F);
+            g.renderItem(carried, itemX, itemY);
+            g.renderItemDecorations(font, carried, itemX, itemY);
+            g.pose().popPose();
+        }
+        g.pose().popPose();
+        RenderSystem.enableDepthTest();
     }
 
     @Override
@@ -235,9 +282,8 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
         g.fill(x + 8, y + 13, x + 84, y + 74, 0xFF6E6E7A);
         ManagedUnit unit = menu.getUnit();
         if (unit instanceof LivingEntity living) {
-            InventoryScreen.renderEntityInInventoryFollowsMouse(g,
-                    x + 12, y + 14, x + 80, y + 72, 28, 0.0625F,
-                    (float) mouseX, (float) mouseY, living);
+            renderEntityPreview(g, x + 12, y + 14, x + 80, y + 72,
+                    28, 0.0625F, mouseX, mouseY, living);
         }
 
         // 状态区
@@ -283,6 +329,57 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
         }
         for (int col = 0; col < 9; col++) {
             drawSlot(g, x + 190 + col * 18, y + 210);
+        }
+    }
+
+    /**
+     * 原版跟随鼠标的预览方法会在缩放后的 PoseStack 内按局部坐标开启裁剪。
+     * 裁剪框不经过 PoseStack，因此这里自行计算观察角度，并用屏幕坐标设置裁剪。
+     */
+    private void renderEntityPreview(GuiGraphics g,
+                                     int left, int top, int right, int bottom,
+                                     int size, float modelOffset,
+                                     float mouseX, float mouseY,
+                                     LivingEntity entity) {
+        viewport.enableScissor(g, left, top, right, bottom);
+
+        float centerX = (left + right) / 2.0F;
+        float centerY = (top + bottom) / 2.0F;
+        float angleX = (float) Math.atan((centerX - mouseX) / 40.0F);
+        float angleY = (float) Math.atan((centerY - mouseY) / 40.0F);
+
+        Quaternionf camera = new Quaternionf().rotateZ((float) Math.PI);
+        Quaternionf cameraOrientation = new Quaternionf().rotateX(
+                angleY * 20.0F * (float) (Math.PI / 180.0));
+        camera.mul(cameraOrientation);
+
+        float bodyRot = entity.yBodyRot;
+        float yRot = entity.getYRot();
+        float xRot = entity.getXRot();
+        float headRotO = entity.yHeadRotO;
+        float headRot = entity.yHeadRot;
+        try {
+            entity.yBodyRot = 180.0F + angleX * 20.0F;
+            entity.setYRot(180.0F + angleX * 40.0F);
+            entity.setXRot(-angleY * 20.0F);
+            entity.yHeadRot = entity.getYRot();
+            entity.yHeadRotO = entity.getYRot();
+
+            float entityScale = entity.getScale();
+            Vector3f modelTranslation = new Vector3f(
+                    0.0F,
+                    entity.getBbHeight() / 2.0F + modelOffset * entityScale,
+                    0.0F);
+            InventoryScreen.renderEntityInInventory(g,
+                    centerX, centerY, size / entityScale,
+                    modelTranslation, camera, cameraOrientation, entity);
+        } finally {
+            entity.yBodyRot = bodyRot;
+            entity.setYRot(yRot);
+            entity.setXRot(xRot);
+            entity.yHeadRotO = headRotO;
+            entity.yHeadRot = headRot;
+            g.disableScissor();
         }
     }
 

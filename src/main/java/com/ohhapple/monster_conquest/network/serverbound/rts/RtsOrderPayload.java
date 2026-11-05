@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.rts;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
@@ -28,6 +29,7 @@ public record RtsOrderPayload(int action) implements CustomPacketPayload {
     public static void handle(RtsOrderPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             var state = PlayerArmyManager.get(player.getUUID());
             state.applyRtsOrder(player, payload.action());
         });

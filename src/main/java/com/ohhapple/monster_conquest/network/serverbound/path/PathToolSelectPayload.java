@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.path;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.item.PathToolItem;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -25,6 +26,7 @@ public record PathToolSelectPayload() implements CustomPacketPayload {
     public static void handle(PathToolSelectPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             if (player.getMainHandItem().getItem() instanceof PathToolItem) {
                 PathToolItem.select(player, player.getMainHandItem());
             }

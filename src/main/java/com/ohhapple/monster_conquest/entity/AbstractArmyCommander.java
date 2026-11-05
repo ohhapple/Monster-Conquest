@@ -12,6 +12,7 @@ import com.ohhapple.monster_conquest.ai.nav.MarchRouteFollower;
 import com.ohhapple.monster_conquest.ai.nav.PathProbe;
 import com.ohhapple.monster_conquest.ai.nav.RoutePlanner;
 import com.ohhapple.monster_conquest.ai.target.AttackConfiguredEnemyGoal;
+import com.ohhapple.monster_conquest.arena.game.ArenaMatchManager;
 import com.ohhapple.monster_conquest.army.*;
 import com.ohhapple.monster_conquest.army.FactionShield;
 import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
@@ -613,6 +614,16 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     // ===================== Tick =====================
     @Override
     public void tick() {
+        UUID ownerInArena = FactionIds.parsePlayer(getFactionId());
+        if (!level().isClientSide && ownerInArena != null
+                && ArenaMatchManager.isPlayerInArenaMatch(ownerInArena)) {
+            if (getTarget() != null) super.setTarget(null);
+            if (isFollowingRoute()) clearRoute();
+            if (isFollowingMarchRoute()) clearMarchRoute();
+            getNavigation().stop();
+            AiNavUtil.stopMovementInput(this);
+            return;
+        }
         // 在本 tick 的 AI / 骑枪穿刺写入新锁盾窗口之前先推进旧窗口。
         ShieldGuardController.tick(this);
         super.tick();
@@ -2337,17 +2348,12 @@ public abstract class AbstractArmyCommander extends PathfinderMob
      */
     @Override
     public void setManualGear(int index, ItemStack stack) {
-        ItemStack previous = manualGear[index];
         manualGear[index] = stack.isEmpty() ? ItemStack.EMPTY : stack.copy();
-        ItemStack worn = this.getItemBySlot(gearSlot(index));
         ItemStack want;
         if (!manualGear[index].isEmpty()) {
             want = wornManualStack(index);
         } else if (!defaultGear[index].isEmpty()) {
             want = defaultGear[index];
-        } else if (!previous.isEmpty() && !ItemStack.isSameItem(worn, previous)) {
-            // 快照缺失（老存档）、身上穿的已经不是刚取下的那件：当成自带装备保留
-            want = worn;
         } else {
             // 自带装备本来就是空的：取下手动装备 = 空手
             want = ItemStack.EMPTY;
@@ -2390,15 +2396,6 @@ public abstract class AbstractArmyCommander extends PathfinderMob
     }
 
     @Override
-    public void ensureDefaultGear() {
-        for (int i = 0; i < GEAR_SLOTS; i++) {
-            if (defaultGear[i].isEmpty() && manualGear[i].isEmpty()) {
-                defaultGear[i] = this.getItemBySlot(gearSlot(i)).copy();
-            }
-        }
-    }
-
-    @Override
     public ItemStack getManualTactical(int index) { return manualTactical[index]; }
 
     @Override
@@ -2425,7 +2422,6 @@ public abstract class AbstractArmyCommander extends PathfinderMob
 
     @Override
     public void clearManualEquipment() {
-        ensureDefaultGear();
         for (int i = 0; i < GEAR_SLOTS; i++) setManualGear(i, ItemStack.EMPTY);
         for (int i = 0; i < TACTICAL_SLOTS; i++) manualTactical[i] = ItemStack.EMPTY;
         refreshManualGearMask();

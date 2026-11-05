@@ -200,7 +200,7 @@ public class SoldierMeleeAttackGoal extends Goal {
             // 骑枪骑兵：冲锋 / 掉头 / 穿刺由 controlMount + tickLancePierce 处理。
             if (soldier.usesLanceInCavalry()) return;
             // 非骑枪骑兵（卫道士 / 溺尸 / 重锤兵）：骑马按普通近战打 ——
-            //   靠近目标并在攻击范围内挥砍，攻速 = getMeleeAttackIntervalTicks()（与步兵一致）。
+            //   靠近目标并在攻击范围内挥砍；竞技模式使用竞技攻速换算后的间隔。
             //   只有骑枪骑兵才有"穿刺路径上所有敌人"的伤害。
             soldier.getLookControl().setLookAt(target, 30.0f, 30.0f);
             // 骑马时攻击距离更远（马身会挡开目标，追击逃跑的远程兵 2.8 格容易够不着）
@@ -277,7 +277,9 @@ public class SoldierMeleeAttackGoal extends Goal {
 
         // 目标还在跑时不要原地站桩挥砍：继续按直接逼近点移动，
         //   否则会陷入"追上 → 停下 → 目标拉开 → 再追"的循环。
-        if (distSqr <= attackReach * attackReach
+        double reach = MeleeReach.horizontalReach(
+                soldier, target, attackReach);
+        if (distSqr <= reach * reach
                 && !isRetreating(target, soldier, targetMotion)) {
             soldier.getNavigation().stop();
             doAttack(target, distSqr);
@@ -287,7 +289,7 @@ public class SoldierMeleeAttackGoal extends Goal {
         // 近距离且视线通畅时直接逼近目标边缘。多个友军会从各自方向同时压上，
         //   不再抢同一个固定围攻点，避免只有最先到的单位能进入攻击距离。
         if (distSqr <= DIRECT_APPROACH_SQR) {
-            double stopDistance = attackReach * 0.7;
+            double stopDistance = reach * 0.82;
             Vec3 stop = stableApproachStopPoint(target, stopDistance, targetMotion);
             driveDirectMove(soldier, target, stop, 3);
             doAttack(target, distSqr);
@@ -312,7 +314,9 @@ public class SoldierMeleeAttackGoal extends Goal {
     }
 
     private void doAttack(LivingEntity target, double distToTargetSqr) {
-        doAttack(target, distToTargetSqr, attackReach);
+        doAttack(target, distToTargetSqr,
+                MeleeReach.horizontalReach(
+                        soldier, target, attackReach));
     }
 
     private void doAttack(LivingEntity target, double distToTargetSqr, double reach) {
@@ -325,7 +329,8 @@ public class SoldierMeleeAttackGoal extends Goal {
         if (soldier.prefersShieldGuardBeforeAttack() && soldier.isShieldGuardBracePending()) {
             return;
         }
-        int interval = Math.max(1, soldier.getMeleeAttackIntervalTicks());
+        int interval = Math.max(1,
+                soldier.getArenaMeleeAttackIntervalTicks());
         // 兵种状态可能把攻击间隔调短（例如盾兵破盾后恢复普通节奏）：
         // 已经排队的旧冷却也要立刻收紧，不能继续沿用破盾前的长间隔。
         if (attackCooldown > interval) attackCooldown = interval;
@@ -368,6 +373,10 @@ public class SoldierMeleeAttackGoal extends Goal {
     }
 
     private boolean isDualLowHealth() {
+        if (soldier.isArenaUnit()
+                && soldier.getArenaDisplayMaxHealth() > 0.0f) {
+            return soldier.getArenaHealthRatio() < DUAL_LOW_HP_THRESHOLD;
+        }
         return soldier.getHealth() < soldier.getMaxHealth() * DUAL_LOW_HP_THRESHOLD;
     }
 

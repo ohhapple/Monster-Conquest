@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.item;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.item.RetrievalToolItem;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -33,6 +34,7 @@ public record RetrievalToolModePayload() implements CustomPacketPayload {
     public static void handle(RetrievalToolModePayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             ItemStack stack = player.getMainHandItem();
             if (!(stack.getItem() instanceof RetrievalToolItem)) return;
 

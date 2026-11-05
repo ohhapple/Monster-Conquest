@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.backpack;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.equipment.TacticalEquipmentSlotsData;
 import com.ohhapple.monster_conquest.item.BackpackItem;
 import com.ohhapple.monster_conquest.menu.BackpackMenu;
@@ -34,6 +35,7 @@ public record OpenBackpackFromSlotPayload(int source, int index) implements Cust
     public static void handle(OpenBackpackFromSlotPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             ItemStack bag = TacticalEquipmentSlotsData.resolveBox(player, payload.source(), payload.index());
             if (!(bag.getItem() instanceof BackpackItem)) return;
 

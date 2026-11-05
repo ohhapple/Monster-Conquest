@@ -451,7 +451,7 @@ public class PlayerCommandState {
             if (movedSq <= 1.0E-4 || movedSq > 64.0) return false;
             Vec3 delta = anchor.subtract(cachedAnchor);
             // 平移只适合连续的同一层地面。锚点上下变化时，旧阵位的高度和落脚面
-            // 已经不能照搬，必须重新扫描地形。
+            // 层级变化后不能直接沿用，必须重新扫描地形。
             if (Math.abs(delta.y) > 0.75) return false;
             List<Vec3> shifted = new ArrayList<>(formationSlots.size());
             for (Map.Entry<UUID, Vec3> entry : formationSlots.entrySet()) {

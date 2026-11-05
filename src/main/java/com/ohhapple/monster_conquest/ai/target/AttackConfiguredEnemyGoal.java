@@ -50,6 +50,7 @@ public class AttackConfiguredEnemyGoal extends Goal {
     private static final int SCAN_INTERVAL = 20;
     private static final double DEFAULT_RANGE = 32.0;
     private static final double NEAR_SCAN_RANGE = 32.0;
+    private static final double ARENA_SCAN_RANGE = 64.0;
 
     /** 分散选择：从"最近的前 N 个"候选里按 UUID 哈希挑一个。 */
     private static final int DISPERSE_PICK_N = 3;
@@ -103,6 +104,15 @@ public class AttackConfiguredEnemyGoal extends Goal {
 
         // 和平模式：不索敌（单位保留，但没有任何敌意）
         if (PeacefulUtil.isPeaceful(this.mob)) return false;
+        if (this.mob instanceof AbstractArmySoldier arenaSoldier
+                && arenaSoldier.isArenaUnit()) {
+            LivingEntity tauntTarget = arenaSoldier.getArenaTauntTarget();
+            if (tauntTarget != null && tauntTarget.isAlive()
+                    && arenaSoldier.canAttack(tauntTarget)) {
+                arenaSoldier.setTarget(tauntTarget);
+                return true;
+            }
+        }
 
         // 刚被攻击时优先直接锁定攻击者，不再等 4~20 tick 的扫描冷却。
         if (this.mob.getTarget() == null) {
@@ -541,6 +551,10 @@ public class AttackConfiguredEnemyGoal extends Goal {
         var attr = this.mob.getAttribute(
                 Attributes.FOLLOW_RANGE);
         if (attr != null) fullRange = attr.getValue();
+        if (this.mob instanceof AbstractArmySoldier arenaSoldier
+                && arenaSoldier.isArenaUnit()) {
+            fullRange = Math.max(fullRange, ARENA_SCAN_RANGE);
+        }
 
         double nearRange = Math.min(fullRange, NEAR_SCAN_RANGE);
         LivingEntity close = scanInRadius(nearRange);
@@ -886,6 +900,9 @@ public class AttackConfiguredEnemyGoal extends Goal {
     }
 
     private boolean isEnemyOf(LivingEntity entity) {
+        if (this.mob instanceof AbstractArmySoldier arena && arena.isArenaUnit()) {
+            return arena.isArenaEnemy(entity);
+        }
         if (entity instanceof Player p && (p.isCreative() || p.isSpectator())) return false;
         if (entity instanceof WarHorseEntity) return false;
         // 同阵营 / 同军队是绝对友军，不能被个人记忆、共享仇恨或旧军队敌对标记覆盖。

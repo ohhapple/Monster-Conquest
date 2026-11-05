@@ -1,6 +1,5 @@
 {
   "format_version": "1.9.0",
-  "credit": "Made with Blockbench",
   "textures": {
     "0": "monster_conquest:item/weapon/netherite_lance",
     "particle": "monster_conquest:item/weapon/netherite_lance"

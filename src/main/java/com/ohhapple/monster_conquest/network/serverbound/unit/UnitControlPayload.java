@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.unit;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.ManagedUnit;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
@@ -48,6 +49,7 @@ public record UnitControlPayload(int entityId, int action, int value) implements
     public static void handle(UnitControlPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             if (!(player.serverLevel().getEntity(payload.entityId())
                     instanceof ManagedUnit unit)) return;
             if (!UnitAccess.canOpen(player, unit)) return;

@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.recruit;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.block.RecruitmentService;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -32,6 +33,7 @@ public record RecruitSoldierPayload(BlockPos pos, int soldierIndex, int tierInde
     public static void handle(RecruitSoldierPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             RecruitmentService.recruit(player, payload.pos(), payload.soldierIndex(), payload.tierIndex());
         });
     }

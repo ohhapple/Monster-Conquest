@@ -2,83 +2,140 @@ package com.ohhapple.monster_conquest.util;
 
 import org.jetbrains.annotations.Nullable;
 
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
- * 模组版本解析与比较。
- *   只接受完整的 vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD] 形式，避免从 Minecraft
- *   版本或文件名中的其他数字误读成模组版本。
+ * 宽松版本排序。数字段按数值比较，其余文本按自然顺序比较；
+ * 常见预发布标记低于正式版，未知后缀视为同核心版本的后续构建。
  */
 public final class ModVersion implements Comparable<ModVersion> {
 
-    private static final Pattern PATTERN = Pattern.compile(
-            "^[vV]?(\\d+)\\.(\\d+)\\.(\\d+)"
-                    + "(?:-([0-9A-Za-z.-]+))?(?:\\+[0-9A-Za-z.-]+)?$");
+    private static final Set<String> PRERELEASE_MARKERS = Set.of(
+            "alpha", "beta", "rc", "pre", "preview",
+            "snapshot", "snap", "dev", "nightly");
 
-    private final int major;
-    private final int minor;
-    private final int patch;
-    @Nullable private final String preRelease;
+    private final String display;
+    private final List<Token> tokens;
 
-    private ModVersion(int major, int minor, int patch, @Nullable String preRelease) {
-        this.major = major;
-        this.minor = minor;
-        this.patch = patch;
-        this.preRelease = preRelease;
+    private ModVersion(String display, List<Token> tokens) {
+        this.display = display;
+        this.tokens = List.copyOf(tokens);
     }
 
     @Nullable
     public static ModVersion parse(@Nullable String value) {
         if (value == null) return null;
-        Matcher matcher = PATTERN.matcher(value.trim());
-        if (!matcher.matches()) return null;
-        return new ModVersion(
-                Integer.parseInt(matcher.group(1)),
-                Integer.parseInt(matcher.group(2)),
-                Integer.parseInt(matcher.group(3)),
-                matcher.group(4));
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) return null;
+        String normalized = trimmed;
+        if (normalized.length() > 1
+                && (normalized.charAt(0) == 'v'
+                || normalized.charAt(0) == 'V')
+                && isAsciiDigit(normalized.charAt(1))) {
+            normalized = normalized.substring(1);
+        }
+        List<Token> tokens = tokenize(normalized);
+        return tokens.isEmpty()
+                ? null : new ModVersion(trimmed, tokens);
     }
 
     public boolean isNewerThan(ModVersion other) {
-        int core = compareTo(other);
-        if (core != 0) return core > 0;
-        if (preRelease == null) return other.preRelease != null;
-        if (other.preRelease == null) return false;
-        return comparePreRelease(preRelease, other.preRelease) > 0;
+        return compareTo(other) > 0;
     }
 
     @Override
     public int compareTo(ModVersion other) {
-        int majorResult = Integer.compare(major, other.major);
-        if (majorResult != 0) return majorResult;
-        int minorResult = Integer.compare(minor, other.minor);
-        return minorResult != 0 ? minorResult : Integer.compare(patch, other.patch);
+        int count = Math.min(tokens.size(), other.tokens.size());
+        for (int index = 0; index < count; index++) {
+            int compared = tokens.get(index)
+                    .compareTo(other.tokens.get(index));
+            if (compared != 0) return compared;
+        }
+        if (tokens.size() == other.tokens.size()) return 0;
+        if (tokens.size() < other.tokens.size()) {
+            return startsWithPrerelease(
+                    other.tokens, tokens.size()) ? 1 : -1;
+        }
+        return startsWithPrerelease(
+                tokens, other.tokens.size()) ? -1 : 1;
     }
 
     public String display() {
-        return major + "." + minor + "." + patch
-                + (preRelease == null ? "" : "-" + preRelease);
+        return display;
     }
 
-    private static int comparePreRelease(String left, String right) {
-        String[] leftParts = left.split("\\.");
-        String[] rightParts = right.split("\\.");
-        int count = Math.min(leftParts.length, rightParts.length);
-        for (int i = 0; i < count; i++) {
-            boolean leftNumeric = leftParts[i].matches("\\d+");
-            boolean rightNumeric = rightParts[i].matches("\\d+");
-            int compared;
-            if (leftNumeric && rightNumeric) {
-                compared = Long.compare(
-                        Long.parseLong(leftParts[i]), Long.parseLong(rightParts[i]));
-            } else if (leftNumeric != rightNumeric) {
-                compared = leftNumeric ? -1 : 1;
-            } else {
-                compared = leftParts[i].compareTo(rightParts[i]);
+    private static boolean startsWithPrerelease(
+            List<Token> tokens, int offset) {
+        if (offset < 0 || offset >= tokens.size()) return false;
+        Token marker = tokens.get(offset);
+        return !marker.numeric()
+                && PRERELEASE_MARKERS.contains(
+                marker.text().toLowerCase(Locale.ROOT));
+    }
+
+    private static List<Token> tokenize(String value) {
+        List<Token> tokens = new ArrayList<>();
+        int index = 0;
+        while (index < value.length()) {
+            char current = value.charAt(index);
+            if (isAsciiDigit(current)) {
+                int start = index++;
+                while (index < value.length()
+                        && isAsciiDigit(value.charAt(index))) {
+                    index++;
+                }
+                tokens.add(Token.number(
+                        value.substring(start, index)));
+                continue;
             }
-            if (compared != 0) return compared;
+            if (Character.isLetterOrDigit(current)) {
+                int start = index++;
+                while (index < value.length()) {
+                    char next = value.charAt(index);
+                    if (isAsciiDigit(next)
+                            || !Character.isLetterOrDigit(next)) {
+                        break;
+                    }
+                    index++;
+                }
+                tokens.add(Token.text(
+                        value.substring(start, index)));
+                continue;
+            }
+            index++;
         }
-        return Integer.compare(leftParts.length, rightParts.length);
+        return tokens;
+    }
+
+    private static boolean isAsciiDigit(char value) {
+        return value >= '0' && value <= '9';
+    }
+
+    private record Token(
+            boolean numeric, @Nullable BigInteger number,
+            String text) implements Comparable<Token> {
+
+        private static Token number(String value) {
+            return new Token(true, new BigInteger(value), "");
+        }
+
+        private static Token text(String value) {
+            return new Token(false, null, value);
+        }
+
+        @Override
+        public int compareTo(Token other) {
+            if (numeric != other.numeric) {
+                return numeric ? -1 : 1;
+            }
+            if (numeric) {
+                return number.compareTo(other.number);
+            }
+            return text.compareToIgnoreCase(other.text);
+        }
     }
 }

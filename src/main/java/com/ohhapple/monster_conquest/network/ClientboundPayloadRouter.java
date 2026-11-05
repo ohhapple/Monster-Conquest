@@ -1,5 +1,6 @@
 package com.ohhapple.monster_conquest.network;
 
+import com.ohhapple.monster_conquest.Monster_conquest;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.fml.loading.FMLEnvironment;
@@ -52,8 +53,10 @@ public final class ClientboundPayloadRouter {
 
         try {
             m.invoke(null, payload, ctx);
-        } catch (Throwable ignored) {
-            // 单次调用失败不影响后续（例如内部异常）
+        } catch (Throwable throwable) {
+            Monster_conquest.LOGGER.error(
+                    "[ARENA-CLIENT] Failed to dispatch client payload {}",
+                    payload.type().id(), throwable);
         }
     }
 }

@@ -18,7 +18,7 @@ import org.jetbrains.annotations.Nullable;
  * {@code FactionBannerRenderer} 绘制：
  *   · 旗面底色 = {@link FactionColors#bannerCornerColor}
  *   · 十字图案 = {@link FactionColors#bannerCrossColor}
- * 颜色直接取自阵营数据，因此与"身上的阵营旗 / 手里的盾牌图案"始终是同一组颜色。
+ * 颜色直接由阵营数据生成，因此与"身上的阵营旗 / 手里的盾牌图案"始终是同一组颜色。
  */
 public final class FactionBanner {
 

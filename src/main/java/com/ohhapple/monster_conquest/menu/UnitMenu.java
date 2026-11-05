@@ -69,7 +69,6 @@ public class UnitMenu extends AbstractContainerMenu {
         super(ModMenus.UNIT.get(), id);
         this.unit = unit;
         this.unitId = unit.asEntity().getId();
-        unit.ensureDefaultGear();          // 老存档兜底：自带装备快照缺失时先补上
         addSlots(playerInv, new UnitEquipmentContainer(unit));
         addSyncSlots();
     }

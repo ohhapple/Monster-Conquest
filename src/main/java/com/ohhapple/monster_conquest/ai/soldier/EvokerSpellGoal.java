@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.ai.soldier;
 
 import com.ohhapple.monster_conquest.ai.nav.AiNavUtil;
+import com.ohhapple.monster_conquest.army.ShieldGuardController;
 import com.ohhapple.monster_conquest.entity.soldiers.EvokerSoldier;
 
 import net.minecraft.world.entity.ai.goal.Goal;
@@ -107,7 +108,14 @@ public class EvokerSpellGoal extends Goal {
             lookAt(target);
             if (--castingTicks == 0) {
                 if (evoker.castFangsAtTarget(target)) {
-                    cooldown = FANG_COOLDOWN_TICKS;
+                    evoker.setShieldGuardAttackLockTicks(
+                            ShieldGuardController.ATTACK_LOCK_TICKS);
+                    cooldown = evoker.isArenaUnit()
+                            ? evoker.getArenaRangedAttackCooldownTicks()
+                            : FANG_COOLDOWN_TICKS;
+                    if (evoker.isArenaUnit()) {
+                        evoker.arenaEquipment().beforeBasicAttack();
+                    }
                     evoker.markAttackSuccess();
                     evoker.swing(InteractionHand.MAIN_HAND, true);
                 } else {
@@ -118,6 +126,10 @@ public class EvokerSpellGoal extends Goal {
             return;
         }
 
+        if (evoker.isArenaUnit()) {
+            int interval = evoker.getArenaRangedAttackCooldownTicks();
+            if (cooldown > interval) cooldown = interval;
+        }
         if (cooldown > 0) cooldown--;
 
         // ==================== 走位 ====================
@@ -154,9 +166,12 @@ public class EvokerSpellGoal extends Goal {
                 mover.getNavigation().moveTo(dest.x, dest.y, dest.z, RETREAT_SPEED);
             }
         } else if (dist > MAX_DIST || !hasSight) {
-            // 看不见目标（被墙挡住）→ 走完整绕路规划，而不是直着往上贴
-            if (!evoker.replanRouteTo(target)) {
-                if (shouldReissueMove(mover)) mover.getNavigation().moveTo(target, APPROACH_SPEED);
+            // 主世界可追加方块级绕路；竞技场只有原版导航所有权，
+            // 不能安装竞技 tick 不会推进的自定义路线。
+            boolean routed = !evoker.isArenaUnit()
+                    && evoker.replanRouteTo(target);
+            if (!routed && shouldReissueMove(mover)) {
+                mover.getNavigation().moveTo(target, APPROACH_SPEED);
             }
         } else if (AiNavUtil.isMovingHorizontally(target)) {
             Vec3 dest = movingHoldPoint(target);

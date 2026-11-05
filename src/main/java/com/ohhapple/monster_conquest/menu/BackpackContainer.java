@@ -40,33 +40,6 @@ public class BackpackContainer extends SimpleContainer {
             setItem(i, contents.get(i));
         }
         loading = false;
-        rescueOverflow();
-    }
-
-    /**
-     * 缩容迁移：存档里可能存有容量更大的旧数据（最多 90 格），读取时截断到当前容量。
-     *   多出来的槽位里的东西不能凭空丢掉 —— 能塞进玩家背包就塞，塞不下就丢在脚下，
-     *   然后把背包内容按新容量写回，迁移只做一次。
-     */
-    private void rescueOverflow() {
-        ItemStack backpack = backpack();
-        List<ItemStack> stored = BackpackItem.rawContents(backpack);
-        if (stored.size() <= BackpackItem.SLOTS) return;
-
-        List<ItemStack> keep = new ArrayList<>(stored.subList(0, BackpackItem.SLOTS));
-        boolean rescued = false;
-        for (int i = BackpackItem.SLOTS; i < stored.size(); i++) {
-            ItemStack overflow = stored.get(i);
-            if (overflow.isEmpty()) continue;
-            rescued = true;
-            ItemStack extra = overflow.copy();
-            if (!owner.getInventory().add(extra)) {
-                owner.drop(extra, false);
-            }
-        }
-        if (!rescued) return;
-        BackpackItem.writeContents(backpack, keep);
-        TacticalEquipmentSlotsData.storeBox(owner, source, index, backpack);
     }
 
     @Override

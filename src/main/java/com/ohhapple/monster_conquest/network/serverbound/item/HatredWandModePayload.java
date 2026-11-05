@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.item;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.item.HatredWandItem;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
@@ -36,6 +37,7 @@ public record HatredWandModePayload(boolean reset) implements CustomPacketPayloa
     public static void handle(HatredWandModePayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             ItemStack stack = player.getMainHandItem();
             if (!(stack.getItem() instanceof HatredWandItem wand)) return;
 

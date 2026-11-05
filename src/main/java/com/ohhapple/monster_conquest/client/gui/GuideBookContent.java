@@ -36,7 +36,7 @@ import java.util.Set;
  *   · 固定章节（RTS / 逻辑 / 教程）来自语言文件，{key.xxx} 会替换成玩家当前的实际按键；
  *   · 阵营 / 敌对关系 / 首领 / 士兵章节按实时数据生成，数值直接读实体类的 getter，
  *     改实体类里的数值后书里同步变化。
- *   排版：每种单位之间画分隔线，T0~T4 数值用对应等级颜色（取自救刷怪蛋头像框），
+ *   排版：每种单位之间画分隔线，T0~T4 数值使用与士兵刷怪蛋头像框一致的颜色，
  *   特点使用单独的颜色。
  */
 public final class GuideBookContent {
@@ -61,7 +61,7 @@ public final class GuideBookContent {
     public static final int COLOR_SEPARATOR = 0x556B4A2A;
 
     /**
-     * T0~T4 颜色：取自救刷怪蛋贴图的头像框色（皮革 / 铁 / 白 / 青 / 紫），
+     * T0~T4 颜色：使用士兵刷怪蛋头像框的配色（皮革 / 铁 / 白 / 青 / 紫），
      *   按纸张底色适当加深，保证在书页上仍清晰可读。
      */
     public static final int[] TIER_COLORS = {
@@ -152,6 +152,7 @@ public final class GuideBookContent {
                 .replace("{key.faction}", keyName(ModKeyMappings.OPEN_FACTION_GUI))
                 .replace("{key.wheel}", keyName(ModKeyMappings.COMMAND_WHEEL))
                 .replace("{key.equipment}", keyName(ModKeyMappings.OPEN_EQUIPMENT))
+                .replace("{key.lobby}", keyName(ModKeyMappings.OPEN_ARENA_LOBBY))
                 .replace("{key.rts}", keyName(ModKeyMappings.RTS_TOGGLE))
                 .replace("{key.cavalry}", keyName(ModKeyMappings.RTS_RIDE_CAVALRY))
                 .replace("{key.infantry}", keyName(ModKeyMappings.RTS_RIDE_INFANTRY))
@@ -392,6 +393,10 @@ public final class GuideBookContent {
             }
         }
         out.add(GuideLine.of(flatStats(misc.toArray(new MutableComponent[0])), 12));
+        if (s.canRide()) {
+            out.add(GuideLine.of(Component.translatable(
+                    "guide.monster_conquest.horse_dye"), 12, 4));
+        }
 
         String trait = trait(type);
         if (trait != null) {

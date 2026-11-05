@@ -1,15 +1,22 @@
 package com.ohhapple.monster_conquest.entity;
 
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
+import com.ohhapple.monster_conquest.arena.game.ArenaMatchManager;
 import com.ohhapple.monster_conquest.config.CombatConfig;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.goal.FloatGoal;
@@ -23,6 +30,8 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.item.DyeColor;
+import net.minecraft.world.item.DyeItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -34,6 +43,10 @@ import java.util.List;
 import java.util.UUID;
 
 public class WarHorseEntity extends AbstractHorse {
+
+    private static final EntityDataAccessor<Integer> DATA_DYE_COLOR =
+            SynchedEntityData.defineId(
+                    WarHorseEntity.class, EntityDataSerializers.INT);
 
     /** 非玩家骑手（士兵 / 首领 / 巡逻队长）的骑乘高度。上下马空间判定也用它。 */
     public static final double RIDER_HEIGHT = 0.8;
@@ -89,6 +102,59 @@ public class WarHorseEntity extends AbstractHorse {
         this.commanderCacheKnown = false;
         this.setTamed(true);
         this.setOwnerUUID(owner.getUUID());
+    }
+
+    @Override
+    protected void defineSynchedData(SynchedEntityData.Builder builder) {
+        super.defineSynchedData(builder);
+        builder.define(DATA_DYE_COLOR, -1);
+    }
+
+    public int getDyeColorId() {
+        return this.entityData.get(DATA_DYE_COLOR);
+    }
+
+    @Nullable
+    public DyeColor getDyeColor() {
+        int id = getDyeColorId();
+        return id >= 0 && id < 16 ? DyeColor.byId(id) : null;
+    }
+
+    public void setDyeColorId(int colorId) {
+        this.entityData.set(DATA_DYE_COLOR,
+                colorId >= 0 && colorId < 16 ? colorId : -1);
+    }
+
+    @Override
+    public InteractionResult mobInteract(
+            Player player, InteractionHand hand) {
+        ItemStack stack = player.getItemInHand(hand);
+        if (player.isShiftKeyDown()
+                && stack.getItem() instanceof DyeItem dyeItem) {
+            DyeColor color = dyeItem.getDyeColor();
+            setDyeColorId(color.getId());
+            syncDyeColorToOwner();
+            if (!level().isClientSide
+                    && !player.getAbilities().instabuild) {
+                stack.shrink(1);
+            }
+            level().playSound(null, getX(), getY(), getZ(),
+                    SoundEvents.DYE_USE, getSoundSource(),
+                    1.0f, 1.0f);
+            return InteractionResult.sidedSuccess(level().isClientSide);
+        }
+        return super.mobInteract(player, hand);
+    }
+
+    private void syncDyeColorToOwner() {
+        if (!(level() instanceof ServerLevel serverLevel)
+                || ownerUuid == null) {
+            return;
+        }
+        Entity owner = serverLevel.getEntities().get(ownerUuid);
+        if (owner instanceof AbstractArmySoldier soldier) {
+            soldier.setCavalryHorseDyeColor(getDyeColorId());
+        }
     }
 
     public boolean isPlayerMount() { return playerMount; }
@@ -287,6 +353,11 @@ public class WarHorseEntity extends AbstractHorse {
     // ===================== tick =====================
     @Override
     public void tick() {
+        if (!level().isClientSide && ownerUuid != null
+                && ArenaMatchManager.isPlayerInArenaMatch(ownerUuid)) {
+            getNavigation().stop();
+            return;
+        }
         super.tick();
 
         // 每 tick 清零受伤时间，避免受伤动画残留
@@ -658,6 +729,7 @@ public class WarHorseEntity extends AbstractHorse {
         if (ownerUuid != null) tag.putUUID("Owner", ownerUuid);
         tag.putBoolean("PlayerMount", playerMount);
         tag.putInt("LastHurtTick", lastHurtTick);
+        tag.putInt("DyeColor", getDyeColorId());
     }
 
     @Override
@@ -670,6 +742,8 @@ public class WarHorseEntity extends AbstractHorse {
         commanderCacheKnown = false;
         playerMount = tag.getBoolean("PlayerMount");
         lastHurtTick = tag.getInt("LastHurtTick");
+        setDyeColorId(tag.contains("DyeColor")
+                ? tag.getInt("DyeColor") : -1);
     }
 
     // ===================== 掉落 =====================

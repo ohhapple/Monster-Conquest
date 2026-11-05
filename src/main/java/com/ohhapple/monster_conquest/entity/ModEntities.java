@@ -1,6 +1,48 @@
 package com.ohhapple.monster_conquest.entity;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.entity.ArenaArmadillo;
+import com.ohhapple.monster_conquest.arena.entity.ArenaBlaze;
+import com.ohhapple.monster_conquest.arena.entity.ArenaCaveSpider;
+import com.ohhapple.monster_conquest.arena.entity.ArenaEnderDragon;
+import com.ohhapple.monster_conquest.arena.entity.ArenaEndermite;
+import com.ohhapple.monster_conquest.arena.entity.ArenaFireball;
+import com.ohhapple.monster_conquest.arena.entity.ArenaGoat;
+import com.ohhapple.monster_conquest.arena.entity.ArenaBreeze;
+import com.ohhapple.monster_conquest.arena.entity.ArenaHoglin;
+import com.ohhapple.monster_conquest.arena.entity.ArenaIronGolem;
+import com.ohhapple.monster_conquest.arena.entity.ArenaMagmaCube;
+import com.ohhapple.monster_conquest.arena.entity.ArenaPolarBear;
+import com.ohhapple.monster_conquest.arena.entity.ArenaRavager;
+import com.ohhapple.monster_conquest.arena.entity.ArenaSniffer;
+import com.ohhapple.monster_conquest.arena.entity.ArenaSlime;
+import com.ohhapple.monster_conquest.arena.entity.ArenaElderGuardian;
+import com.ohhapple.monster_conquest.arena.entity.ArenaRabbit;
+import com.ohhapple.monster_conquest.arena.entity.ArenaDonkey;
+import com.ohhapple.monster_conquest.arena.entity.ArenaSheep;
+import com.ohhapple.monster_conquest.arena.entity.ArenaCow;
+import com.ohhapple.monster_conquest.arena.entity.ArenaPig;
+import com.ohhapple.monster_conquest.arena.entity.ArenaZombifiedPiglin;
+import com.ohhapple.monster_conquest.arena.entity.ArenaFrog;
+import com.ohhapple.monster_conquest.arena.entity.ArenaFox;
+import com.ohhapple.monster_conquest.arena.entity.ArenaCreeper;
+import com.ohhapple.monster_conquest.arena.entity.ArenaGiantArmadillo;
+import com.ohhapple.monster_conquest.arena.entity.ArenaLingeringPotion;
+import com.ohhapple.monster_conquest.arena.entity.ArenaLootDrop;
+import com.ohhapple.monster_conquest.arena.entity.ArenaPanda;
+import com.ohhapple.monster_conquest.arena.entity.ArenaEnderman;
+import com.ohhapple.monster_conquest.arena.entity.ArenaSkeletonHorse;
+import com.ohhapple.monster_conquest.arena.entity.ArenaTurtle;
+import com.ohhapple.monster_conquest.arena.entity.ArenaTrident;
+import com.ohhapple.monster_conquest.arena.entity.ArenaWanderingTrader;
+import com.ohhapple.monster_conquest.arena.entity.ArenaWarden;
+import com.ohhapple.monster_conquest.arena.entity.ArenaWither;
+import com.ohhapple.monster_conquest.arena.entity.ArenaWitherSkull;
+import com.ohhapple.monster_conquest.arena.entity.ArenaSnowGolem;
+import com.ohhapple.monster_conquest.arena.entity.ArenaSnowball;
+import com.ohhapple.monster_conquest.arena.entity.ArenaSpider;
+import com.ohhapple.monster_conquest.arena.entity.ArenaWindProjectile;
+import com.ohhapple.monster_conquest.arena.entity.ArenaWolf;
 import com.ohhapple.monster_conquest.entity.commanders.*;
 import com.ohhapple.monster_conquest.entity.commanders.patrol.*;
 import com.ohhapple.monster_conquest.entity.projectile.ArmyArrow;
@@ -113,6 +155,131 @@ public class ModEntities {
     public static final DeferredHolder<EntityType<?>, EntityType<AllayFlyingSoldier>> ALLAY_FLYING =
             reg("soldier_allay", AllayFlyingSoldier::new, 0.35f, 0.6f, 0.36f, 8);
 
+    // 自走棋专属原版生物形态。
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaSnowGolem>> ARENA_SNOW_GOLEM =
+            reg("arena_snow_golem", ArenaSnowGolem::new,
+                    0.7f, 1.9f, 1.7f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaSpider>> ARENA_SPIDER =
+            reg("arena_spider", ArenaSpider::new,
+                    1.4f, 0.9f, 0.65f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaWolf>> ARENA_WOLF =
+            reg("arena_wolf", ArenaWolf::new,
+                    0.6f, 0.85f, 0.68f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaGoat>> ARENA_GOAT =
+            reg("arena_goat", ArenaGoat::new,
+                    0.9f, 1.3f, 1.1f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaBreeze>> ARENA_BREEZE =
+            reg("arena_breeze", ArenaBreeze::new,
+                    0.6f, 1.77f, 1.3452f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaRavager>> ARENA_RAVAGER =
+            reg("arena_ravager", ArenaRavager::new,
+                    1.95f, 2.2f, 2.0f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaPolarBear>> ARENA_POLAR_BEAR =
+            reg("arena_polar_bear", ArenaPolarBear::new,
+                    1.4f, 1.4f, 1.2f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaHoglin>> ARENA_HOGLIN =
+            reg("arena_hoglin", ArenaHoglin::new,
+                    1.3964844f, 1.4f, 1.2f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaIronGolem>> ARENA_IRON_GOLEM =
+            reg("arena_iron_golem", ArenaIronGolem::new,
+                    1.4f, 2.7f, 2.4f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaCaveSpider>> ARENA_CAVE_SPIDER =
+            reg("arena_cave_spider", ArenaCaveSpider::new,
+                    0.9f, 0.65f, 0.45f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaArmadillo>> ARENA_ARMADILLO =
+            reg("arena_armadillo", ArenaArmadillo::new,
+                    0.8f, 0.7f, 0.55f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaBlaze>> ARENA_BLAZE =
+            reg("arena_blaze", ArenaBlaze::new,
+                    0.6f, 1.8f, 1.6f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaSniffer>> ARENA_SNIFFER =
+            reg("arena_sniffer", ArenaSniffer::new,
+                    1.9f, 1.75f, 1.55f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaEndermite>> ARENA_ENDERMITE =
+            reg("arena_endermite", ArenaEndermite::new,
+                    0.8f, 0.6f, 0.45f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaSlime>> ARENA_SLIME =
+            reg("arena_slime", ArenaSlime::new,
+                    2.4f, 2.4f, 1.5f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaElderGuardian>> ARENA_ELDER_GUARDIAN =
+            reg("arena_elder_guardian", ArenaElderGuardian::new,
+                    2.0f, 2.0f, 1.5f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaRabbit>> ARENA_RABBIT =
+            reg("arena_rabbit", ArenaRabbit::new,
+                    1.0f, 1.0f, 0.7f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaDonkey>> ARENA_DONKEY =
+            reg("arena_donkey", ArenaDonkey::new,
+                    1.4f, 1.6f, 1.3f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaSheep>> ARENA_SHEEP =
+            reg("arena_sheep", ArenaSheep::new,
+                    1.0f, 1.3f, 1.05f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaCow>> ARENA_COW =
+            reg("arena_cow", ArenaCow::new,
+                    1.1f, 1.4f, 1.2f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaPig>> ARENA_PIG =
+            reg("arena_pig", ArenaPig::new,
+                    0.9f, 0.9f, 0.75f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaZombifiedPiglin>> ARENA_ZOMBIFIED_PIGLIN =
+            reg("arena_zombified_piglin", ArenaZombifiedPiglin::new,
+                    0.6f, 1.95f, 1.8f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaFrog>> ARENA_FROG =
+            reg("arena_frog", ArenaFrog::new,
+                    1.2f, 1.0f, 0.75f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaFox>> ARENA_FOX =
+            reg("arena_fox", ArenaFox::new,
+                    0.8f, 0.8f, 0.65f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaCreeper>> ARENA_CREEPER =
+            reg("arena_creeper", ArenaCreeper::new,
+                    0.6f, 1.7f, 1.55f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaPanda>> ARENA_PANDA =
+            reg("arena_panda", ArenaPanda::new,
+                    1.3f, 1.25f, 1.0f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaEnderman>> ARENA_ENDERMAN =
+            reg("arena_enderman", ArenaEnderman::new,
+                    0.6f, 2.9f, 2.55f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaWarden>> ARENA_WARDEN =
+            reg("arena_warden", ArenaWarden::new,
+                    0.9f, 2.9f, 2.55f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaWanderingTrader>> ARENA_WANDERING_TRADER =
+            reg("arena_wandering_trader", ArenaWanderingTrader::new,
+                    0.7f, 1.95f, 1.74f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaMagmaCube>> ARENA_MAGMA_CUBE =
+            reg("arena_magma_cube", ArenaMagmaCube::new,
+                    2.4f, 2.4f, 1.5f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaTurtle>> ARENA_TURTLE =
+            reg("arena_turtle", ArenaTurtle::new,
+                    1.1f, 0.8f, 0.55f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaWither>> ARENA_WITHER =
+            reg("arena_wither", ArenaWither::new,
+                    1.4f, 3.0f, 2.6f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaSkeletonHorse>> ARENA_SKELETON_HORSE =
+            reg("arena_skeleton_horse", ArenaSkeletonHorse::new,
+                    1.3964844f, 1.6f, 1.52f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaGiantArmadillo>> ARENA_GIANT_ARMADILLO =
+            reg("arena_giant_armadillo", ArenaGiantArmadillo::new,
+                    0.8f, 0.7f, 0.55f, 10);
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaEnderDragon>> ARENA_ENDER_DRAGON =
+            reg("arena_ender_dragon", ArenaEnderDragon::new,
+                    2.4f, 2.2f, 1.85f, 10);
+
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaLootDrop>> ARENA_LOOT_DROP =
+            ENTITY_TYPES.register("arena_loot_drop", () ->
+                    EntityType.Builder.<ArenaLootDrop>of(
+                                    ArenaLootDrop::new, MobCategory.MISC)
+                            .sized(0.6f, 0.6f)
+                            .clientTrackingRange(8)
+                            .updateInterval(2)
+                            .build("arena_loot_drop"));
+
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaLingeringPotion>> ARENA_LINGERING_POTION =
+            ENTITY_TYPES.register("arena_lingering_potion", () ->
+                    EntityType.Builder.<ArenaLingeringPotion>of(
+                                    ArenaLingeringPotion::new, MobCategory.MISC)
+                            .sized(0.25f, 0.25f)
+                            .clientTrackingRange(10)
+                            .updateInterval(2)
+                            .build("arena_lingering_potion"));
+
     // ===================== 战马 / 三叉戟 / 药水 =====================
     public static final DeferredHolder<EntityType<?>, EntityType<WarHorseEntity>> WAR_HORSE =
             ENTITY_TYPES.register("war_horse", () ->
@@ -136,6 +303,61 @@ public class ModEntities {
                             .sized(0.25f, 0.25f)
                             .clientTrackingRange(6)
                             .build("witch_potion"));
+
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaSnowball>> ARENA_SNOWBALL =
+            ENTITY_TYPES.register("arena_snowball", () ->
+                    EntityType.Builder.<ArenaSnowball>of(
+                                    ArenaSnowball::new, MobCategory.MISC)
+                            .sized(0.25f, 0.25f)
+                            .clientTrackingRange(8)
+                            .build("arena_snowball"));
+
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaWindProjectile>> ARENA_WIND_CHARGE =
+            ENTITY_TYPES.register("arena_wind_charge", () ->
+                    EntityType.Builder.<ArenaWindProjectile>of(
+                                    ArenaWindProjectile::new, MobCategory.MISC)
+                            .sized(0.3125f, 0.3125f)
+                            .eyeHeight(0.0f)
+                            .clientTrackingRange(8)
+                            .updateInterval(5)
+                            .build("arena_wind_charge"));
+
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaWindProjectile>> ARENA_GALE_CHARGE =
+            ENTITY_TYPES.register("arena_gale_charge", () ->
+                    EntityType.Builder.<ArenaWindProjectile>of(
+                                    ArenaWindProjectile::new, MobCategory.MISC)
+                            .sized(1.2f, 1.2f)
+                            .eyeHeight(0.0f)
+                            .clientTrackingRange(10)
+                            .updateInterval(2)
+                            .build("arena_gale_charge"));
+
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaFireball>> ARENA_FIREBALL =
+            ENTITY_TYPES.register("arena_fireball", () ->
+                    EntityType.Builder.<ArenaFireball>of(
+                                    ArenaFireball::new, MobCategory.MISC)
+                            .sized(0.3125f, 0.3125f)
+                            .clientTrackingRange(10)
+                            .updateInterval(2)
+                            .build("arena_fireball"));
+
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaWitherSkull>> ARENA_WITHER_SKULL =
+            ENTITY_TYPES.register("arena_wither_skull", () ->
+                    EntityType.Builder.<ArenaWitherSkull>of(
+                                    ArenaWitherSkull::new, MobCategory.MISC)
+                            .sized(0.45f, 0.45f)
+                            .clientTrackingRange(10)
+                            .updateInterval(2)
+                            .build("arena_wither_skull"));
+
+    public static final DeferredHolder<EntityType<?>, EntityType<ArenaTrident>> ARENA_SKILL_TRIDENT =
+            ENTITY_TYPES.register("arena_skill_trident", () ->
+                    EntityType.Builder.<ArenaTrident>of(
+                                    ArenaTrident::new, MobCategory.MISC)
+                            .sized(0.5f, 0.5f)
+                            .clientTrackingRange(10)
+                            .updateInterval(1)
+                            .build("arena_skill_trident"));
 
     public static final DeferredHolder<EntityType<?>, EntityType<ArmyBullet>> ARMY_BULLET =
             ENTITY_TYPES.register("army_bullet", () ->

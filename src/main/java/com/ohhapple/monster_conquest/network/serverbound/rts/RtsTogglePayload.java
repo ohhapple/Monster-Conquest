@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.rts;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncRtsSelectionPayload;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -31,6 +32,13 @@ public record RtsTogglePayload(boolean active) implements CustomPacketPayload {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
             var state = PlayerArmyManager.get(player.getUUID());
+            if (ArenaDimensions.isArena(player)) {
+                state.setRtsActive(false);
+                PacketDistributor.sendToPlayer(player, new SyncRtsSelectionPayload(
+                        state.collectRtsSelectedSoldierUuids(player),
+                        state.getRtsMoveMarker()));
+                return;
+            }
             state.setRtsActive(payload.active());
             // 选中状态跨"退出 / 再进入"保留：进出时都同步一次，
             //   让客户端的绿框 / 黄框与服务端完全一致（顺带清掉已阵亡单位的框），

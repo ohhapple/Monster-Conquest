@@ -29,13 +29,25 @@ def resolveBuildBranch = {
     return branch
 }
 def buildGitBranch = resolveBuildBranch()
+def buildArchiveName = providers.gradleProperty("build_name")
+        .orNull?.trim()
+if (!buildArchiveName) {
+    throw new GradleException("build_name must not be blank")
+}
+if (buildArchiveName.find {
+    it in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+            || Character.isWhitespace(it.charAt(0))
+}) {
+    throw new GradleException(
+            "build_name contains a character that is not safe in an archive name: ${buildArchiveName}")
+}
 
 repositories {
     mavenLocal()
 }
 
 base {
-    archivesName = mod_id
+    archivesName = buildArchiveName
 }
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)

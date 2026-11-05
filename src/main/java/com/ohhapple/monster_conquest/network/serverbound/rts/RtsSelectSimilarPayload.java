@@ -1,6 +1,7 @@
 package com.ohhapple.monster_conquest.network.serverbound.rts;
 
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.network.clientbound.sync.SyncRtsSelectionPayload;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -46,6 +47,7 @@ public record RtsSelectSimilarPayload(UUID soldier, int mode) implements CustomP
     public static void handle(RtsSelectSimilarPayload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
+            if (ArenaDimensions.isArena(player)) return;
             var state = PlayerArmyManager.get(player.getUUID());
             state.applyRtsSelectSimilar(player, payload.soldier(), payload.mode());
             PacketDistributor.sendToPlayer(player, new SyncRtsSelectionPayload(
