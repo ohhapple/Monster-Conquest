@@ -22,7 +22,7 @@ A faction warfare mod for Minecraft 1.21.1 / NeoForge: recruit soldiers, build a
 *   **Unit types**: Melee, archer, gunner, thrower, mage, dual-form, and flying.
 *   **Guns and tactical equipment**: Rifle / Shotgun / Sniper Rifle / Rocket Launcher and their respective ammunition (scoping, bullet drop, rocket splash); Tactical Equipment Slots can hold the Bulletproof Vest, Warm Clothes, Ammo Box, and Backpack (the Backpack can also hold bullets directly).
 *   **War horse dyeing**: Hold a dye and sneak-right-click a war horse or a cavalry unit's mount to apply that dye color. Cavalry retain the color across dismounting and mounting again until the horse is dyed another color.
-*   **Monster Conquest Auto Battler**: See the [Auto Battler Gameplay Guide](怪物征伐自走棋玩法图鉴.md) for the complete flow, economy, units, equipment, traits and status rules.
+*   **Monster Conquest Auto Battler**: See the [Auto Battler Gameplay Guide](AutoBattlerGameplayGuide.md) for the complete flow, economy, units, equipment, traits and status rules.
 *   **Unit AI**: A custom pathfinding and formation system handles formation arrangement, marching in column, maze bypassing, door opening, ladder climbing, and wading through water;
 *   **Guide book**: Craft a guide book that explains command, recruitment, trading, and more in chapters.
 
@@ -36,7 +36,7 @@ All can be changed in vanilla "Options → Controls".
 | R (hold) |Command Wheel                                           |
 | V        |Toggle RTS mode                                         |
 | 1 ~ 5    |RTS: Line / Shield Wall / Wedge / Skirmish / Free Roam  |
-| Z / C    |RTS: Mount / Dismount                                   |
+| Z / X    |RTS: Mount / Dismount                                   |
 | X        |Open Auto Battler Lobby                                 |
 | H        |Open Tactical Equipment Slots                           |
 | B        |Open Backpack (when placed in Tactical Equipment Slots) |
