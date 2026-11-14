@@ -11,6 +11,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -46,6 +47,7 @@ public class GuideBookScreen extends Screen {
 
     private final List<GuideBookContent.Chapter> chapters = GuideBookContent.CHAPTERS;
     private final List<Line> lines = new ArrayList<>();
+    private final List<Integer> lineYs = new ArrayList<>();
 
     private int selected = 0;
     private int scroll = 0;
@@ -82,6 +84,10 @@ public class GuideBookScreen extends Screen {
     }
     private int contentX() { return listX() + sidebarWidth() + PADDING; }
     private int contentW() { return this.width - contentX() - PADDING; }
+    private int rowHeight() {
+        return Math.max(10, Math.min(ROW_HEIGHT,
+                listHeight() / Math.max(1, chapters.size())));
+    }
 
     /** 正文可写宽度：面板宽度减去左右留白。 */
     private int textWidth() { return Math.max(60, contentW() - TEXT_LEFT_PAD - TEXT_RIGHT_PAD); }
@@ -164,32 +170,27 @@ public class GuideBookScreen extends Screen {
         return out;
     }
 
-    /** 把同一行内颜色相同的连续字符合并成一个组件，减少绘制节点。 */
+    /** 把同一行内完整样式相同的连续字符合并成一个组件，保留链接 / 下划线 / 悬停事件。 */
     private MutableComponent joinStyled(List<StyledChar> chars) {
         MutableComponent out = Component.empty();
         StringBuilder run = new StringBuilder();
-        int runColor = 0;
+        Style runStyle = Style.EMPTY;
         for (StyledChar sc : chars) {
-            int color = colorOf(sc.style());
             if (run.isEmpty()) {
-                runColor = color;
-            } else if (color != runColor) {
-                out.append(styled(run.toString(), runColor));
+                runStyle = sc.style();
+            } else if (!Objects.equals(runStyle, sc.style())) {
+                out.append(styled(run.toString(), runStyle));
                 run.setLength(0);
-                runColor = color;
+                runStyle = sc.style();
             }
             run.append(sc.c());
         }
-        if (!run.isEmpty()) out.append(styled(run.toString(), runColor));
+        if (!run.isEmpty()) out.append(styled(run.toString(), runStyle));
         return out;
     }
 
-    private static MutableComponent styled(String text, int color) {
-        return Component.literal(text).withStyle(s -> s.withColor(color));
-    }
-
-    private static int colorOf(Style style) {
-        return style.getColor() == null ? 0xFFFFFFFF : style.getColor().getValue();
+    private static MutableComponent styled(String text, Style style) {
+        return Component.literal(text).withStyle(style);
     }
 
     // ===================== 渲染 =====================
@@ -208,18 +209,22 @@ public class GuideBookScreen extends Screen {
         g.fill(listX, top, listX + sidebarWidth(), bottom, COLOR_PANEL);
         drawBorder(g, listX, top, listX + sidebarWidth(), bottom);
 
+        int rowHeight = rowHeight();
         for (int i = 0; i < chapters.size(); i++) {
-            int rowY = top + i * ROW_HEIGHT;
-            if (rowY + ROW_HEIGHT > bottom) break;
+            int rowY = top + i * rowHeight;
+            if (rowY + rowHeight > bottom) break;
             boolean sel = i == selected;
             boolean hovered = mouseX >= listX && mouseX < listX + sidebarWidth()
-                    && mouseY >= rowY && mouseY < rowY + ROW_HEIGHT;
+                    && mouseY >= rowY && mouseY < rowY + rowHeight;
             if (sel) {
-                g.fill(listX + 2, rowY + 1, listX + sidebarWidth() - 2, rowY + ROW_HEIGHT - 1, COLOR_ROW_SELECTED);
+                g.fill(listX + 2, rowY + 1, listX + sidebarWidth() - 2,
+                        rowY + rowHeight - 1, COLOR_ROW_SELECTED);
             } else if (hovered) {
-                g.fill(listX + 2, rowY + 1, listX + sidebarWidth() - 2, rowY + ROW_HEIGHT - 1, COLOR_ROW_HOVER);
+                g.fill(listX + 2, rowY + 1, listX + sidebarWidth() - 2,
+                        rowY + rowHeight - 1, COLOR_ROW_HOVER);
             }
-            g.drawString(font, chapters.get(i).title(), listX + 8, rowY + 6,
+            g.drawString(font, chapters.get(i).title(), listX + 8,
+                    rowY + Math.max(1, (rowHeight - font.lineHeight) / 2),
                     sel ? 0xFF4A2A10 : COLOR_SIDEBAR_TEXT, false);
         }
 
@@ -233,10 +238,12 @@ public class GuideBookScreen extends Screen {
         int textX = contentX + TEXT_LEFT_PAD;
         // 从可视区顶部 +4 开始：这样滚动到底时“最后一行”也能完整落在可视区内
         int y = top + 4 - scroll;
+        lineYs.clear();
         // 裁剪到书页内部：即使某行因字体 / 语言差异略宽，也不会画到屏幕外
         g.enableScissor(contentX + 2, top + 2, contentX + contentW - 2, bottom - 2);
         for (Line line : lines) {
             y += line.gapBefore();
+            lineYs.add(y);
             if (y >= top + 4 && y + LINE_HEIGHT <= bottom - 4) {
                 if (line.separator()) {
                     int lineY = y + LINE_HEIGHT / 2;
@@ -251,6 +258,10 @@ public class GuideBookScreen extends Screen {
             y += LINE_HEIGHT;
         }
         g.disableScissor();
+        Style hoveredLink = clickedLinkStyle(mouseX, mouseY);
+        if (hoveredLink != null) {
+            g.renderComponentHoverEffect(font, hoveredLink, mouseX, mouseY);
+        }
 
         // ===================== 滚动条（紧贴书页最右侧，可拖动） =====================
         if (maxScroll() > 0) {
@@ -300,9 +311,10 @@ public class GuideBookScreen extends Screen {
         int bottom = bottom();
         int listX = listX();
         if (mouseX >= listX && mouseX < listX + sidebarWidth()) {
-            int idx = (int) ((mouseY - top) / ROW_HEIGHT);
+            int rowHeight = rowHeight();
+            int idx = (int) ((mouseY - top) / rowHeight);
             if (mouseY >= top && mouseY < bottom && idx >= 0 && idx < chapters.size()
-                    && top + idx * ROW_HEIGHT + ROW_HEIGHT <= bottom) {
+                    && top + idx * rowHeight + rowHeight <= bottom) {
                 if (idx != selected) {
                     selected = idx;
                     rebuildLines();
@@ -310,7 +322,35 @@ public class GuideBookScreen extends Screen {
                 return true;
             }
         }
+        Style link = clickedLinkStyle(mouseX, mouseY);
+        if (link != null && handleComponentClicked(link)) return true;
         return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Nullable
+    private Style clickedLinkStyle(double mouseX, double mouseY) {
+        int contentX = contentX();
+        int contentW = contentW();
+        if (mouseX < contentX || mouseX >= contentX + contentW
+                || mouseY < top() || mouseY >= bottom()) {
+            return null;
+        }
+
+        for (int i = 0; i < lines.size() && i < lineYs.size(); i++) {
+            Line line = lines.get(i);
+            if (line.text() == null) continue;
+            int lineY = lineYs.get(i);
+            if (lineY < top() + 4 || lineY + LINE_HEIGHT > bottom() - 4) continue;
+            if (mouseY < lineY || mouseY >= lineY + LINE_HEIGHT) continue;
+
+            int textX = contentX + TEXT_LEFT_PAD + line.indent();
+            int localX = Mth.floor(mouseX - textX);
+            if (localX < 0 || localX > font.width(line.text())) return null;
+            Style style = font.getSplitter()
+                    .componentStyleAtWidth(line.text().getVisualOrderText(), localX);
+            return style != null && style.getClickEvent() != null ? style : null;
+        }
+        return null;
     }
 
     @Override

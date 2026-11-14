@@ -105,6 +105,8 @@ Any distribution of this mod or modified versions by anyone other than the origi
 *   Clearly credit: author ohhapple · [https://github.com/ohhapple](https://github.com/ohhapple) · source Monster Conquest;
 *   Prominently label as "redistributed version / unofficial distribution", whether modified or not;
 *   Prominently include the official Monster Conquest download link.
+*   GitHub project repository: https://github.com/ohhapple/Monster-Conquest
+*   CurseForge: https://www.curseforge.com/minecraft/mc-mods/monster-conquest
 
 Modified versions must also be prominently labeled as "modified version / unofficial version" and must not imply endorsement by the original author. When distributing a modified version, you must also publicly provide the complete source code for free, retain this notice in full in a prominent location, include the official download link, and state the modifier's information and modification date. Modified versions and derivative works, no matter how many times modified, must continue to comply with this notice and must not adopt terms that permit commercial use.
 

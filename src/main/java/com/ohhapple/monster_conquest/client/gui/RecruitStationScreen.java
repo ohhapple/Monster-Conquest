@@ -39,6 +39,12 @@ public class RecruitStationScreen extends Screen {
     private static final int LIST_W = 112;
     private static final int ROW_H = 12;
     private static final int TIER_ROW_H = 26;
+    private static final int TIER_UNIT_ICON_X = 3;
+    private static final int TIER_LABEL_X = 22;
+    private static final int TIER_BASE_ICON_X = 48;
+    private static final int TIER_PLUS_X = 66;
+    private static final int TIER_EXTRA_ICON_X = 74;
+    private static final int TIER_OWNED_X = 95;
 
     private static final int COL_BG = 0xD0101418;
     private static final int COL_BORDER = 0xFF3C4650;
@@ -299,42 +305,63 @@ public class RecruitStationScreen extends Screen {
                     Monster_conquest.MODID,
                     "textures/item/egg/soldier/" + entry.id()
                             + (entry.fixedTier() ? "" : "_tier_" + t) + ".png");
-            g.blit(icon, rightX + 3, rowY + 3, 0, 0, 16, 16, 16, 16);
+            g.blit(icon, rightX + TIER_UNIT_ICON_X, rowY + 3, 0, 0, 16, 16, 16, 16);
 
             g.drawString(this.font,
                     entry.fixedTier()
-                            ? Component.translatable("tooltip.monster_conquest.single_level")
+                            ? Component.translatable("gui.monster_conquest.recruit.single_level_short")
                             : Component.literal("T" + t),
-                    rightX + 21, rowY + 7, COL_TEXT);
+                    rightX + TIER_LABEL_X, rowY + 7, COL_TEXT);
 
-            // 军费 = 绿宝石 × e + 该等级金属 × m（每个兵种单独定价）
-            int eNeed = RecruitConfig.emeraldCost(entry.id(), t);
-            int mNeed = RecruitConfig.metalCost(entry.id(), t);
-            ItemStack emeraldCost = new ItemStack(RecruitConfig.EMERALD_CURRENCY, eNeed);
-            ItemStack metalCost = new ItemStack(RecruitConfig.metalItemFor(t), mNeed);
-            int iconX = rightX + 36;
-            g.renderItem(emeraldCost, iconX, rowY + 3);
-            g.renderItemDecorations(this.font, emeraldCost, iconX, rowY + 3);
-            g.renderItem(metalCost, iconX + 16, rowY + 3);
-            g.renderItemDecorations(this.font, metalCost, iconX + 16, rowY + 3);
+            // 固定列宽避免固定等级、价格图标与持有数量互相覆盖。
+            int need = RecruitConfig.recruitCost(entry.id(), t);
+            ItemStack baseCost = new ItemStack(RecruitConfig.currencyItem(), need);
+            int baseX = rightX + TIER_BASE_ICON_X;
+            g.renderItem(baseCost, baseX, rowY + 3);
+            g.renderItemDecorations(this.font, baseCost, baseX, rowY + 3);
 
-            int haveE = countItem(emeraldCost);
-            int haveM = countItem(metalCost);
-            boolean enough = haveE >= eNeed && haveM >= mNeed;
+            int extraNeed = t == 4 ? RecruitConfig.tier4ExtraCost() : 0;
+            Item extraItem = extraNeed > 0 ? RecruitConfig.tier4ExtraItem() : null;
+            int baseHave = countItems(RecruitConfig.currencyItem());
+            int extraHave = extraItem == null ? 0 : countItems(extraItem);
+            boolean baseEnough = baseHave >= need;
+            boolean extraEnough = extraNeed <= 0 || extraHave >= extraNeed;
+            boolean enough = baseEnough && extraEnough;
+            if (extraItem != null) {
+                g.drawString(this.font, "+", rightX + TIER_PLUS_X, rowY + 7, COL_TEXT_DIM);
+                ItemStack extraCost = new ItemStack(extraItem, extraNeed);
+                int extraX = rightX + TIER_EXTRA_ICON_X;
+                if (!extraEnough) {
+                    int left = extraX - 1;
+                    int top = rowY + 2;
+                    int right = extraX + 17;
+                    int bottom = rowY + 20;
+                    g.fill(left, top, right, top + 1, COL_BAD);
+                    g.fill(left, bottom - 1, right, bottom, COL_BAD);
+                    g.fill(left, top + 1, left + 1, bottom - 1, COL_BAD);
+                    g.fill(right - 1, top + 1, right, bottom - 1, COL_BAD);
+                }
+                g.renderItem(extraCost, extraX, rowY + 3);
+                g.renderItemDecorations(this.font, extraCost, extraX, rowY + 3);
+            }
+
+            int ownedX = rightX + TIER_OWNED_X;
+            int ownedRight = rightX + rightW - 112;
+            viewport.enableScissor(g, ownedX, rowY + 5, ownedRight, rowY + 16);
             g.drawString(this.font,
-                    Component.translatable("gui.monster_conquest.recruit.owned_short", haveE, haveM),
-                    iconX + 34, rowY + 7, enough ? COL_OK : COL_BAD);
+                    Component.translatable("gui.monster_conquest.recruit.owned_short", baseHave, need),
+                    ownedX, rowY + 7, baseEnough ? COL_OK : COL_BAD);
+            g.disableScissor();
 
             // 升级：蛋（低一档）+ 目标档半价
             Item egg = !entry.fixedTier() && t >= 1 ? eggItem(entry.id(), t - 1) : null;
             boolean upgradeEnough = false;
             if (egg != null) {
-                int ue = halfUp(eNeed);
-                int um = halfUp(mNeed);
-                upgradeEnough = countItems(egg) >= 1 && haveE >= ue && haveM >= um;
+                int upgradeCost = halfUp(need);
+                upgradeEnough = countItems(egg) >= 1 && baseHave >= upgradeCost && extraEnough;
             }
 
-            updateTooltips(t, entry, egg, eNeed, mNeed);
+            updateTooltips(t, egg, need, extraItem, extraNeed);
             if (t < recruitButtons.size()) {
                 recruitButtons.get(t).active = enough;
                 Button upgradeBtn = upgradeButtons.get(t);
@@ -343,24 +370,35 @@ public class RecruitStationScreen extends Screen {
         }
     }
 
-    private void updateTooltips(int t, RecruitableSoldiers.Entry entry,
-                                @Nullable Item egg, int eNeed, int mNeed) {
+    private void updateTooltips(int t, @Nullable Item egg, int need,
+                                @Nullable Item extraItem, int extraNeed) {
         if (t >= recruitButtons.size()) return;
-        Component metalName = new ItemStack(RecruitConfig.metalItemFor(t)).getHoverName();
-        recruitButtons.get(t).setTooltip(Tooltip.create(
-                Component.translatable("gui.monster_conquest.recruit.tip_cost",
-                        eNeed, metalName, mNeed)));
+        Component currencyName = new ItemStack(RecruitConfig.currencyItem()).getHoverName();
+        Component recruitTip = Component.translatable(
+                "gui.monster_conquest.recruit.tip_cost", currencyName, need);
+        recruitButtons.get(t).setTooltip(Tooltip.create(withExtraCost(recruitTip, extraItem, extraNeed)));
         Button upgradeBtn = upgradeButtons.get(t);
         if (upgradeBtn != null) {
             if (egg == null) {
                 upgradeBtn.active = false;
             } else {
+                Component upgradeTip = Component.translatable(
+                        "gui.monster_conquest.recruit.tip_upgrade",
+                        new ItemStack(egg).getHoverName(), currencyName, halfUp(need));
                 upgradeBtn.setTooltip(Tooltip.create(
-                        Component.translatable("gui.monster_conquest.recruit.tip_upgrade",
-                                new ItemStack(egg).getHoverName(),
-                                halfUp(eNeed), metalName, halfUp(mNeed))));
+                        withExtraCost(upgradeTip, extraItem, extraNeed)));
             }
         }
+    }
+
+    private static Component withExtraCost(Component tip, @Nullable Item extraItem, int extraNeed) {
+        if (extraItem == null || extraNeed <= 0) return tip;
+        return Component.empty()
+                .append(tip)
+                .append("\n")
+                .append(Component.translatable(
+                        "gui.monster_conquest.recruit.tip_tier4_extra",
+                        new ItemStack(extraItem).getHoverName(), extraNeed));
     }
 
     private static int halfUp(int value) {

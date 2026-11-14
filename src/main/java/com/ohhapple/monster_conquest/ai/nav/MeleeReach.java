@@ -56,6 +56,22 @@ public final class MeleeReach {
     public static boolean canReachVertically(LivingEntity attacker,
                                              LivingEntity target,
                                              double normalLimit) {
+        if (target instanceof AbstractFlyingSoldier) {
+            return canReachVertically(
+                    attacker, attacker.getY(), target, normalLimit);
+        }
+        // 涉水战斗的双方脚底高度天然相差一个水体/骑乘高度，
+        //   用碰撞盒之间的实际垂直空隙判断，避免水面上贴脸却永远打不到。
+        if (isInWaterContext(attacker) || isInWaterContext(target)) {
+            double attackerMinY = attacker.getBoundingBox().minY;
+            double attackerMaxY = attacker.getBoundingBox().maxY;
+            double targetMinY = target.getBoundingBox().minY;
+            double targetMaxY = target.getBoundingBox().maxY;
+            double verticalGap = Math.max(0.0, Math.max(
+                    targetMinY - attackerMaxY,
+                    attackerMinY - targetMaxY));
+            return verticalGap <= normalLimit;
+        }
         return canReachVertically(attacker, attacker.getY(), target, normalLimit);
     }
 
@@ -68,5 +84,11 @@ public final class MeleeReach {
                         attacker.getBbHeight() + target.getBbHeight() + 0.5)
                 : normalLimit;
         return Math.abs(attackerY - target.getY()) <= limit;
+    }
+
+    private static boolean isInWaterContext(LivingEntity entity) {
+        return entity.isInWater()
+                || (entity.getVehicle() instanceof LivingEntity vehicle
+                && vehicle.isInWater());
     }
 }

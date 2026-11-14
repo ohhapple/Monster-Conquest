@@ -13,11 +13,11 @@ public final class UnitAccess {
 
     /**
      * 能否打开这个单位的界面：
-     *   · 创造模式或 OP：任何单位都能看；
-     *   · 生存玩家：只能看自己玩家阵营（自己的）单位。
+     *   · 创造模式：任何单位都能看；
+     *   · 非创造模式：只能看自己小玩家阵营（自己的）单位，OP 权限不例外。
      */
     public static boolean canOpen(Player viewer, ManagedUnit unit) {
-        if (viewer.isCreative() || viewer.hasPermissions(2)) return true;
+        if (viewer.isCreative()) return true;
         UUID owner = ownerOf(unit);
         return owner != null && owner.equals(viewer.getUUID());
     }

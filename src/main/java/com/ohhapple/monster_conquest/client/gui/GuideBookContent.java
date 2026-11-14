@@ -5,6 +5,7 @@ import com.ohhapple.monster_conquest.army.Faction;
 import com.ohhapple.monster_conquest.army.FactionRegistry;
 import com.ohhapple.monster_conquest.army.SoldierRole;
 import com.ohhapple.monster_conquest.army.SoldierType;
+import com.ohhapple.monster_conquest.arena.entity.ArenaCreatureSoldier;
 import com.ohhapple.monster_conquest.client.input.ModKeyMappings;
 import com.ohhapple.monster_conquest.config.FactionConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
@@ -16,8 +17,11 @@ import com.ohhapple.monster_conquest.util.FactionDisplay;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.network.chat.Style;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -36,6 +40,7 @@ import java.util.Set;
  *   · 固定章节（RTS / 逻辑 / 教程）来自语言文件，{key.xxx} 会替换成玩家当前的实际按键；
  *   · 阵营 / 敌对关系 / 首领 / 士兵章节按实时数据生成，数值直接读实体类的 getter，
  *     改实体类里的数值后书里同步变化。
+ *   · 首领 / 士兵清单只包含主世界玩法单位；自走棋专属弈子由独立图鉴介绍。
  *   排版：每种单位之间画分隔线，T0~T4 数值使用与士兵刷怪蛋头像框一致的颜色，
  *   特点使用单独的颜色。
  */
@@ -59,6 +64,8 @@ public final class GuideBookContent {
     public static final int COLOR_LABEL = 0xFF6B4A2A;
     /** 分隔线。 */
     public static final int COLOR_SEPARATOR = 0x556B4A2A;
+    /** 下载来源警示。 */
+    public static final int COLOR_WARNING = 0xFF9A2F1C;
 
     /**
      * T0~T4 颜色：使用士兵刷怪蛋头像框的配色（皮革 / 铁 / 白 / 青 / 紫），
@@ -74,6 +81,7 @@ public final class GuideBookContent {
 
     public record Chapter(String id, int color) {
         public Component title() {
+            if (id.equals("welcome")) return Component.literal("欢迎 / Welcome");
             return Component.translatable("guide.monster_conquest.chapter." + id);
         }
     }
@@ -96,6 +104,7 @@ public final class GuideBookContent {
     }
 
     public static final List<Chapter> CHAPTERS = List.of(
+            new Chapter("welcome", 0xFFFFD66B),
             new Chapter("rts", 0xFF8CD0FF),
             new Chapter("logic", 0xFFB9E08A),
             new Chapter("tutorial", 0xFFFFE082),
@@ -111,6 +120,7 @@ public final class GuideBookContent {
 
     public static List<GuideLine> body(Chapter chapter) {
         return switch (chapter.id()) {
+            case "welcome" -> welcomeBody();
             case "factions" -> factionsBody();
             case "relations" -> relationsBody();
             case "commanders" -> commandersBody();
@@ -120,6 +130,49 @@ public final class GuideBookContent {
     }
 
     // ===================== 固定章节 =====================
+
+    /**
+     * 欢迎与下载来源声明直接固定在客户端代码中。
+     */
+    private static List<GuideLine> welcomeBody() {
+        List<GuideLine> out = new ArrayList<>();
+        out.add(GuideLine.of(heading("欢迎使用 Monster Conquest"), 0, 4));
+        out.add(GuideLine.of(body("本模组由 ohhapple 制作并免费发布。"), 6));
+        out.add(GuideLine.of(labelledLink(
+                "作者 GitHub 主页：", "https://github.com/ohhapple"), 6));
+        out.add(GuideLine.of(labelledLink(
+                "GitHub 项目仓库：", "https://github.com/ohhapple/Monster-Conquest"), 6));
+        out.add(GuideLine.of(labelledLink(
+                "CurseForge：", "https://www.curseforge.com/minecraft/mc-mods/monster-conquest"), 6));
+        out.add(GuideLine.blankLine());
+        out.add(GuideLine.of(Component.literal("下载来源提醒")
+                .withStyle(style -> style.withColor(COLOR_WARNING)), 0, 6));
+        out.add(GuideLine.of(Component.literal(
+                        "若你不是通过上述链接免费下载获得的本模组，请注意甄别与警惕第三方倒卖分发。")
+                .withStyle(style -> style.withColor(COLOR_WARNING)), 6));
+
+        out.add(GuideLine.separatorLine());
+
+        out.add(GuideLine.of(heading("Welcome to Monster Conquest"), 0, 4));
+        out.add(GuideLine.of(body(
+                "This mod is created and released for free by ohhapple."), 6));
+        out.add(GuideLine.of(labelledLink(
+                "Author's GitHub profile: ", "https://github.com/ohhapple"), 6));
+        out.add(GuideLine.of(labelledLink(
+                "GitHub project repository: ",
+                "https://github.com/ohhapple/Monster-Conquest"), 6));
+        out.add(GuideLine.of(labelledLink(
+                "CurseForge: ",
+                "https://www.curseforge.com/minecraft/mc-mods/monster-conquest"), 6));
+        out.add(GuideLine.blankLine());
+        out.add(GuideLine.of(Component.literal("Download source warning")
+                .withStyle(style -> style.withColor(COLOR_WARNING)), 0, 6));
+        out.add(GuideLine.of(Component.literal(
+                        "If you did not obtain this mod for free through the links above, "
+                                + "please exercise caution regarding third-party resale or redistribution.")
+                .withStyle(style -> style.withColor(COLOR_WARNING)), 6));
+        return out;
+    }
 
     private static List<GuideLine> staticBody(String id) {
         String raw = Component.translatable("guide.monster_conquest.chapter." + id + ".body").getString();
@@ -180,7 +233,7 @@ public final class GuideBookContent {
             out.add(GuideLine.of(heading(factionName(faction.getId())), 0, 8));
             List<String> soldiers = new ArrayList<>();
             for (EntityType<? extends AbstractArmySoldier> type : faction.getSoldierTypes()) {
-                soldiers.add(name(type));
+                if (isMainWorldSoldierType(type)) soldiers.add(name(type));
             }
             out.add(GuideLine.of(labelled("guide.monster_conquest.stat.summon_natural",
                     soldiers.isEmpty() ? tr("guide.monster_conquest.stat.none")
@@ -286,7 +339,7 @@ public final class GuideBookContent {
         if (faction != null && !faction.getSoldierTypes().isEmpty()) {
             List<String> names = new ArrayList<>();
             for (EntityType<? extends AbstractArmySoldier> s : faction.getSoldierTypes()) {
-                names.add(name(s));
+                if (isMainWorldSoldierType(s)) names.add(name(s));
             }
             out.add(GuideLine.of(labelled("guide.monster_conquest.stat.summon_natural",
                     String.join("、", names)), 12));
@@ -309,26 +362,34 @@ public final class GuideBookContent {
 
     // ===================== 单位清单（按注册表筛，不用手工维护） =====================
 
-    /** 全部士兵：遍历模组注册的实体类型，按"是不是士兵"筛 —— 没加入任何阵营的兵也会列出来。 */
+    /** 全部主世界士兵：排除自走棋专属弈子；没加入任何阵营的主世界兵也会列出来。 */
     private static List<EntityType<?>> soldierTypes() {
         List<EntityType<?>> out = new ArrayList<>();
         for (EntityType<?> type : BuiltInRegistries.ENTITY_TYPE) {
-            if (isModUnitType(type) && sampleSoldier(type) != null) out.add(type);
+            if (isMainWorldSoldierType(type)) out.add(type);
         }
         return out;
     }
 
-    /** 全部首领 / 巡逻队长：同样按注册表筛。 */
+    /** 全部主世界首领 / 巡逻队长：自走棋弈子不进入主世界教程。 */
     private static List<EntityType<?>> commanderTypes() {
         List<EntityType<?>> out = new ArrayList<>();
         for (EntityType<?> type : BuiltInRegistries.ENTITY_TYPE) {
-            if (isModUnitType(type) && sampleCommander(type) != null) out.add(type);
+            if (isMainWorldUnitType(type) && sampleCommander(type) != null) out.add(type);
         }
         return out;
     }
 
-    private static boolean isModUnitType(EntityType<?> type) {
-        return Monster_conquest.MODID.equals(EntityType.getKey(type).getNamespace());
+    private static boolean isMainWorldUnitType(EntityType<?> type) {
+        ResourceLocation key = EntityType.getKey(type);
+        return Monster_conquest.MODID.equals(key.getNamespace())
+                && !key.getPath().startsWith("arena_");
+    }
+
+    private static boolean isMainWorldSoldierType(EntityType<?> type) {
+        if (!isMainWorldUnitType(type)) return false;
+        AbstractArmySoldier sample = sampleSoldier(type);
+        return sample != null && !(sample instanceof ArenaCreatureSoldier);
     }
 
     private static void appendSoldier(List<GuideLine> out, EntityType<?> type) {
@@ -470,6 +531,18 @@ public final class GuideBookContent {
 
     private static MutableComponent body(String text) {
         return Component.literal(text).withStyle(s -> s.withColor(COLOR_BODY));
+    }
+
+    private static MutableComponent labelledLink(String label, String url) {
+        Style linkStyle = Style.EMPTY
+                .withColor(0xFF1A5FB4)
+                .withUnderlined(true)
+                .withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, url))
+                .withHoverEvent(new HoverEvent(
+                        HoverEvent.Action.SHOW_TEXT, Component.literal(url)));
+        return Component.empty()
+                .append(Component.literal(label).withStyle(s -> s.withColor(COLOR_BODY)))
+                .append(Component.literal(url).withStyle(linkStyle));
     }
 
     private static MutableComponent traitLine(String text) {

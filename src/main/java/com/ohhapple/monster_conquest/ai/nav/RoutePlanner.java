@@ -10,11 +10,14 @@ import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.FenceGateBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.block.TrapDoorBlock;
+import net.minecraft.world.level.pathfinder.PathType;
+import net.minecraft.world.level.pathfinder.WalkNodeEvaluator;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.shapes.BooleanOp;
@@ -29,13 +32,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
-import java.util.Set;
 
 /**
  * 方块级 A* 绕路规划：目标只要求到达目标附近；目标够不到时取"离目标最近的可达节点"，
@@ -72,11 +73,24 @@ public final class RoutePlanner {
      */
     private record Clearance(double halfWidth, double height, double centerOffset) {}
 
+    /** 一个格子的自定义碰撞结果，以及实体运行时路径类型带来的额外代价。 */
+    private record Traversal(boolean passable, double extraCost) {
+        private static final Traversal BLOCKED = new Traversal(false, 0.0);
+
+        private static Traversal passable(double extraCost) {
+            return new Traversal(true, Math.max(0.0, extraCost));
+        }
+    }
+
     private static final int[][] DIRECTIONS = {
             {1, 0}, {-1, 0}, {0, 1}, {0, -1},
             {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
     };
     private static final int[] STEP_LEVELS = {0, 1, -1, -2, -3};
+    private static final double CARDINAL_STEP_COST = 1.0;
+    private static final double DIAGONAL_STEP_COST = Math.sqrt(2.0);
+    private static final double ASCEND_STEP_COST = 0.8;
+    private static final double DESCEND_STEP_COST = 0.25;
     /** 一次最多顺着梯子滑多少格（再长就逐节走，避免路径节点跨度过大）。 */
     private static final int SLIDE_LIMIT = 24;
 
@@ -86,7 +100,10 @@ public final class RoutePlanner {
     private static final long SEARCH_SLICE_NANOS = 5_000_000L;
     /** 复杂迷宫的单次持久搜索上限。 */
     private static final int SEARCH_NODE_LIMIT = 24000;
-    /** 略微加权，减少在迷宫死路和外墙附近展开的节点数。 */
+    /**
+     * 略微加权，减少在迷宫死路和外墙附近展开的节点数。
+     * 同步搜索与跨 tick 搜索必须使用同一权重，否则同一目标会因调用入口不同而选路不一致。
+     */
     private static final double SEARCH_HEURISTIC_WEIGHT = 1.15;
     /** 同队单位共享路线的最长复用时间；超过后重新验证 / 规划。 */
     private static final int PATH_CACHE_TICKS = 80;
@@ -98,6 +115,22 @@ public final class RoutePlanner {
     private static final int ROUTE_REUSE_SCAN_DY = 2;
     private static final int ROUTE_REUSE_CONNECTOR_NODES = 512;
     private static final long ROUTE_REUSE_CONNECTOR_BUDGET_NANOS = 2_000_000L;
+    /** 完整长路线在固定世界网格线 / 转向点采样；该跨度也是强制补点的最大间隔。 */
+    private static final int CORRIDOR_ANCHOR_STRIDE = 8;
+    /** 过短路线继续走共享路线缓存，不进入高层图。 */
+    private static final int CORRIDOR_MIN_ROUTE_POINTS = 24;
+    private static final int CORRIDOR_MAX_NODES = 8_192;
+    private static final int CORRIDOR_MAX_KEYS = 24;
+    private static final int CORRIDOR_NEAR_RADIUS = 10;
+    private static final int CORRIDOR_NEAR_DY = 4;
+    private static final int CORRIDOR_MAX_CONNECTORS = 3;
+    private static final int CORRIDOR_SEARCH_NODES = 4_096;
+    private static final int CORRIDOR_CONNECTOR_NODES = 1_024;
+    private static final int CORRIDOR_MISS_TICKS = 40;
+    private static final int CORRIDOR_MAX_MISSES = 1_024;
+    private static final long CORRIDOR_QUERY_BUDGET_NANOS = 3_000_000L;
+    private static final long CORRIDOR_CONNECTOR_BUDGET_NANOS = 1_000_000L;
+    private static final long CORRIDOR_LEARN_BUDGET_NANOS = 750_000L;
     private static final double MIN_PARTIAL_DISTANCE = 5.0;
     /** 最优努力系数：先取路径较"合理"的解，不行再取更贴近目标的解。 */
     private static final double[] BEST_COEFFICIENTS = {1.5, 4.0};
@@ -105,6 +138,7 @@ public final class RoutePlanner {
     private static final double FAVOR_EXACT = 0.75;
     private static final double FAVOR_NEAR = 0.9;
     private static final int FAVOR_LIMIT = 2048;
+    private static final PathType[] PATH_TYPES = PathType.values();
 
     private RoutePlanner() {}
 
@@ -143,14 +177,9 @@ public final class RoutePlanner {
         //   单位多时把 A* 摊到多个 tick，避免同一 tick 跑一堆大范围搜索造成掉刻。
         //   本 tick 轮不到时直接返回 null，调用方通过 wasLastCallDeferred() 区分
         //   "预算被占满、稍后重试"和"真的规划不出路"。
-        long nowTick = level.getGameTime();
-        if (nowTick != budgetTick) {
-            long elapsedTicks = Math.max(1L, (long) nowTick - budgetTick);
-            nanosUsed = Math.max(0L, nanosUsed - elapsedTicks * NANOS_PER_TICK);
-            budgetTick = nowTick;
-        }
-        Result cached = findCachedPath(level, entity, goal, goalRadius, maxRadius,
-                maxNodes, extraHeight, favored, smooth);
+        refreshBudgetWindow(level);
+        Result cached = findCachedPath(level, entity, goal, goalRadius,
+                extraHeight, favored, smooth);
         if (cached != null) {
             lastCallDeferred = false;
             return cached;
@@ -163,13 +192,13 @@ public final class RoutePlanner {
         long budgetStartNanos = System.nanoTime();
         // 单次规划期间缓存"格子能不能走"：同一条走廊相邻节点会重复查询，
         //   迷宫搜索能因此快好几倍（服务端单线程，静态缓存安全）。
-        Map<Long, Boolean> localWalkCache = new HashMap<>();
-        Map<Long, Boolean> previousWalkCache = activeWalkCache;
+        Map<Long, Traversal> localWalkCache = new HashMap<>();
+        Map<Long, Traversal> previousWalkCache = activeWalkCache;
         activeWalkCache = localWalkCache;
         try {
             Result result = planInternal(level, entity, goal, goalRadius, maxRadius, maxNodes,
                     extraHeight, favored, smooth, timeBudgetNanos);
-            storeCachedPath(level, entity, goal, goalRadius, maxRadius, maxNodes,
+            storeCachedPath(level, entity, goal, goalRadius,
                     extraHeight, favored, smooth, result);
             return result;
         } finally {
@@ -179,9 +208,10 @@ public final class RoutePlanner {
     }
 
     /** 当前规划自己的通行缓存；跨 tick 的搜索会保留整份缓存。 */
-    @Nullable private static Map<Long, Boolean> activeWalkCache = null;
+    @Nullable private static Map<Long, Traversal> activeWalkCache = null;
     private static final Map<CacheKey, CachedPath> PATH_CACHE = new HashMap<>();
     private static final RouteReuseIndex ROUTE_REUSE_INDEX = new RouteReuseIndex();
+    private static final Map<GraphKey, CorridorGraph> CORRIDOR_GRAPHS = new HashMap<>();
     private static final Map<ResourceLocation, Long> WORLD_VERSIONS = new HashMap<>();
     private static long pathCacheTick = Long.MIN_VALUE;
 
@@ -191,22 +221,91 @@ public final class RoutePlanner {
     private static long nanosUsed = 0L;
     private static boolean lastCallDeferred = false;
 
+    private static void refreshBudgetWindow(Level level) {
+        long nowTick = level.getGameTime();
+        if (nowTick == budgetTick) return;
+
+        long elapsedTicks = Math.max(1L, nowTick - budgetTick);
+        nanosUsed = Math.max(0L, nanosUsed - elapsedTicks * NANOS_PER_TICK);
+        budgetTick = nowTick;
+    }
+
     /**
      * 共享路线缓存键：只复用几何条件完全相同的路线。
      *   起点是精确格；目标、净空、平滑方式和方块变化版本参与比较。
-     *   搜索半径 / 节点上限只影响单次查询，不阻止同几何路线复用。
+     *   搜索半径 / 节点上限只影响单次查询，不阻止同几何路线复用，因此不进入缓存键。
+     *   实体的运行时寻路惩罚也参与比较，水生兵种不会误用陆生兵种绕开水域的路线。
      *   旧路线偏好只影响本次选路，不阻止其他单位复用同一条几何路线。
      */
     private record CacheKey(ResourceLocation dimension, long worldVersion, long start, long goal,
                             long widthBits, long heightBits, long centerBits,
-                            double goalRadius, double maxRadius, int maxNodes,
-                            boolean smooth) {}
+                            long pathCostBits, double goalRadius, boolean smooth) {}
 
     private record CachedPath(CacheKey key, Result result, long createdTick) {}
+
+    private record GraphKey(ResourceLocation dimension, long worldVersion,
+                            long widthBits, long heightBits, long centerBits,
+                            long pathCostBits) {}
 
     private record RouteAnchor(CachedPath path, int nodeIndex) {}
 
     private record ReuseChoice(CachedPath path, int nodeIndex, double distanceSq) {}
+
+    private record CorridorEdge(BlockPos target, List<BlockPos> points, double cost) {}
+
+    private record CorridorCandidate(CorridorNode node, double distanceSq) {}
+
+    private record CorridorPrefix(CorridorNode node, Result path, double cost) {}
+
+    private record CorridorQueryKey(long start, long goal, long goalRadiusBits) {}
+
+    private static final class CorridorNode {
+        private final BlockPos pos;
+        private final Map<BlockPos, CorridorEdge> edges = new HashMap<>();
+
+        private CorridorNode(BlockPos pos) {
+            this.pos = pos;
+        }
+    }
+
+    private static final class CorridorSearchNode {
+        private final CorridorNode node;
+        private final double g;
+        private final double h;
+        private final double f;
+        @Nullable private final CorridorSearchNode parent;
+        @Nullable private final CorridorEdge edgeFromParent;
+        private boolean closed;
+
+        private CorridorSearchNode(CorridorNode node, double g, double h,
+                                   @Nullable CorridorSearchNode parent,
+                                   @Nullable CorridorEdge edgeFromParent) {
+            this.node = node;
+            this.g = g;
+            this.h = h;
+            this.f = g + h * SEARCH_HEURISTIC_WEIGHT;
+            this.parent = parent;
+            this.edgeFromParent = edgeFromParent;
+        }
+    }
+
+    /**
+     * 从已完整验证路线增量学习的通道图。
+     *
+     * <p>这里只压缩“中间怎么绕过固定建筑”，不替代碰撞级搜索。图按世界版本、
+     * 实体净空和运行时寻路代价模型隔离，方块变化时整图保守失效。</p>
+     */
+    private static final class CorridorGraph {
+        private final GraphKey key;
+        private final Map<BlockPos, CorridorNode> nodes = new HashMap<>();
+        private final Map<CorridorQueryKey, Long> misses = new HashMap<>();
+        private long lastUsedTick;
+
+        private CorridorGraph(GraphKey key, long lastUsedTick) {
+            this.key = key;
+            this.lastUsedTick = lastUsedTick;
+        }
+    }
 
     /**
      * 完整路线的中段接入索引。
@@ -322,10 +421,10 @@ public final class RoutePlanner {
         private final boolean smooth;
         @Nullable private final CacheKey cacheKey;
         private final Map<BlockPos, Node> nodes = new HashMap<>();
-        private final Set<BlockPos> closed = new HashSet<>();
         private final PriorityQueue<Node> open = new PriorityQueue<>(
-                Comparator.comparingDouble(n -> n.f(SEARCH_HEURISTIC_WEIGHT)));
-        private final Map<Long, Boolean> walkCache = new HashMap<>();
+                Comparator.comparingDouble((Node n) -> n.f)
+                        .thenComparingDouble(n -> n.h));
+        private final Map<Long, Traversal> walkCache = new HashMap<>();
 
         @Nullable private Node reached;
         @Nullable private Node closest;
@@ -350,7 +449,7 @@ public final class RoutePlanner {
             this.smooth = smooth;
             this.cacheKey = cacheKey;
             Arrays.fill(this.bestScores, Double.MAX_VALUE);
-            Node startNode = new Node(start, 0.0, center(start).distanceTo(goal), null);
+            Node startNode = new Node(start, 0.0, heuristic(start, goal), null);
             nodes.put(start, startNode);
             open.add(startNode);
         }
@@ -368,16 +467,15 @@ public final class RoutePlanner {
                                           double goalRadius, double maxRadius, int maxNodes,
                                           double extraHeight, @Nullable List<BlockPos> favored,
                                           boolean smooth) {
-        Result cached = findCachedPath(level, entity, goal, goalRadius, maxRadius,
-                maxNodes, extraHeight, favored, smooth);
+        Result cached = findCachedPath(level, entity, goal, goalRadius,
+                extraHeight, favored, smooth);
         Clearance clearance = clearanceOf(entity, extraHeight);
         BlockPos start = entity.blockPosition();
         if (!walkableUncached(level, entity, clearance, start)) {
             start = findStartNear(level, entity, clearance, start);
             if (start == null) return null;
         }
-        CacheKey key = cacheKey(level, entity, goal, goalRadius, maxRadius, maxNodes,
-                extraHeight, favored, smooth);
+        CacheKey key = cacheKey(level, entity, goal, goalRadius, extraHeight, favored, smooth);
         SearchState state = new SearchState(start, goal, goalRadius, maxRadius,
                 Math.min(maxNodes, SEARCH_NODE_LIMIT), clearance,
                 buildFavor(favored), smooth, key);
@@ -403,18 +501,13 @@ public final class RoutePlanner {
             return true;
         }
 
-        long nowTick = level.getGameTime();
-        if (nowTick != budgetTick) {
-            long elapsedTicks = Math.max(1L, nowTick - budgetTick);
-            nanosUsed = Math.max(0L, nanosUsed - elapsedTicks * NANOS_PER_TICK);
-            budgetTick = nowTick;
-        }
+        refreshBudgetWindow(level);
         long available = NANOS_PER_TICK - nanosUsed;
         if (available <= 0L) return false;
 
         long budgetStartNanos = System.nanoTime();
         long deadline = budgetStartNanos + Math.min(SEARCH_SLICE_NANOS, available);
-        Map<Long, Boolean> previousWalkCache = activeWalkCache;
+        Map<Long, Traversal> previousWalkCache = activeWalkCache;
         activeWalkCache = state.walkCache;
         try {
             while (!state.open.isEmpty() && state.visited < state.nodeBudget) {
@@ -424,8 +517,8 @@ public final class RoutePlanner {
 
                 Node current = state.open.poll();
                 Node known = state.nodes.get(current.pos);
-                if (known == null || current.g > known.g + 1.0E-6) continue;
-                if (!state.closed.add(current.pos)) continue;
+                if (known == null || current != known || known.closed) continue;
+                known.closed = true;
                 state.visited++;
 
                 if (center(current.pos).distanceToSqr(state.goal) <= state.goalRadiusSq) {
@@ -449,7 +542,7 @@ public final class RoutePlanner {
                 }
 
                 expand(level, entity, state.clearance, current, state.goal, state.start,
-                        state.maxRadiusSq, state.favor, state.nodes, state.closed, state.open);
+                        state.maxRadiusSq, state.favor, state.nodes, state.open);
             }
 
             Node end = state.reached;
@@ -482,7 +575,7 @@ public final class RoutePlanner {
             state.result = new Result(state.smooth
                     ? smooth(level, entity, state.clearance, raw) : raw,
                     outcome == Outcome.REACHED, outcome, state.visited);
-            cacheResult(level, state.cacheKey, state.result);
+            cacheResult(level, entity, state.cacheKey, state.clearance, state.result);
             return true;
         } finally {
             activeWalkCache = previousWalkCache;
@@ -494,6 +587,7 @@ public final class RoutePlanner {
     public static void noteWorldChanged(ResourceLocation dimension) {
         if (dimension == null) return;
         WORLD_VERSIONS.merge(dimension, 1L, Long::sum);
+        CORRIDOR_GRAPHS.keySet().removeIf(key -> key.dimension().equals(dimension));
     }
 
     public static long worldVersion(Level level) {
@@ -504,6 +598,7 @@ public final class RoutePlanner {
     public static void clearCaches() {
         PATH_CACHE.clear();
         ROUTE_REUSE_INDEX.clear();
+        CORRIDOR_GRAPHS.clear();
         activeWalkCache = null;
         WORLD_VERSIONS.clear();
         pathCacheTick = Long.MIN_VALUE;
@@ -521,9 +616,8 @@ public final class RoutePlanner {
     }
 
     private static CacheKey cacheKey(Level level, LivingEntity entity, Vec3 goal,
-                                     double goalRadius, double maxRadius, int maxNodes,
-                                     double extraHeight, @Nullable List<BlockPos> favored,
-                                     boolean smooth) {
+                                     double goalRadius, double extraHeight,
+                                     @Nullable List<BlockPos> favored, boolean smooth) {
         Clearance clearance = clearanceOf(entity, extraHeight);
         BlockPos start = entity.blockPosition();
         BlockPos target = BlockPos.containing(goal.x, goal.y, goal.z);
@@ -533,7 +627,7 @@ public final class RoutePlanner {
                 Double.doubleToLongBits(clearance.halfWidth()),
                 Double.doubleToLongBits(clearance.height()),
                 Double.doubleToLongBits(clearance.centerOffset()),
-                goalRadius, maxRadius, maxNodes, smooth);
+                pathCostProfile(entity), goalRadius, smooth);
     }
 
     private static boolean sameRoute(CacheKey a, CacheKey b) {
@@ -543,15 +637,33 @@ public final class RoutePlanner {
                 && a.widthBits() == b.widthBits()
                 && a.heightBits() == b.heightBits()
                 && a.centerBits() == b.centerBits()
+                && a.pathCostBits() == b.pathCostBits()
                 && Double.compare(a.goalRadius(), b.goalRadius()) == 0
                 && a.smooth() == b.smooth();
     }
 
+    /**
+     * 实体运行时寻路偏好的稳定指纹。
+     *
+     * <p>原版把所有 PathType 的 malus 作为搜索代价；同尺寸但兵种能力不同的单位
+     * （例如溺尸与普通士兵）不能共享一条代价模型不同的路线。</p>
+     */
+    private static long pathCostProfile(LivingEntity entity) {
+        if (!(entity instanceof Mob mob)) return 0L;
+
+        long profile = 0xCBF29CE484222325L;
+        for (PathType type : PATH_TYPES) {
+            profile ^= Float.floatToIntBits(mob.getPathfindingMalus(type)) & 0xFFFFFFFFL;
+            profile *= 0x100000001B3L;
+        }
+        return profile;
+    }
+
     @Nullable
     private static Result findCachedPath(Level level, LivingEntity entity, Vec3 goal,
-                                         double goalRadius, double maxRadius, int maxNodes,
-                                         double extraHeight, @Nullable List<BlockPos> favored,
-                                         boolean smooth) {
+                                         double goalRadius, double extraHeight,
+                                         @Nullable List<BlockPos> favored, boolean smooth) {
+        refreshBudgetWindow(level);
         long now = level.getGameTime();
         if (now < pathCacheTick) {
             PATH_CACHE.clear();
@@ -559,34 +671,42 @@ public final class RoutePlanner {
         }
         pathCacheTick = now;
         prunePathCache(now);
-        if (PATH_CACHE.isEmpty()) return null;
 
         BlockPos start = entity.blockPosition();
         if (!walkableFor(level, entity, extraHeight, start)) return null;
-        CacheKey lookup = cacheKey(level, entity, goal, goalRadius, maxRadius, maxNodes,
+        CacheKey lookup = cacheKey(level, entity, goal, goalRadius,
                 extraHeight, favored, smooth);
-        CachedPath exact = PATH_CACHE.get(lookup);
-        if (exact != null && exact.result().points().size() >= 2
-                && exact.result().points().get(0).equals(start)) {
-            logCacheHit("exact", start, lookup.goal(), exact.result().points().size());
-            return exact.result();
-        }
+        if (!PATH_CACHE.isEmpty()) {
+            CachedPath exact = PATH_CACHE.get(lookup);
+            if (exact != null && exact.result().points().size() >= 2
+                    && exact.result().points().get(0).equals(start)) {
+                logCacheHit("exact", start, lookup.goal(), exact.result().points().size());
+                return exact.result();
+            }
 
-        for (CachedPath cached : PATH_CACHE.values()) {
-            if (!sameRoute(cached.key(), lookup)) continue;
-            Result attached = attachToCachedPath(level, entity, extraHeight, start, cached.result());
-            if (attached != null) {
-                logCacheHit("attach", start, lookup.goal(), attached.points().size());
-                return attached;
+            for (CachedPath cached : PATH_CACHE.values()) {
+                if (!sameRoute(cached.key(), lookup)) continue;
+                Result attached = attachToCachedPath(
+                        level, entity, extraHeight, start, cached.result());
+                if (attached != null) {
+                    logCacheHit("attach", start, lookup.goal(), attached.points().size());
+                    return attached;
+                }
+            }
+
+            Result joined = reuseIndexedPath(level, entity, lookup, start, extraHeight);
+            if (joined != null) {
+                logCacheHit("join", start, lookup.goal(), joined.points().size());
+                return joined;
             }
         }
 
-        Result joined = reuseIndexedPath(level, entity, lookup, start, extraHeight);
-        if (joined != null) {
-            logCacheHit("join", start, lookup.goal(), joined.points().size());
-            return joined;
+        Result corridor = findCorridorPath(
+                level, entity, lookup, goal, goalRadius, extraHeight);
+        if (corridor != null) {
+            logCacheHit("corridor", start, lookup.goal(), corridor.points().size());
         }
-        return null;
+        return corridor;
     }
 
     @Nullable
@@ -675,17 +795,18 @@ public final class RoutePlanner {
     }
 
     private static void storeCachedPath(Level level, LivingEntity entity, Vec3 goal,
-                                        double goalRadius, double maxRadius, int maxNodes,
-                                        double extraHeight, @Nullable List<BlockPos> favored,
-                                        boolean smooth, @Nullable Result result) {
+                                        double goalRadius, double extraHeight,
+                                        @Nullable List<BlockPos> favored, boolean smooth,
+                                        @Nullable Result result) {
         if (result == null || result.points().size() < 2) return;
-        CacheKey key = cacheKey(level, entity, goal, goalRadius, maxRadius, maxNodes,
+        CacheKey key = cacheKey(level, entity, goal, goalRadius,
                 extraHeight, favored, smooth);
-        cacheResult(level, key, result);
+        cacheResult(level, entity, key, clearanceOf(entity, extraHeight), result);
     }
 
     /** 写入共享路线缓存。 */
-    private static void cacheResult(Level level, @Nullable CacheKey key, @Nullable Result result) {
+    private static void cacheResult(Level level, LivingEntity entity, @Nullable CacheKey key,
+                                    Clearance clearance, @Nullable Result result) {
         if (key == null || result == null || result.points().size() < 2) return;
         long now = level.getGameTime();
         if (now < pathCacheTick) {
@@ -699,7 +820,409 @@ public final class RoutePlanner {
             ROUTE_REUSE_INDEX.remove(previous);
         }
         ROUTE_REUSE_INDEX.add(path);
+        learnCorridor(level, entity, clearance, key, result);
         prunePathCache(now);
+    }
+
+    @Nullable
+    private static GraphKey graphKey(CacheKey key) {
+        if (key.smooth()) return null;
+        return new GraphKey(key.dimension(), key.worldVersion(),
+                key.widthBits(), key.heightBits(), key.centerBits(), key.pathCostBits());
+    }
+
+    /**
+     * 从完整、未平滑且已经过碰撞验证的路线中学习通道段。
+     *
+     * <p>图只保存按固定跨度采样的锚点和锚点之间的原路线节点。这样高层搜索不会
+     * 退化成第二套逐格图；新路线仍需通过当前低层 A* 生成并验证首尾连接段。</p>
+     */
+    private static void learnCorridor(Level level, LivingEntity entity, Clearance clearance,
+                                      CacheKey cacheKey, Result result) {
+        if (!result.reachedGoal() || result.points().size() < CORRIDOR_MIN_ROUTE_POINTS) {
+            return;
+        }
+        GraphKey key = graphKey(cacheKey);
+        if (key == null) return;
+
+        CorridorGraph graph = corridorGraph(level, key);
+
+        List<BlockPos> points = result.points();
+        long deadline = System.nanoTime() + CORRIDOR_LEARN_BUDGET_NANOS;
+        int created = 0;
+        int fromIndex = 0;
+        for (int toIndex = 1; toIndex < points.size(); toIndex++) {
+            if ((toIndex & 7) == 0 && System.nanoTime() > deadline) break;
+            boolean last = toIndex == points.size() - 1;
+            boolean maxGap = toIndex - fromIndex >= CORRIDOR_ANCHOR_STRIDE;
+            boolean gridAnchor = stableCorridorAnchor(points.get(toIndex));
+            boolean turn = toIndex >= 2
+                    && directionChanged(points.get(toIndex - 2), points.get(toIndex - 1),
+                            points.get(toIndex));
+            if (!last && !maxGap && !gridAnchor && !turn) continue;
+
+            BlockPos from = points.get(fromIndex);
+            BlockPos to = points.get(toIndex);
+            if (from.equals(to)) {
+                continue;
+            }
+
+            List<BlockPos> segment = List.copyOf(
+                    points.subList(fromIndex, toIndex + 1));
+            double cost = corridorCost(level, entity, clearance, segment);
+            created += addCorridorEdge(graph, from, to, segment, cost);
+
+            if (reverseCorridorValid(level, entity, clearance, segment)) {
+                List<BlockPos> reverse = new ArrayList<>(segment);
+                Collections.reverse(reverse);
+                List<BlockPos> reversePoints = List.copyOf(reverse);
+                double reverseCost = corridorCost(
+                        level, entity, clearance, reversePoints);
+                created += addCorridorEdge(
+                        graph, to, from, reversePoints, reverseCost);
+            }
+            if (graph.nodes.size() >= CORRIDOR_MAX_NODES) break;
+            fromIndex = toIndex;
+        }
+
+        if (created > 0 && GeneralConfig.debugMovementLog) {
+            Monster_conquest.LOGGER.info(
+                    "[ROUTE-GRAPH] event=learn nodes={} edges={} points={}",
+                    graph.nodes.size(), corridorEdgeCount(graph), points.size());
+        }
+        if (created > 0) graph.misses.clear();
+    }
+
+    private static boolean stableCorridorAnchor(BlockPos pos) {
+        return Math.floorMod(pos.getX(), CORRIDOR_ANCHOR_STRIDE) == 0
+                || Math.floorMod(pos.getZ(), CORRIDOR_ANCHOR_STRIDE) == 0;
+    }
+
+    private static boolean directionChanged(BlockPos before, BlockPos current, BlockPos next) {
+        int ax = current.getX() - before.getX();
+        int ay = current.getY() - before.getY();
+        int az = current.getZ() - before.getZ();
+        int bx = next.getX() - current.getX();
+        int by = next.getY() - current.getY();
+        int bz = next.getZ() - current.getZ();
+        return ax != bx || ay != by || az != bz;
+    }
+
+    private static CorridorGraph corridorGraph(Level level, GraphKey key) {
+        long now = level.getGameTime();
+        CORRIDOR_GRAPHS.keySet().removeIf(other ->
+                other.dimension().equals(key.dimension())
+                        && other.worldVersion() != key.worldVersion());
+
+        CorridorGraph graph = CORRIDOR_GRAPHS.get(key);
+        if (graph != null) {
+            graph.lastUsedTick = now;
+            return graph;
+        }
+
+        if (CORRIDOR_GRAPHS.size() >= CORRIDOR_MAX_KEYS) {
+            GraphKey oldest = null;
+            long oldestTick = Long.MAX_VALUE;
+            for (Map.Entry<GraphKey, CorridorGraph> entry : CORRIDOR_GRAPHS.entrySet()) {
+                if (entry.getValue().lastUsedTick < oldestTick) {
+                    oldestTick = entry.getValue().lastUsedTick;
+                    oldest = entry.getKey();
+                }
+            }
+            if (oldest != null) CORRIDOR_GRAPHS.remove(oldest);
+        }
+
+        graph = new CorridorGraph(key, now);
+        CORRIDOR_GRAPHS.put(key, graph);
+        return graph;
+    }
+
+    private static int addCorridorEdge(CorridorGraph graph, BlockPos from, BlockPos to,
+                                       List<BlockPos> points, double cost) {
+        CorridorNode fromNode = graph.nodes.get(from);
+        if (fromNode == null) {
+            if (graph.nodes.size() >= CORRIDOR_MAX_NODES) return 0;
+            fromNode = new CorridorNode(from);
+            graph.nodes.put(from, fromNode);
+        }
+
+        if (!graph.nodes.containsKey(to)) {
+            if (graph.nodes.size() >= CORRIDOR_MAX_NODES) return 0;
+            graph.nodes.put(to, new CorridorNode(to));
+        }
+
+        CorridorEdge previous = fromNode.edges.get(to);
+        if (previous != null && previous.cost() <= cost + 1.0E-6) return 0;
+        fromNode.edges.put(to, new CorridorEdge(to, points, cost));
+        return 1;
+    }
+
+    private static int corridorEdgeCount(CorridorGraph graph) {
+        int count = 0;
+        for (CorridorNode node : graph.nodes.values()) count += node.edges.size();
+        return count;
+    }
+
+    private static double corridorCost(Level level, LivingEntity entity,
+                                       Clearance clearance, List<BlockPos> points) {
+        double cost = 0.0;
+        for (int i = 1; i < points.size(); i++) {
+            BlockPos from = points.get(i - 1);
+            BlockPos to = points.get(i);
+            int dx = Math.abs(to.getX() - from.getX());
+            int dz = Math.abs(to.getZ() - from.getZ());
+            int horizontal = Math.max(dx, dz);
+            boolean diagonal = dx != 0 && dz != 0;
+            cost += diagonal ? DIAGONAL_STEP_COST * horizontal
+                    : CARDINAL_STEP_COST * horizontal;
+            int dy = to.getY() - from.getY();
+            cost += dy > 0 ? dy * ASCEND_STEP_COST : -dy * DESCEND_STEP_COST;
+            cost += traversal(level, entity, clearance, to).extraCost();
+        }
+        return cost;
+    }
+
+    private static boolean reverseCorridorValid(Level level, LivingEntity entity,
+                                                Clearance clearance, List<BlockPos> points) {
+        for (int i = points.size() - 1; i > 0; i--) {
+            BlockPos from = points.get(i);
+            BlockPos to = points.get(i - 1);
+            int dy = to.getY() - from.getY();
+            if (dy > 1 || dy < -3) return false;
+            if (!walkable(level, entity, clearance, to)) return false;
+
+            int dx = to.getX() - from.getX();
+            int dz = to.getZ() - from.getZ();
+            if (Math.abs(dx) > 1 || Math.abs(dz) > 1) return false;
+            if (dx != 0 && dz != 0) {
+                BlockPos sideX = new BlockPos(to.getX(), to.getY(), from.getZ());
+                BlockPos sideZ = new BlockPos(from.getX(), to.getY(), to.getZ());
+                if (!walkable(level, entity, clearance, sideX)
+                        || !walkable(level, entity, clearance, sideZ)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 高层只负责组合已验证通道段，首尾仍用当前低层 A* 生成真实逐格连接。
+     * 任一段失败、路线短于收益阈值或预算耗尽都返回 null，由调用方回退全图 A*。
+     */
+    @Nullable
+    private static Result findCorridorPath(Level level, LivingEntity entity, CacheKey cacheKey,
+                                           Vec3 goal, double goalRadius, double extraHeight) {
+        GraphKey key = graphKey(cacheKey);
+        if (key == null) return null;
+        CorridorGraph graph = CORRIDOR_GRAPHS.get(key);
+        if (graph == null || graph.nodes.isEmpty()) return null;
+        graph.lastUsedTick = level.getGameTime();
+
+        BlockPos start = entity.blockPosition();
+        CorridorQueryKey queryKey = new CorridorQueryKey(start.asLong(),
+                BlockPos.containing(goal).asLong(), Double.doubleToLongBits(goalRadius));
+        long now = level.getGameTime();
+        Long missedUntil = graph.misses.get(queryKey);
+        if (missedUntil != null && now < missedUntil) return null;
+        if (missedUntil != null) graph.misses.remove(queryKey);
+
+        List<CorridorCandidate> starts = nearbyCorridorNodes(graph, start);
+        List<CorridorCandidate> goals = nearbyCorridorNodes(graph, BlockPos.containing(goal));
+        if (starts.isEmpty() || goals.isEmpty()) return null;
+
+        refreshBudgetWindow(level);
+        long available = NANOS_PER_TICK - nanosUsed;
+        if (available <= 0L) return null;
+
+        long started = System.nanoTime();
+        long deadline = started + Math.min(CORRIDOR_QUERY_BUDGET_NANOS, available);
+        Map<Long, Traversal> previousWalkCache = activeWalkCache;
+        activeWalkCache = new HashMap<>();
+        Result found = null;
+        try {
+            Clearance clearance = clearanceOf(entity, extraHeight);
+            List<CorridorPrefix> prefixes = new ArrayList<>(starts.size());
+            for (CorridorCandidate candidate : starts) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0L) break;
+                Result connector = planCorridorConnector(level, entity, clearance,
+                        start, candidate.node().pos, 0.35, remaining);
+                if (connector == null || !connector.reachedGoal()) continue;
+                prefixes.add(new CorridorPrefix(candidate.node(), connector,
+                        corridorCost(level, entity, clearance, connector.points())));
+            }
+            if (prefixes.isEmpty()) return null;
+
+            found = searchCorridorGraph(level, entity, clearance, graph,
+                    goal, goalRadius, prefixes, goals, deadline);
+            if (found != null) {
+                graph.misses.remove(queryKey);
+                logCorridorQuery(graph, prefixes, found);
+            }
+            return found;
+        } finally {
+            activeWalkCache = previousWalkCache;
+            nanosUsed += System.nanoTime() - started;
+            if (found == null && System.nanoTime() <= deadline) {
+                graph.misses.put(queryKey, now + CORRIDOR_MISS_TICKS);
+                if (graph.misses.size() > CORRIDOR_MAX_MISSES) graph.misses.clear();
+            }
+        }
+    }
+
+    private static List<CorridorCandidate> nearbyCorridorNodes(CorridorGraph graph, BlockPos origin) {
+        List<CorridorCandidate> candidates = new ArrayList<>();
+        int baseX = origin.getX();
+        int baseY = origin.getY();
+        int baseZ = origin.getZ();
+        for (int dx = -CORRIDOR_NEAR_RADIUS; dx <= CORRIDOR_NEAR_RADIUS; dx++) {
+            for (int dz = -CORRIDOR_NEAR_RADIUS; dz <= CORRIDOR_NEAR_RADIUS; dz++) {
+                for (int dy = -CORRIDOR_NEAR_DY; dy <= CORRIDOR_NEAR_DY; dy++) {
+                    CorridorNode node = graph.nodes.get(
+                            new BlockPos(baseX + dx, baseY + dy, baseZ + dz));
+                    if (node == null) continue;
+                    candidates.add(new CorridorCandidate(node, node.pos.distSqr(origin)));
+                }
+            }
+        }
+        candidates.sort(Comparator.comparingDouble(CorridorCandidate::distanceSq));
+        return candidates.size() <= CORRIDOR_MAX_CONNECTORS
+                ? candidates : new ArrayList<>(
+                        candidates.subList(0, CORRIDOR_MAX_CONNECTORS));
+    }
+
+    @Nullable
+    private static Result planCorridorConnector(Level level, LivingEntity entity,
+                                                Clearance clearance, BlockPos start,
+                                                BlockPos target, double goalRadius,
+                                                long remainingNanos) {
+        double distance = Math.sqrt(start.distSqr(target));
+        double radius = Math.min(32.0, Math.max(8.0, distance + 8.0));
+        long budget = Math.min(CORRIDOR_CONNECTOR_BUDGET_NANOS, remainingNanos);
+        if (budget <= 0L) return null;
+        return planInternalFrom(level, entity, clearance, start, center(target),
+                goalRadius, radius, CORRIDOR_CONNECTOR_NODES, null, false, budget);
+    }
+
+    @Nullable
+    private static Result searchCorridorGraph(Level level, LivingEntity entity,
+                                              Clearance clearance, CorridorGraph graph,
+                                              Vec3 goal,
+                                              double goalRadius,
+                                              List<CorridorPrefix> prefixes,
+                                              List<CorridorCandidate> goalCandidates,
+                                              long deadline) {
+        Map<BlockPos, CorridorNode> goals = new HashMap<>();
+        for (CorridorCandidate candidate : goalCandidates) {
+            goals.put(candidate.node().pos, candidate.node());
+        }
+
+        Map<BlockPos, CorridorSearchNode> best = new HashMap<>();
+        PriorityQueue<CorridorSearchNode> open = new PriorityQueue<>(
+                Comparator.comparingDouble((CorridorSearchNode node) -> node.f)
+                        .thenComparingDouble(node -> node.h));
+        for (CorridorPrefix prefix : prefixes) {
+            BlockPos pos = prefix.node().pos;
+            CorridorSearchNode existing = best.get(pos);
+            double g = prefix.cost();
+            if (existing != null && g >= existing.g - 1.0E-6) continue;
+            CorridorSearchNode seed = new CorridorSearchNode(
+                    prefix.node(), g, heuristic(pos, goal), null, null);
+            best.put(pos, seed);
+            open.add(seed);
+        }
+
+        int visited = 0;
+        while (!open.isEmpty() && visited < CORRIDOR_SEARCH_NODES) {
+            if (System.nanoTime() > deadline) return null;
+            CorridorSearchNode current = open.poll();
+            CorridorSearchNode known = best.get(current.node.pos);
+            if (known == null || current != known || known.closed) continue;
+            known.closed = true;
+            visited++;
+
+            if (goals.containsKey(current.node.pos)) {
+                Result suffix = planCorridorConnector(level, entity, clearance,
+                        current.node.pos, BlockPos.containing(goal), goalRadius,
+                        Math.max(0L, deadline - System.nanoTime()));
+                if (suffix != null && suffix.reachedGoal()) {
+                    CorridorPrefix source = findCorridorPrefix(prefixes, current);
+                    if (source != null) {
+                        Result combined = combineCorridorPath(source, current, suffix);
+                        if (combined != null) {
+                            return new Result(combined.points(), true, Outcome.REACHED,
+                                    combined.visitedNodes() + visited);
+                        }
+                    }
+                }
+            }
+
+            for (CorridorEdge edge : current.node.edges.values()) {
+                CorridorNode destination = graph.nodes.get(edge.target());
+                if (destination == null) continue;
+
+                double g = current.g + edge.cost();
+                CorridorSearchNode knownNext = best.get(destination.pos);
+                if (knownNext != null
+                        && (knownNext.closed || g >= knownNext.g - 1.0E-6)) continue;
+                CorridorSearchNode node = new CorridorSearchNode(
+                        destination, g, heuristic(destination.pos, goal), current, edge);
+                best.put(destination.pos, node);
+                open.add(node);
+            }
+        }
+        return null;
+    }
+
+    @Nullable
+    private static CorridorPrefix findCorridorPrefix(List<CorridorPrefix> prefixes,
+                                                     CorridorSearchNode state) {
+        CorridorSearchNode root = state;
+        while (root.parent != null) root = root.parent;
+        for (CorridorPrefix prefix : prefixes) {
+            if (prefix.node() == root.node) return prefix;
+        }
+        return null;
+    }
+
+    @Nullable
+    private static Result combineCorridorPath(CorridorPrefix prefix,
+                                              CorridorSearchNode target,
+                                              Result suffix) {
+        List<CorridorEdge> edges = new ArrayList<>();
+        for (CorridorSearchNode node = target; node.parent != null; node = node.parent) {
+            if (node.edgeFromParent == null) return null;
+            edges.add(node.edgeFromParent);
+        }
+        Collections.reverse(edges);
+
+        List<BlockPos> points = new ArrayList<>(prefix.path().points());
+        for (CorridorEdge edge : edges) {
+            if (!appendCorridorPoints(points, edge.points())) return null;
+        }
+        if (!appendCorridorPoints(points, suffix.points())) return null;
+        if (points.size() < 2) return null;
+        return new Result(points, true, Outcome.REACHED,
+                prefix.path().visitedNodes() + suffix.visitedNodes());
+    }
+
+    private static boolean appendCorridorPoints(List<BlockPos> target, List<BlockPos> next) {
+        if (next.isEmpty()) return false;
+        BlockPos first = next.get(0);
+        if (!target.isEmpty() && !target.get(target.size() - 1).equals(first)) return false;
+        int startIndex = target.isEmpty() || next.size() == 1 ? 0 : 1;
+        for (int i = startIndex; i < next.size(); i++) target.add(next.get(i));
+        return true;
+    }
+
+    private static void logCorridorQuery(CorridorGraph graph, List<CorridorPrefix> prefixes,
+                                         Result result) {
+        if (!GeneralConfig.debugMovementLog) return;
+        Monster_conquest.LOGGER.info(
+                "[ROUTE-GRAPH] event=hit nodes={} edges={} starts={} points={} visited={}",
+                graph.nodes.size(), corridorEdgeCount(graph), prefixes.size(),
+                result.points().size(), result.visitedNodes());
     }
 
     private static void prunePathCache(long now) {
@@ -755,8 +1278,17 @@ public final class RoutePlanner {
                                        double extraHeight, @Nullable List<BlockPos> favored,
                                        boolean smooth, long timeBudgetNanos) {
         Clearance clearance = clearanceOf(entity, extraHeight);
+        return planInternalFrom(level, entity, clearance, entity.blockPosition(),
+                goal, goalRadius, maxRadius, maxNodes, favored, smooth, timeBudgetNanos);
+    }
 
-        BlockPos start = entity.blockPosition();
+    @Nullable
+    private static Result planInternalFrom(Level level, LivingEntity entity, Clearance clearance,
+                                           BlockPos requestedStart, Vec3 goal,
+                                           double goalRadius, double maxRadius, int maxNodes,
+                                           @Nullable List<BlockPos> favored, boolean smooth,
+                                           long timeBudgetNanos) {
+        BlockPos start = requestedStart;
         if (!walkable(level, entity, clearance, start)) {
             start = findStartNear(level, entity, clearance, start);
             if (start == null) return null;
@@ -769,11 +1301,11 @@ public final class RoutePlanner {
         double maxRadiusSq = maxRadius * maxRadius;
 
         Map<BlockPos, Node> nodes = new HashMap<>();
-        Set<BlockPos> closed = new HashSet<>();
         PriorityQueue<Node> open = new PriorityQueue<>(
-                Comparator.comparingDouble(node -> node.f(1.0)));
+                Comparator.comparingDouble((Node node) -> node.f)
+                        .thenComparingDouble(node -> node.h));
 
-        Node startNode = new Node(start, 0.0, center(start).distanceTo(goal), null);
+        Node startNode = new Node(start, 0.0, heuristic(start, goal), null);
         nodes.put(start, startNode);
         open.add(startNode);
 
@@ -795,8 +1327,8 @@ public final class RoutePlanner {
 
             Node current = open.poll();
             Node known = nodes.get(current.pos);
-            if (known == null || current.g > known.g + 1.0E-6) continue;
-            if (!closed.add(current.pos)) continue;
+            if (known == null || current != known || known.closed) continue;
+            known.closed = true;
             visited++;
 
             if (center(current.pos).distanceToSqr(goal) <= goalRadiusSq) {
@@ -820,7 +1352,7 @@ public final class RoutePlanner {
             }
 
             expand(level, entity, clearance, current, goal, start, maxRadiusSq,
-                    favor, nodes, closed, open);
+                    favor, nodes, open);
         }
 
         Node end = reached;
@@ -872,8 +1404,7 @@ public final class RoutePlanner {
     private static void expand(Level level, LivingEntity entity, Clearance clearance,
                                Node current, Vec3 goal, BlockPos start, double maxRadiusSq,
                                Map<BlockPos, Double> favor,
-                               Map<BlockPos, Node> nodes, Set<BlockPos> closed,
-                               PriorityQueue<Node> open) {
+                               Map<BlockPos, Node> nodes, PriorityQueue<Node> open) {
         // 梯子列：梯子不是"可站立面"，原版的水平 / 台阶扩展走不出"沿梯子上下"，
         //   这里显式连上：逐节上下 + 顺着列直接滑到下方第一个落点，上下都要连
         //   （上塔、下塔、借梯子翻墙绕路都靠它）。单位会照着路线上的梯子节点真的爬 /
@@ -883,13 +1414,19 @@ public final class RoutePlanner {
             for (int dy : new int[] { 1, -1 }) {
                 BlockPos next = current.pos.above(dy);
                 if (!ClimbColumns.isClimbCell(level, next)) continue;
-                if (!walkable(level, entity, clearance, next)) continue;
-                relaxNext(next, current, dy > 0 ? 1.0 : 0.9, goal, favor, start, maxRadiusSq, nodes, open);
+                Traversal traversal = traversal(level, entity, clearance, next);
+                if (!traversal.passable()) continue;
+                relaxNext(next, current, (dy > 0 ? 1.0 : 0.9) + traversal.extraCost(),
+                        goal, favor, start, maxRadiusSq, nodes, open);
             }
             BlockPos landing = ClimbColumns.findSlideLanding(
                     level, current.pos, clearanceHeight, SLIDE_LIMIT);
-            if (landing != null && walkable(level, entity, clearance, landing)) {
-                relaxNext(landing, current, 1.2, goal, favor, start, maxRadiusSq, nodes, open);
+            if (landing != null) {
+                Traversal traversal = traversal(level, entity, clearance, landing);
+                if (traversal.passable()) {
+                    relaxNext(landing, current, 1.2 + traversal.extraCost(),
+                            goal, favor, start, maxRadiusSq, nodes, open);
+                }
             }
         }
 
@@ -899,8 +1436,8 @@ public final class RoutePlanner {
             boolean diagonal = dir[0] != 0 && dir[1] != 0;
             for (int dy : STEP_LEVELS) {
                 BlockPos next = new BlockPos(nx, current.pos.getY() + dy, nz);
-                if (!walkable(level, entity, clearance, next)) continue;
-                if (closed.contains(next)) continue;
+                Traversal traversal = traversal(level, entity, clearance, next);
+                if (!traversal.passable()) continue;
 
                 double dx = next.getX() - start.getX();
                 double dz = next.getZ() - start.getZ();
@@ -917,16 +1454,17 @@ public final class RoutePlanner {
                     }
                 }
 
-                double cost = diagonal ? 1.414 : 1.0;
-                cost += dy > 0 ? dy * 0.8 : -dy * 0.25;
-                if (isWater(level, next)) cost += 0.8;
+                double cost = diagonal ? DIAGONAL_STEP_COST : CARDINAL_STEP_COST;
+                cost += dy > 0 ? dy * ASCEND_STEP_COST : -dy * DESCEND_STEP_COST;
+                cost += traversal.extraCost();
                 Double fav = favor.get(next);
                 if (fav != null) cost *= fav;
 
                 double g = current.g + cost;
                 Node known = nodes.get(next);
-                if (known != null && g >= known.g - 1.0E-6) continue;
-                double h = center(next).distanceTo(goal);
+                if (known != null
+                        && (known.closed || g >= known.g - 1.0E-6)) continue;
+                double h = heuristic(next, goal);
                 Node node = new Node(next, g, h, current);
                 nodes.put(next, node);
                 open.add(node);
@@ -948,7 +1486,7 @@ public final class RoutePlanner {
         double g = current.g + cost;
         Node known = nodes.get(next);
         if (known != null && g >= known.g - 1.0E-6) return;
-        Node node = new Node(next, g, center(next).distanceTo(goal), current);
+        Node node = new Node(next, g, heuristic(next, goal), current);
         nodes.put(next, node);
         open.add(node);
     }
@@ -994,9 +1532,10 @@ public final class RoutePlanner {
     }
 
     /**
-     * 采样点附近取一个可行站立格：只允许相对采样线上下 1 格以内。
+     * 采样点附近取一个无额外代价的可行站立格：只允许相对采样线上下 1 格以内。
      *   向下探 3 格时会把"顺着地板下方穿过去"的墙当成可走，
      *   平滑后的直线路径会穿墙，单位一路推墙（一格宽迷宫尤其明显）。
+     *   平滑只负责去掉多余拐角，不能借直线覆盖 A* 已经避开的水域、危险边缘等高代价地形。
      */
     @Nullable
     private static BlockPos pickStand(Level level, LivingEntity entity, Clearance clearance,
@@ -1005,7 +1544,8 @@ public final class RoutePlanner {
             BlockPos candidate = pos.offset(0, dy, 0);
             if (candidate.getY() - previousY > 1) continue;
             if (previousY - candidate.getY() > 1) continue;
-            if (walkable(level, entity, clearance, candidate)) return candidate;
+            Traversal traversal = traversal(level, entity, clearance, candidate);
+            if (traversal.passable() && traversal.extraCost() <= 0.0) return candidate;
         }
         return null;
     }
@@ -1015,20 +1555,36 @@ public final class RoutePlanner {
      * 按净空无方块碰撞，不踩危险方块；木门与栅栏门可通行。
      */
     private static boolean walkable(Level level, LivingEntity entity, Clearance clearance, BlockPos pos) {
-        Map<Long, Boolean> walkCache = activeWalkCache;
+        return traversal(level, entity, clearance, pos).passable();
+    }
+
+    private static Traversal traversal(Level level, LivingEntity entity, Clearance clearance,
+                                       BlockPos pos) {
+        Map<Long, Traversal> walkCache = activeWalkCache;
         if (walkCache != null) {
             Long key = pos.asLong();
-            Boolean cached = walkCache.get(key);
+            Traversal cached = walkCache.get(key);
             if (cached != null) return cached;
-            boolean result = walkableUncached(level, entity, clearance, pos);
+            Traversal result = traversalUncached(level, entity, clearance, pos);
             walkCache.put(key, result);
             return result;
         }
-        return walkableUncached(level, entity, clearance, pos);
+        return traversalUncached(level, entity, clearance, pos);
     }
 
     private static boolean walkableUncached(Level level, LivingEntity entity,
                                             Clearance clearance, BlockPos pos) {
+        return walkableIgnoringCost(level, entity, clearance, pos);
+    }
+
+    private static Traversal traversalUncached(Level level, LivingEntity entity,
+                                               Clearance clearance, BlockPos pos) {
+        if (!walkableIgnoringCost(level, entity, clearance, pos)) return Traversal.BLOCKED;
+        return Traversal.passable(pathfindingExtraCost(entity, pos));
+    }
+
+    private static boolean walkableIgnoringCost(Level level, LivingEntity entity,
+                                                Clearance clearance, BlockPos pos) {
         BlockState feet = level.getBlockState(pos);
         BlockState head = level.getBlockState(pos.above());
         if (AiNavUtil.isDangerousBlock(feet) || AiNavUtil.isDangerousBlock(head)) return false;
@@ -1101,6 +1657,18 @@ public final class RoutePlanner {
 
         if (climbable || usableSupport(level, belowPos, belowState) || stand > 0.01 || water) return true;
         return door;
+    }
+
+    /**
+     * 读取实体运行时的 PathType 惩罚。负值表示原版语义上不可走，但自定义闭包中
+     * 可手动打开的门、梯子和特殊落点仍可由上面的碰撞判定放行，所以只叠加正惩罚。
+     */
+    private static double pathfindingExtraCost(LivingEntity entity, BlockPos pos) {
+        if (!(entity instanceof Mob mob)) return 0.0;
+
+        PathType type = WalkNodeEvaluator.getPathTypeStatic(mob, pos);
+        float malus = mob.getPathfindingMalus(type);
+        return malus > 0.0F ? malus : 0.0;
     }
 
     /** 门 / 栅栏门 / 活板门"打开后"的状态；不是可开方块返回 null。 */
@@ -1213,19 +1781,42 @@ public final class RoutePlanner {
         return new Vec3(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5);
     }
 
+    /**
+     * 与 8 方向边成本使用同一单位的启发式。
+     *
+     * <p>水平部分采用 octile 距离；垂直成本与 {@link #expand} 完全共用常量。
+     * 单个边可以同时包含水平与垂直移动，因此两者相加与开放地形上的实际边成本
+     * 比例一致，比三维欧氏距离更接近真实剩余成本。障碍、危险地形、梯子和旧路线
+     * 偏好只会继续改变实际成本，由搜索本体处理。</p>
+     */
+    private static double heuristic(BlockPos pos, Vec3 goal) {
+        double dx = Math.abs(pos.getX() + 0.5 - goal.x);
+        double dz = Math.abs(pos.getZ() + 0.5 - goal.z);
+        double diagonalSteps = Math.min(dx, dz);
+        double horizontal = Math.max(dx, dz)
+                + (DIAGONAL_STEP_COST - CARDINAL_STEP_COST) * diagonalSteps;
+
+        double verticalDelta = goal.y - pos.getY();
+        double vertical = verticalDelta >= 0.0
+                ? verticalDelta * ASCEND_STEP_COST
+                : -verticalDelta * DESCEND_STEP_COST;
+        return horizontal + vertical;
+    }
+
     private static final class Node {
         final BlockPos pos;
         final double g;
         final double h;
+        final double f;
+        boolean closed;
         @Nullable final Node parent;
 
         Node(BlockPos pos, double g, double h, @Nullable Node parent) {
             this.pos = pos;
             this.g = g;
             this.h = h;
+            this.f = g + h * SEARCH_HEURISTIC_WEIGHT;
             this.parent = parent;
         }
-
-        double f(double weight) { return g + h * weight; }
     }
 }

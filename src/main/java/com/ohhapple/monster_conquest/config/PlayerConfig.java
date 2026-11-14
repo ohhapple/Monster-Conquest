@@ -25,6 +25,11 @@ public class PlayerConfig {
             .comment("  非战斗时用 playerSoldierTeleportDistance。")
             .defineInRange("playerSoldierCombatTeleportDistance", 64.0, 8.0, 256.0);
 
+    public static final ModConfigSpec.DoubleValue PLAYER_SOLDIER_WATER_FOLLOW_RANGE_DEF = BUILDER
+            .comment("玩家在无陆地水面上方飞行时，允许水面跟随传送的最大垂直检测距离（格）。")
+            .comment("  只有从玩家脚下向下前先遇到水面、而不是实心地面时才生效。")
+            .defineInRange("playerSoldierWaterFollowRange", 16.0, 2.0, 64.0);
+
     // ===================== 玩家小分队 =====================
 
     public static final ModConfigSpec.IntValue MAX_PLAYER_SQUADS_DEF = BUILDER
@@ -50,6 +55,7 @@ public class PlayerConfig {
     // ===================== 缓存值 =====================
     public static double playerSoldierTeleportDistance;
     public static double playerSoldierCombatTeleportDistance;
+    public static double playerSoldierWaterFollowRange;
     public static int maxPlayerSquads;
     public static boolean autoHostilityBetweenPlayerArmies;
     public static double enlistNearbyRadius;
@@ -61,6 +67,7 @@ public class PlayerConfig {
 
         playerSoldierTeleportDistance = PLAYER_SOLDIER_TELEPORT_DISTANCE_DEF.get();
         playerSoldierCombatTeleportDistance = PLAYER_SOLDIER_COMBAT_TELEPORT_DISTANCE_DEF.get();
+        playerSoldierWaterFollowRange = PLAYER_SOLDIER_WATER_FOLLOW_RANGE_DEF.get();
         maxPlayerSquads = MAX_PLAYER_SQUADS_DEF.get();
         autoHostilityBetweenPlayerArmies = AUTO_HOSTILITY_BETWEEN_PLAYER_ARMIES_DEF.get();
         enlistNearbyRadius = ENLIST_NEARBY_RADIUS_DEF.get();

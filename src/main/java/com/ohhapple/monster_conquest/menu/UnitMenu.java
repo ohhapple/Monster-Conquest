@@ -1,9 +1,11 @@
 package com.ohhapple.monster_conquest.menu;
 
+import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.arena.game.ArenaDimensions;
 import com.ohhapple.monster_conquest.entity.AbstractArmyCommander;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.ManagedUnit;
-import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.item.RetrievalToolItem;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 import com.ohhapple.monster_conquest.player.PlayerCommandState;
 import com.ohhapple.monster_conquest.util.UnitGearRules;
@@ -58,9 +60,12 @@ public class UnitMenu extends AbstractContainerMenu {
     public static final int DATA_EFFECTS = 7;
     public static final int DATA_EFFECT_DURATION = DATA_EFFECTS + EFFECT_SHOWN;
     public static final int DATA_EFFECT_TOTAL = DATA_EFFECT_DURATION + EFFECT_SHOWN;
-    public static final int DATA_COUNT = DATA_EFFECT_TOTAL + 1;
+    /** 1 = 当前玩家可以使用界面里的“收纳该单位”按钮。 */
+    public static final int DATA_CAN_RETRIEVE = DATA_EFFECT_TOTAL + 1;
+    public static final int DATA_COUNT = DATA_CAN_RETRIEVE + 1;
 
     @Nullable private final ManagedUnit unit;
+    @Nullable private final ServerPlayer serverPlayer;
     private final int unitId;
     private final int[] sync = new int[DATA_COUNT];
 
@@ -68,7 +73,11 @@ public class UnitMenu extends AbstractContainerMenu {
     public UnitMenu(int id, Inventory playerInv, ManagedUnit unit) {
         super(ModMenus.UNIT.get(), id);
         this.unit = unit;
+        this.serverPlayer = playerInv.player instanceof ServerPlayer player ? player : null;
         this.unitId = unit.asEntity().getId();
+        if (serverPlayer != null) {
+            sync[DATA_CAN_RETRIEVE] = canRetrieveNow() ? 1 : 0;
+        }
         addSlots(playerInv, new UnitEquipmentContainer(unit));
         addSyncSlots();
     }
@@ -76,6 +85,7 @@ public class UnitMenu extends AbstractContainerMenu {
     /** 客户端构造：只拿到实体 id，实体由客户端世界查回来（可能暂时找不到，界面按只读处理）。 */
     public UnitMenu(int id, Inventory playerInv, int unitId) {
         super(ModMenus.UNIT.get(), id);
+        this.serverPlayer = null;
         this.unitId = unitId;
         Entity entity = playerInv.player.level().getEntity(unitId);
         this.unit = entity instanceof ManagedUnit managed ? managed : null;
@@ -92,6 +102,9 @@ public class UnitMenu extends AbstractContainerMenu {
 
     /** 单位是不是玩家阵营士兵（策略按钮只对它开放）。 */
     public boolean canConfigureStrategy() { return sync[DATA_STRATEGY] == 1; }
+
+    /** 服务端同步的“收纳该单位”按钮权限。 */
+    public boolean canRetrieveUnit() { return sync[DATA_CAN_RETRIEVE] == 1; }
 
     /** 读同步过来的策略 / 小队号。 */
     public int getSync(int index) { return sync[index]; }
@@ -184,6 +197,7 @@ public class UnitMenu extends AbstractContainerMenu {
     @Override
     public void broadcastChanges() {
         sync[DATA_STRATEGY] = 0;
+        sync[DATA_CAN_RETRIEVE] = canRetrieveNow() ? 1 : 0;
         if (unit instanceof AbstractArmySoldier soldier
                 && soldier.level() instanceof ServerLevel) {
             sync[DATA_SQUAD] = soldier.getSquadId();
@@ -205,6 +219,14 @@ public class UnitMenu extends AbstractContainerMenu {
             syncEffects();
         }
         super.broadcastChanges();
+    }
+
+    private boolean canRetrieveNow() {
+        return serverPlayer != null
+                && unit != null
+                && unit.asEntity().isAlive()
+                && !ArenaDimensions.isArena(serverPlayer)
+                && RetrievalToolItem.canRetrieve(serverPlayer, unit.asEntity());
     }
 
     /** 服务端：把单位的状态效果写进数据槽（客户端实体自己看不到别的生物的效果）。 */

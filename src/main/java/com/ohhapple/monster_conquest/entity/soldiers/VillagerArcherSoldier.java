@@ -2,7 +2,6 @@ package com.ohhapple.monster_conquest.entity.soldiers;
 
 import com.ohhapple.monster_conquest.army.EquipmentTier;
 import com.ohhapple.monster_conquest.army.SoldierType;
-import com.ohhapple.monster_conquest.config.CombatConfig;
 import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.projectile.ArmyArrow;
 import net.minecraft.world.entity.EntityType;
@@ -13,9 +12,14 @@ import net.minecraft.world.level.Level;
  * 村民弓箭手士兵：弓 + 抛物线弹道，逻辑与其他弓箭手一致；
  * 箭矢命中造成细雪冻结（累积冻结 tick，≥140 完全冻结：发抖 / 结霜 / 冻结伤害）。
  * 冻结 tick 每 tick 衰减 2，所以注入值取 2 倍；
- * 实际冻结时长 = arrowFreezeBaseSeconds + 装备等级 × arrowFreezeSecondsPerTier（秒）。
+ * 实际冻结时长 = 基础秒数 + 装备等级 × 每级秒数。
  */
 public class VillagerArcherSoldier extends AbstractArmySoldier {
+
+    /** 村民弓箭手专属命中效果，不参与其他弓兵的通用战斗配置。 */
+    private static final int FREEZE_BASE_SECONDS = 4;
+    private static final int FREEZE_SECONDS_PER_TIER = 3;
+    private static final int FREEZE_TICKS_PER_SECOND = 20 * 2;
 
     public VillagerArcherSoldier(EntityType<? extends PathfinderMob> type, Level level) { super(type, level); }
 
@@ -71,9 +75,8 @@ public class VillagerArcherSoldier extends AbstractArmySoldier {
     @Override
     protected void applyArrowEffects(ArmyArrow arrow) {
         int tierIdx = getTier().ordinal();
-        int seconds = CombatConfig.arrowFreezeBaseSeconds
-                + tierIdx * CombatConfig.arrowFreezeSecondsPerTier;
+        int seconds = FREEZE_BASE_SECONDS + tierIdx * FREEZE_SECONDS_PER_TIER;
         // 细雪冻结 tick 每 tick 衰减 2 点 → 注入 2 倍，实际冻结时长 = seconds 秒。
-        arrow.setFreezeTicks(seconds * 20 * 2);
+        arrow.setFreezeTicks(seconds * FREEZE_TICKS_PER_SECOND);
     }
 }

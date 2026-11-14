@@ -25,7 +25,6 @@ import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
 import com.ohhapple.monster_conquest.army.relation.FactionAlly;
 import com.ohhapple.monster_conquest.army.relation.FactionHostility;
 import com.ohhapple.monster_conquest.army.relation.NativePeace;
-import com.ohhapple.monster_conquest.army.threat.ArmyThreatUtil;
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
 import com.ohhapple.monster_conquest.config.CombatConfig;
 import com.ohhapple.monster_conquest.config.GeneralConfig;
@@ -47,6 +46,7 @@ import com.ohhapple.monster_conquest.util.UnitGearRules;
 import com.ohhapple.monster_conquest.world.ArmyChunkLoader;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.HolderLookup;
@@ -1663,6 +1663,7 @@ public abstract class AbstractArmySoldier extends PathfinderMob
                 .add(Attributes.MAX_HEALTH, 20.0D)
                 .add(Attributes.ATTACK_DAMAGE, 3.0D)
                 .add(Attributes.MOVEMENT_SPEED, 0.27D)
+                .add(Attributes.WATER_MOVEMENT_EFFICIENCY, 1.0D)
                 .add(Attributes.FOLLOW_RANGE, 128.0D)
                 .add(Attributes.ARMOR, 2.0D)
                 .add(GuardAttributes.SHIELD_GUARD_CHANCE,
@@ -2843,6 +2844,10 @@ public abstract class AbstractArmySoldier extends PathfinderMob
     public boolean teleportNearSafely(LivingEntity around, double minDistance) {
         Vec3 safe = findSafeSpotNear(
                 around.getX(), around.getY(), around.getZ(), minDistance);
+        if (safe == null && isWaterFollowContext(around)) {
+            safe = findWaterSurfaceSpotNear(
+                    around.getX(), around.getY(), around.getZ(), minDistance);
+        }
         if (safe == null) return false;
         teleportWithMount(safe.x, safe.y, safe.z, false);
         return true;
@@ -5555,6 +5560,25 @@ public abstract class AbstractArmySoldier extends PathfinderMob
         return local != null ? local : position();
     }
 
+    /** 跟随对象本人或所乘船只在水中时，才允许把跟随传送落在水面。 */
+    private boolean isWaterFollowContext(LivingEntity around) {
+        if (around.isInWater()) return true;
+        Entity vehicle = around.getVehicle();
+        if (vehicle != null && vehicle.isInWater()) return true;
+
+        // 玩家可以飞到海面上方。向下扫描时若先遇到水面，说明附近是开阔水域；
+        // 若先遇到实心地面，则该位置属于陆地/桥梁上下文，不启用海上跟随传送。
+        int scan = Mth.ceil(PlayerConfig.playerSoldierWaterFollowRange);
+        BlockPos.MutableBlockPos cursor = around.blockPosition().below().mutable();
+        for (int i = 0; i < scan; i++) {
+            BlockState state = level().getBlockState(cursor);
+            if (state.getFluidState().is(FluidTags.WATER)) return true;
+            if (state.isSolid() || AiNavUtil.isDangerousBlock(state)) return false;
+            cursor.move(Direction.DOWN);
+        }
+        return false;
+    }
+
     /**
      * 在 (cx,cy,cz) 附近找安全落脚点。
      *   minDistance > 0 时：只接受水平距离"严格大于 minDistance"的位置
@@ -5592,6 +5616,62 @@ public abstract class AbstractArmySoldier extends PathfinderMob
             }
         }
         return null;
+    }
+
+    /**
+     * 跟随传送的水面兜底点：只接受真正的最高水面，要求整个实体（骑乘时连同坐骑）
+     * 不与方块碰撞，并继续要求从当前位置直线可见，避免隔墙传到另一片水域。
+     */
+    @Nullable
+    private Vec3 findWaterSurfaceSpotNear(double cx, double cy, double cz, double minDistance) {
+        int baseX = Mth.floor(cx);
+        int baseY = Mth.floor(cy);
+        int baseZ = Mth.floor(cz);
+        int minY = baseY - Math.max(2, Mth.ceil(PlayerConfig.playerSoldierWaterFollowRange));
+        double minSq = minDistance * minDistance;
+
+        for (int radius = 1; radius <= 12; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (Math.abs(dx) != radius && Math.abs(dz) != radius) continue;
+                    if ((double) dx * dx + (double) dz * dz <= minSq) continue;
+                    int x = baseX + dx;
+                    int z = baseZ + dz;
+                    for (int y = baseY + 3; y >= minY; y--) {
+                        BlockPos pos = new BlockPos(x, y, z);
+                        if (!isSafeWaterSurfaceSpot(pos)) continue;
+                        Vec3 candidate = new Vec3(x + 0.5, y, z + 0.5);
+                        if (!AiNavUtil.hasClearLine(level(),
+                                position().add(0, getBbHeight() * 0.5, 0), candidate)) {
+                            continue;
+                        }
+                        return candidate;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean isSafeWaterSurfaceSpot(BlockPos pos) {
+        BlockState feet = level().getBlockState(pos);
+        if (!feet.getFluidState().is(FluidTags.WATER)) return false;
+        if (level().getFluidState(pos.above()).is(FluidTags.WATER)) return false;
+        if (AiNavUtil.isDangerousBlock(feet)) return false;
+        if (AiNavUtil.isDangerousBlock(level().getBlockState(pos.below()))) return false;
+
+        for (int i = 1; i <= 2; i++) {
+            BlockState above = level().getBlockState(pos.above(i));
+            if (above.isSolid() || AiNavUtil.isDangerousBlock(above)) return false;
+        }
+
+        if (getVehicle() != null) {
+            return AiNavUtil.mountStandFits(level(), this,
+                    pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5);
+        }
+        AABB candidateBox = getType().getDimensions().makeBoundingBox(
+                pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5);
+        return level().noBlockCollision(this, candidateBox);
     }
 
     private boolean isSafeStandingSpot(BlockPos pos) {

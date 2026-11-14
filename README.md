@@ -114,6 +114,8 @@ maxPlayers = 128
 - 清楚注明：作者 ohhapple · https://github.com/ohhapple · 出处 Monster Conquest；
 - 显著标注为“再分发版 / 非官方分发版”，无论是否经过修改；
 - 显著附带 Monster Conquest 官方下载链接。
+- GitHub项目仓库: https://github.com/ohhapple/Monster-Conquest
+- CurseForge: https://www.curseforge.com/minecraft/mc-mods/monster-conquest
 
 修改版还必须显著标注为“修改版 / 非官方版”，不得暗示原作者背书。分发修改版时，还必须免费公开提供完整源代码、在显著位置完整保留本声明原文、附带官方下载链接，并标注修改者信息及修改日期。修改版和衍生作品无论修改多少次，都必须继续遵守本声明，且不得改用允许商业使用的条款。
 

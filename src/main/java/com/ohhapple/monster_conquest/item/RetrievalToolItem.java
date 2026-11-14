@@ -7,6 +7,7 @@ import com.ohhapple.monster_conquest.entity.AbstractArmySoldier;
 import com.ohhapple.monster_conquest.entity.commanders.patrol.AbstractPatrolCaptain;
 import com.ohhapple.monster_conquest.entity.WarHorseEntity;
 import com.ohhapple.monster_conquest.Monster_conquest;
+import com.ohhapple.monster_conquest.army.PlayerFactionRegistry;
 import com.ohhapple.monster_conquest.player.PlayerArmyManager;
 
 import net.minecraft.ChatFormatting;
@@ -486,13 +487,12 @@ public class RetrievalToolItem extends Item {
         return null;
     }
 
-    /** 非创造模式只限制玩家阵营；NPC 阵营单位允许直接收纳。 */
+    /** 创造模式不受阵营限制；其他玩家只能收纳自己精确的小玩家阵营。 */
     public static boolean canRetrieve(Player player, Entity target) {
         if (player.isCreative()) return true;
         ResourceLocation faction = resolveFaction(target);
-        if (faction == null) return false;
-        if (!FactionIds.isPlayer(faction)) return true;
-        return player.getUUID().equals(FactionIds.parsePlayer(faction));
+        return faction != null
+                && faction.equals(PlayerFactionRegistry.factionIdOf(player));
     }
 
     // ===================== 蛋制作 =====================

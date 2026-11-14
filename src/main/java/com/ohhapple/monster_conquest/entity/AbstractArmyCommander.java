@@ -19,7 +19,6 @@ import com.ohhapple.monster_conquest.army.relation.ArmyRelations;
 import com.ohhapple.monster_conquest.army.relation.FactionAlly;
 import com.ohhapple.monster_conquest.army.relation.FactionHostility;
 import com.ohhapple.monster_conquest.army.relation.NativePeace;
-import com.ohhapple.monster_conquest.army.threat.ArmyThreatUtil;
 import com.ohhapple.monster_conquest.army.threat.ThreatDispatcher;
 import com.ohhapple.monster_conquest.config.CombatConfig;
 import com.ohhapple.monster_conquest.config.FactionConfig;
@@ -379,6 +378,7 @@ public abstract class AbstractArmyCommander extends PathfinderMob
                 .add(Attributes.MAX_HEALTH, 100.0D)
                 .add(Attributes.ATTACK_DAMAGE, 8.0D)
                 .add(Attributes.MOVEMENT_SPEED, 0.27D)
+                .add(Attributes.WATER_MOVEMENT_EFFICIENCY, 1.0D)
                 .add(Attributes.FOLLOW_RANGE, 128.0D)
                 .add(Attributes.ARMOR, 3.0D)
                 .add(Attributes.KNOCKBACK_RESISTANCE, 0.5D)

@@ -50,6 +50,12 @@ base {
     archivesName = buildArchiveName
 }
 
+// JAR 文件名只用于区分构建目标；加载器和 Minecraft 版本仍以 mods.toml 为准。
+tasks.named('jar', Jar) {
+    archiveFileName.set(
+            "${buildArchiveName}-${mod_loader}-mc${minecraft_version}-${mod_version}.jar")
+}
+
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
 neoForge {

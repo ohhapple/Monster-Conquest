@@ -150,6 +150,7 @@ public class UnitScreen extends AbstractContainerScreen<UnitMenu> {
         boolean strategy = menu.canConfigureStrategy();
         followArmyButton.visible = strategy;
         followArmyButton.active = menu.getSync(UnitMenu.DATA_OVERRIDE) == 1;
+        retrieveButton.active = menu.canRetrieveUnit();
         // 没有策略按钮的单位（首领等）把"收纳"挪到左半边，避免留下大片空白
         retrieveButton.setPosition(leftPos + (strategy ? 100 : 8), topPos + 170);
         renderContainerContent(g, localMouseX, localMouseY, partialTick);

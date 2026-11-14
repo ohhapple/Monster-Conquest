@@ -399,7 +399,7 @@ public class FactionConfig {
             .comment("每个村庄最多同时存在的村庄巡逻队长数量（每名队长出生带 3 名士兵）。")
             .comment("  只有\"队长数 < 本上限 且 村庄士兵总数 + 3 ≤ 本上限 × 3\"时才会补刷新巡逻队；")
             .comment("  即每次补刷都为新队长要带的 3 名士兵预留位置，士兵总数不会超过上限 × 3。")
-            .defineInRange("villageSpawn.villager.maxCaptains", 3, 0, 16);
+            .defineInRange("villageSpawn.villager.maxCaptains", 2, 0, 16);
 
     public static final ModConfigSpec.DoubleValue VILLAGER_VILLAGE_RADIUS_DEF = BUILDER
             .comment("村庄巡逻队的活动半径（格）。")

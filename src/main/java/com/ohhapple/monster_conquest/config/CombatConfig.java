@@ -70,15 +70,6 @@ public class CombatConfig {
             .comment("军团抛射物落地后存活的时间（tick），默认 60 = 3 秒")
             .defineInRange("arrowLingerTicks", 60, 0, 600);
 
-    public static final ModConfigSpec.IntValue ARROW_FREEZE_BASE_SECONDS_DEF = BUILDER
-            .comment("村民弓箭手箭矢造成冻结的基础时长（秒），默认 4 秒。")
-            .defineInRange("arrowFreezeBaseSeconds", 4, 0, 30);
-
-    public static final ModConfigSpec.IntValue ARROW_FREEZE_SECONDS_PER_TIER_DEF = BUILDER
-            .comment("村民弓箭手箭矢冻结时长每提升一级装备等级的加成（秒）。")
-            .comment("  默认 3 秒：T0 = 4 秒，T4 = 4 + 3×4 = 16 秒。")
-            .defineInRange("arrowFreezeSecondsPerTier", 3, 0, 30);
-
     // ===================== 玩家枪械 =====================
 
     public static final ModConfigSpec.BooleanValue GUN_REQUIRE_AMMO_DEF = BUILDER
@@ -144,8 +135,6 @@ public class CombatConfig {
     public static double arrowInaccuracy;
     public static double arrowBaseDamage;
     public static int arrowLingerTicks;
-    public static int arrowFreezeBaseSeconds;
-    public static int arrowFreezeSecondsPerTier;
 
     public static boolean gunRequireAmmo;
     public static boolean gunHeadshot;
@@ -174,8 +163,6 @@ public class CombatConfig {
         arrowInaccuracy = ARROW_INACCURACY_DEF.get();
         arrowBaseDamage = ARROW_BASE_DAMAGE_DEF.get();
         arrowLingerTicks = ARROW_LINGER_TICKS_DEF.get();
-        arrowFreezeBaseSeconds = ARROW_FREEZE_BASE_SECONDS_DEF.get();
-        arrowFreezeSecondsPerTier = ARROW_FREEZE_SECONDS_PER_TIER_DEF.get();
 
         gunRequireAmmo = GUN_REQUIRE_AMMO_DEF.get();
         gunHeadshot = GUN_HEADSHOT_DEF.get();

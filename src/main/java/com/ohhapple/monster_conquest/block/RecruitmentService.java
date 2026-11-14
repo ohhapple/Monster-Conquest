@@ -55,23 +55,23 @@ public final class RecruitmentService {
         if (state == null) return;
         ServerLevel level = player.serverLevel();
 
-        // 军费：绿宝石 + 该等级的金属（每个兵种在配置里单独定价），从背包 + 副手扣。
-        Item emerald = RecruitConfig.EMERALD_CURRENCY;
-        int emeraldCount = RecruitConfig.emeraldCost(entry.id(), paidTier);
-        Item metal = RecruitConfig.metalItemFor(paidTier);
-        int metalCount = RecruitConfig.metalCost(entry.id(), paidTier);
-        if (countItem(player, emerald) < emeraldCount
-                || countItem(player, metal) < metalCount) {
-            Item missing = countItem(player, emerald) < emeraldCount ? emerald : metal;
-            int missingCount = missing == emerald ? emeraldCount : metalCount;
-            player.displayClientMessage(
-                    Component.translatable("msg.monster_conquest.recruit.not_enough",
-                            new ItemStack(missing).getHoverName(), missingCount),
-                    true);
+        // 军费：基础货币按兵种 / 等级定价，T4 再额外消耗指定物品。
+        Item currency = RecruitConfig.currencyItem();
+        int cost = RecruitConfig.recruitCost(entry.id(), paidTier);
+        if (countItem(player, currency) < cost) {
+            notEnough(player, currency, cost);
             return;
         }
-        consumeItem(player, emerald, emeraldCount);
-        consumeItem(player, metal, metalCount);
+        int extraCost = extraCostForTier(paidTier);
+        Item extraCurrency = extraCost > 0 ? RecruitConfig.tier4ExtraItem() : null;
+        if (extraCurrency != null && countItem(player, extraCurrency) < extraCost) {
+            notEnough(player, extraCurrency, extraCost);
+            return;
+        }
+        consumeItem(player, currency, cost);
+        if (extraCurrency != null) {
+            consumeItem(player, extraCurrency, extraCost);
+        }
 
         Direction facing = state.getValue(RecruitmentStationBlock.FACING);
         EquipmentTier tier = EquipmentTier.values()[paidTier];
@@ -90,7 +90,7 @@ public final class RecruitmentService {
 
     /**
      * 处理客户端的一次"升级"请求：
-     *   支付低一档的刷怪蛋 ×1 + 目标档招募价格的一半 → 直接召唤升级后的士兵。
+     *   支付低一档的刷怪蛋 ×1 + 目标档基础价格的一半；升到 T4 时再额外支付固定物品。
      */
     public static void upgrade(ServerPlayer player, BlockPos pos, int soldierIndex, int tierIndex) {
         if (soldierIndex < 0 || soldierIndex >= RecruitableSoldiers.ALL.size()) return;
@@ -103,21 +103,21 @@ public final class RecruitmentService {
         if (entry.fixedTier()) return;
         Item egg = eggItemFor(entry.id(), tierIndex - 1);
         if (egg == null) return;
-        Item emerald = RecruitConfig.EMERALD_CURRENCY;
-        Item metal = RecruitConfig.metalItemFor(tierIndex);
-        int emeraldCount = halfUp(RecruitConfig.emeraldCost(entry.id(), tierIndex));
-        int metalCount = halfUp(RecruitConfig.metalCost(entry.id(), tierIndex));
+        Item currency = RecruitConfig.currencyItem();
+        int currencyCount = halfUp(RecruitConfig.recruitCost(entry.id(), tierIndex));
+        int extraCost = extraCostForTier(tierIndex);
+        Item extraCurrency = extraCost > 0 ? RecruitConfig.tier4ExtraItem() : null;
 
         if (countItem(player, egg) < 1) {
             notEnough(player, egg, 1);
             return;
         }
-        if (countItem(player, emerald) < emeraldCount) {
-            notEnough(player, emerald, emeraldCount);
+        if (countItem(player, currency) < currencyCount) {
+            notEnough(player, currency, currencyCount);
             return;
         }
-        if (countItem(player, metal) < metalCount) {
-            notEnough(player, metal, metalCount);
+        if (extraCurrency != null && countItem(player, extraCurrency) < extraCost) {
+            notEnough(player, extraCurrency, extraCost);
             return;
         }
         // 只能升级自己的士兵：蛋里带着阵营数据时，必须是操作者自己的玩家阵营
@@ -128,8 +128,10 @@ public final class RecruitmentService {
             return;
         }
         consumeItem(player, egg, 1);
-        consumeItem(player, emerald, emeraldCount);
-        consumeItem(player, metal, metalCount);
+        consumeItem(player, currency, currencyCount);
+        if (extraCurrency != null) {
+            consumeItem(player, extraCurrency, extraCost);
+        }
 
         Direction facing = state.getValue(RecruitmentStationBlock.FACING);
         EquipmentTier tier = EquipmentTier.values()[tierIndex];
@@ -179,6 +181,10 @@ public final class RecruitmentService {
     /** 一半价格（向上取整，最少 1）。 */
     private static int halfUp(int value) {
         return Math.max(1, (value + 1) / 2);
+    }
+
+    private static int extraCostForTier(int tier) {
+        return tier == EquipmentTier.TIER_4.ordinal() ? RecruitConfig.tier4ExtraCost() : 0;
     }
 
     private static void notEnough(ServerPlayer player, Item item, int count) {

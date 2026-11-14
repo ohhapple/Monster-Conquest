@@ -25,7 +25,7 @@ import org.jetbrains.annotations.Nullable;
 /**
  * 蹲下右键单位：打开单位界面（士兵与首领 / 巡逻队长都支持）。
  *   · 手里拿着仇恨权杖 / 收纳工具 / 控制工具 / 路径点工具时保持工具右键行为，不抢操作；
- *   · 生存玩家只能打开自己玩家阵营（自己的）单位，创造模式 / OP 不限；
+ *   · 非创造模式只能打开自己小玩家阵营（自己的）单位，OP 权限不例外；
  *   · 蹲下右键骑兵的战马 = 打开骑它那个单位的界面。
  */
 @EventBusSubscriber(modid = Monster_conquest.MODID)

@@ -90,6 +90,7 @@ public class WarHorseEntity extends AbstractHorse {
         return AbstractHorse.createBaseHorseAttributes()
                 .add(Attributes.MAX_HEALTH, 30.0D)
                 .add(Attributes.MOVEMENT_SPEED, 0.4D)
+                .add(Attributes.WATER_MOVEMENT_EFFICIENCY, 1.0D)
                 .add(Attributes.JUMP_STRENGTH, 0.7D)
                 .add(Attributes.ARMOR, 0.0D);
     }

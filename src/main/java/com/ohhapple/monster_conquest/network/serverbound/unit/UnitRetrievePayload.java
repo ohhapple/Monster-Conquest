@@ -20,7 +20,7 @@ import org.jetbrains.annotations.NotNull;
 /**
  * 客户端 → 服务端：单位界面里的"收纳该单位"按钮。
  *   与收纳工具完全同一条打包逻辑（背包放不下则收纳失败，单位留在原地）；
- *   生存玩家只能收纳自己的玩家阵营单位，NPC 阵营单位可直接收纳。
+ *   非创造模式玩家只能收纳与自己阵营相同的单位。
  */
 public record UnitRetrievePayload(int entityId) implements CustomPacketPayload {
 

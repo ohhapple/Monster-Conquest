@@ -18,10 +18,10 @@ import java.util.Map;
 
 /**
  * 募兵站配置：
- *   · 每个等级的"金属"货币（默认：T0~T2 铁锭 / T3 钻石 / T4 下界合金锭）；
- *   · 每名士兵的招募价格 —— 每行一个兵种，"T0..T4" 依次为 "绿宝石/金属"，
- *     例如 soldier_zombie = "12/4, 18/8, 24/12, 30/4, 40/2"。
- *   最终消耗 = 绿宝石 × 第一个数 + 该等级的金属 × 第二个数。
+ *   · 所有等级统一使用基础货币（默认紫水晶碎片）；
+ *   · T4 招募 / 升级额外消耗下界之星；
+ *   · 每名士兵的招募价格 —— 每行一个兵种，"T0..T4" 依次为基础货币数量，
+ *     例如 soldier_zombie = "8, 16, 32, 48, 64"。
  */
 @EventBusSubscriber(modid = Monster_conquest.MODID)
 public final class RecruitConfig {
@@ -30,49 +30,43 @@ public final class RecruitConfig {
 
     private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
 
-    // ===================== 每级的金属货币 =====================
+    // ===================== 招募货币 =====================
 
-    public static final ModConfigSpec.ConfigValue<String> TIER0_METAL = BUILDER
-            .comment("募兵站：一阶（T0）士兵的金属货币物品 id（另外还要绿宝石）。")
-            .define("tier0Metal", "minecraft:iron_ingot");
-    public static final ModConfigSpec.ConfigValue<String> TIER1_METAL = BUILDER
-            .comment("二阶（T1）金属货币。")
-            .define("tier1Metal", "minecraft:iron_ingot");
-    public static final ModConfigSpec.ConfigValue<String> TIER2_METAL = BUILDER
-            .comment("三阶（T2）金属货币。")
-            .define("tier2Metal", "minecraft:iron_ingot");
-    public static final ModConfigSpec.ConfigValue<String> TIER3_METAL = BUILDER
-            .comment("四阶（T3）金属货币。")
-            .define("tier3Metal", "minecraft:diamond");
-    public static final ModConfigSpec.ConfigValue<String> TIER4_METAL = BUILDER
-            .comment("五阶（T4）金属货币。")
-            .define("tier4Metal", "minecraft:netherite_ingot");
+    public static final ModConfigSpec.ConfigValue<String> CURRENCY = BUILDER
+            .comment("募兵站所有等级使用的基础货币物品 id。")
+            .define("currency", "minecraft:amethyst_shard");
+    public static final ModConfigSpec.ConfigValue<String> TIER4_EXTRA_CURRENCY = BUILDER
+            .comment("T4 招募或升级额外消耗的物品 id。")
+            .define("tier4ExtraCurrency", "minecraft:nether_star");
+    public static final ModConfigSpec.IntValue TIER4_EXTRA_COST = BUILDER
+            .comment("T4 招募或升级额外消耗的数量；设为 0 可关闭。")
+            .defineInRange("tier4ExtraCost", 1, 0, 64);
 
     // ===================== 每名士兵的价格 =====================
 
     /** 内置默认价格（同时也是配置里的默认值）。 */
     private static final Map<String, String> DEFAULT_PRICES = Map.ofEntries(
-            Map.entry("soldier_zombie", "12/4, 18/8, 24/12, 30/4, 40/2"),
-            Map.entry("soldier_husk", "12/4, 18/8, 24/12, 30/4, 40/2"),
-            Map.entry("soldier_zombie_villager", "12/4, 18/8, 24/12, 30/4, 40/2"),
-            Map.entry("soldier_vindicator", "16/5, 24/10, 32/16, 40/5, 52/3"),
-            Map.entry("soldier_mace", "18/6, 27/12, 36/18, 45/6, 58/3"),
-            Map.entry("soldier_drowned", "16/5, 24/10, 32/16, 40/5, 52/3"),
-            Map.entry("soldier_wither_skeleton", "18/6, 27/12, 36/18, 45/6, 58/3"),
-            Map.entry("soldier_skeleton", "18/6, 27/12, 36/18, 45/6, 58/3"),
-            Map.entry("soldier_villager_archer", "18/6, 27/12, 36/18, 45/6, 58/3"),
-            Map.entry("soldier_stray", "22/7, 33/14, 44/20, 55/7, 70/4"),
-            Map.entry("soldier_bogged", "22/7, 33/14, 44/20, 55/7, 70/4"),
-            Map.entry("soldier_witch", "26/8, 39/16, 52/24, 65/8, 82/4"),
-            Map.entry("soldier_villager_priest", "26/8, 39/16, 52/24, 65/8, 82/4"),
-            Map.entry("soldier_evoker", "30/10, 45/20, 60/30, 75/10, 94/5"),
-            Map.entry("soldier_piglin_shield", "16/5, 24/10, 32/16, 40/5, 52/3"),
-            Map.entry("soldier_gunner_rifle", "34/11, 51/22, 68/33, 85/11, 106/5"),
-            Map.entry("soldier_gunner_shotgun", "38/12, 57/24, 76/36, 95/12, 118/6"),
-            Map.entry("soldier_gunner_rocket", "38/12, 57/24, 76/36, 95/12, 118/6"),
-            Map.entry("soldier_gunner_sniper", "42/13, 63/26, 84/39, 105/13, 130/6"),
-            Map.entry("soldier_vex", "30/10, 30/10, 30/10, 30/10, 30/10"),
-            Map.entry("soldier_allay", "30/10, 30/10, 30/10, 30/10, 30/10")
+            Map.entry("soldier_zombie", "8, 16, 32, 48, 64"),
+            Map.entry("soldier_husk", "8, 16, 32, 48, 64"),
+            Map.entry("soldier_zombie_villager", "8, 16, 32, 48, 64"),
+            Map.entry("soldier_vindicator", "10, 20, 40, 60, 80"),
+            Map.entry("soldier_mace", "12, 24, 48, 72, 96"),
+            Map.entry("soldier_drowned", "10, 20, 40, 60, 80"),
+            Map.entry("soldier_wither_skeleton", "12, 24, 48, 72, 96"),
+            Map.entry("soldier_skeleton", "12, 24, 48, 72, 96"),
+            Map.entry("soldier_villager_archer", "12, 24, 48, 72, 96"),
+            Map.entry("soldier_stray", "14, 28, 56, 84, 112"),
+            Map.entry("soldier_bogged", "14, 28, 56, 84, 112"),
+            Map.entry("soldier_witch", "16, 32, 64, 96, 128"),
+            Map.entry("soldier_villager_priest", "16, 32, 64, 96, 128"),
+            Map.entry("soldier_evoker", "20, 40, 80, 120, 160"),
+            Map.entry("soldier_piglin_shield", "10, 20, 40, 60, 80"),
+            Map.entry("soldier_gunner_rifle", "22, 44, 88, 132, 176"),
+            Map.entry("soldier_gunner_shotgun", "24, 48, 96, 144, 192"),
+            Map.entry("soldier_gunner_rocket", "24, 48, 96, 144, 192"),
+            Map.entry("soldier_gunner_sniper", "26, 52, 104, 156, 208"),
+            Map.entry("soldier_vex", "32, 32, 32, 32, 32"),
+            Map.entry("soldier_allay", "32, 32, 32, 32, 32")
     );
 
     /** 每名士兵一个配置项（按兵种表顺序）。 */
@@ -80,13 +74,14 @@ public final class RecruitConfig {
 
     static {
         BUILDER.comment("每名士兵的招募价格（可逐条修改）：");
-        BUILDER.comment("  格式：\"T0绿宝石/T0金属, T1绿宝石/T1金属, ... T4绿宝石/T4金属\"。");
-        BUILDER.comment("  例如 soldier_zombie = \"12/4, 18/8, 24/12, 30/4, 40/2\"。");
-        BUILDER.push("prices");
+        BUILDER.comment("  格式：\"T0数量, T1数量, T2数量, T3数量, T4数量\"。");
+        BUILDER.comment("  例如 soldier_zombie = \"8, 16, 32, 48, 64\"。");
+        BUILDER.push("recruitPrices");
         for (RecruitableSoldiers.Entry entry : RecruitableSoldiers.ALL) {
             String id = entry.id();
-            String def = DEFAULT_PRICES.getOrDefault(id, "12/4, 18/8, 24/12, 30/4, 40/2");
-            PRICE_DEFS.put(id, BUILDER.define(id, def));
+            String def = DEFAULT_PRICES.getOrDefault(id, "8, 16, 32, 48, 64");
+            PRICE_DEFS.put(id, BUILDER.define(id, def,
+                    value -> value instanceof String text && parsePriceOrNull(text) != null));
         }
         BUILDER.pop();
     }
@@ -95,53 +90,62 @@ public final class RecruitConfig {
 
     // ===================== 解析后的数据 =====================
 
-    public static final Item EMERALD_CURRENCY = Items.EMERALD;
+    private static Item currencyItem = Items.AMETHYST_SHARD;
+    private static Item tier4ExtraItem = Items.NETHER_STAR;
+    private static int tier4ExtraCost = 1;
 
-    public static final Item[] metalItem = new Item[5];
-    /** speciesId -> [tier][0=绿宝石数, 1=金属数] */
-    public static final Map<String, int[][]> PRICES = new HashMap<>();
+    /** speciesId -> 各等级使用的材料数量。 */
+    public static final Map<String, int[]> PRICES = new HashMap<>();
 
     static {
-        for (int i = 0; i < 5; i++) metalItem[i] = Items.IRON_INGOT;
         for (Map.Entry<String, String> e : DEFAULT_PRICES.entrySet()) {
-            int[][] parsed = parsePriceOrNull(e.getValue());
+            int[] parsed = parsePriceOrNull(e.getValue());
             if (parsed != null) PRICES.put(e.getKey(), parsed);
         }
     }
 
-    /** 第 tier 档使用的金属货币。 */
-    public static Item metalItemFor(int tier) {
-        return (tier >= 0 && tier < 5) ? metalItem[tier] : Items.IRON_INGOT;
+    /** 所有等级共用的基础招募货币。 */
+    public static Item currencyItem() {
+        return currencyItem;
     }
 
-    /** 某兵种、某等级的绿宝石数量。 */
-    public static int emeraldCost(String speciesId, int tier) {
-        int[][] p = PRICES.get(speciesId);
-        return p == null ? 1 : p[Math.max(0, Math.min(4, tier))][0];
+    /** T4 招募或升级额外消耗的物品。 */
+    public static Item tier4ExtraItem() {
+        return tier4ExtraItem;
     }
 
-    /** 某兵种、某等级的金属数量。 */
-    public static int metalCost(String speciesId, int tier) {
-        int[][] p = PRICES.get(speciesId);
-        return p == null ? 1 : p[Math.max(0, Math.min(4, tier))][1];
+    /** T4 额外物品数量；0 表示关闭。 */
+    public static int tier4ExtraCost() {
+        return tier4ExtraCost;
+    }
+
+    /** 某兵种、某等级需要的招募材料数量。 */
+    public static int recruitCost(String speciesId, int tier) {
+        int[] prices = PRICES.get(speciesId);
+        return prices == null ? 1 : prices[Math.max(0, Math.min(4, tier))];
     }
 
     @SubscribeEvent
     public static void onLoad(final ModConfigEvent event) {
         if (event.getConfig().getSpec() != SPEC) return;
 
-        metalItem[0] = parseItem(TIER0_METAL.get(), Items.IRON_INGOT);
-        metalItem[1] = parseItem(TIER1_METAL.get(), Items.IRON_INGOT);
-        metalItem[2] = parseItem(TIER2_METAL.get(), Items.IRON_INGOT);
-        metalItem[3] = parseItem(TIER3_METAL.get(), Items.DIAMOND);
-        metalItem[4] = parseItem(TIER4_METAL.get(), Items.NETHERITE_INGOT);
+        currencyItem = parseItem(CURRENCY.get(), Items.AMETHYST_SHARD);
+        tier4ExtraItem = parseItem(TIER4_EXTRA_CURRENCY.get(), Items.NETHER_STAR);
+        tier4ExtraCost = TIER4_EXTRA_COST.get();
 
+        boolean correctedPrices = false;
         for (Map.Entry<String, ModConfigSpec.ConfigValue<String>> e : PRICE_DEFS.entrySet()) {
             String id = e.getKey();
-            int[][] parsed = parsePriceOrNull(e.getValue().get());
-            if (parsed == null) parsed = parsePriceOrNull(DEFAULT_PRICES.get(id));
+            int[] parsed = parsePriceOrNull(e.getValue().get());
+            if (parsed == null) {
+                String fallback = DEFAULT_PRICES.getOrDefault(id, "8, 16, 32, 48, 64");
+                e.getValue().set(fallback);
+                parsed = parsePriceOrNull(fallback);
+                correctedPrices = true;
+            }
             if (parsed != null) PRICES.put(id, parsed);
         }
+        if (correctedPrices) SPEC.save();
     }
 
     private static Item parseItem(String id, Item fallback) {
@@ -150,19 +154,17 @@ public final class RecruitConfig {
         return (item == null || item == Items.AIR) ? fallback : item;
     }
 
-    /** 解析 "12/4, 18/8, 24/12, 30/4, 40/2"；格式不对返回 null。 */
+    /** 解析 "8, 16, 32, 48, 64"；格式不对返回 null。 */
     @Nullable
-    private static int[][] parsePriceOrNull(@Nullable String raw) {
+    private static int[] parsePriceOrNull(@Nullable String raw) {
         if (raw == null) return null;
         String[] tierParts = raw.split(",");
         if (tierParts.length < 5) return null;
-        int[][] out = new int[5][2];
+        int[] out = new int[5];
         for (int t = 0; t < 5; t++) {
-            String[] em = tierParts[t].trim().split("/");
-            if (em.length < 2) return null;
+            String value = tierParts[t].trim();
             try {
-                out[t][0] = Math.max(0, Integer.parseInt(em[0].trim()));
-                out[t][1] = Math.max(0, Integer.parseInt(em[1].trim()));
+                out[t] = Math.max(0, Integer.parseInt(value));
             } catch (NumberFormatException ex) {
                 return null;
             }
